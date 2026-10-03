@@ -18,3 +18,6 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
 - Tab completion: builtins + `$PATH` commands, `$VARS`, file paths
   (columnar menu).
 - `docs/PLUGIN-PLAN.md` — static plugin/extension design (plan 6.6).
+- Plugin system: new `brish-plugin` crate — hook/segment/theme/
+  completion/keymap traits + `Registry` with registration-order
+  dispatch and catalog records.
