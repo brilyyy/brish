@@ -43,3 +43,6 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
   router (command / `$var` / file positions) that merges, dedupes and
   caps suggestions from registry providers; builtin behaviour ships as
   the `default-completion` plugin (on by default).
+- Keymap providers: plugins contribute stringly `(key, event)` pairs,
+  parsed into reedline bindings at startup; unknown keys/events warn,
+  conflicting keys warn and last provider wins (`keymap` module).

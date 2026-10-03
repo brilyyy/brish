@@ -3,6 +3,7 @@ use std::io::{BufRead, IsTerminal, Read, Write};
 use brish_builtin::exec::{Engine, Outcome};
 mod completion;
 mod config;
+mod keymap;
 mod prompt;
 
 use clap::Parser;
@@ -203,10 +204,14 @@ fn edit_repl(engine: &mut Engine, var_names: Arc<Mutex<Vec<String>>>) -> i32 {
         KeyModifiers::NONE,
         KeyCode::Tab,
         ReedlineEvent::UntilFound(vec![
-            ReedlineEvent::Menu("completion_menu".to_string()),
+            ReedlineEvent::Menu(keymap::MENU_NAME.to_string()),
             ReedlineEvent::MenuNext,
         ]),
     );
+    // Provider keymaps merge last (they may override core bindings).
+    for warning in keymap::merge(&mut keybindings, &registry.keymaps) {
+        eprintln!("brish: {warning}");
+    }
     let mut rl = Reedline::create()
         .with_completer(Box::new(BrishCompleter::new(Arc::clone(&registry))))
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(
