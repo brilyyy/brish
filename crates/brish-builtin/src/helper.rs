@@ -14,9 +14,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-/// Deadlines by seam (manifest `[helper] timeout_ms` overrides the
-/// helper-keymap/completion seams only).
-const SEGMENT_TIMEOUT_MS: u64 = 500;
+/// Hook deadline (segment/completion deadlines come from the manifest).
 const HOOK_TIMEOUT_MS: u64 = 1_000;
 
 /// Result of a helper run that exited (any exit code) before deadline.
@@ -98,6 +96,7 @@ pub struct HelperSegment {
     cmd: Vec<String>,
     name: String,
     cache_secs: u64,
+    timeout_ms: u64,
     warned: AtomicBool,
     cache: Mutex<Option<(PathBuf, i32, Instant, String)>>,
 }
@@ -110,6 +109,7 @@ impl HelperSegment {
             cmd: decl.cmd.clone(),
             name: decl.name.clone(),
             cache_secs: decl.cache_secs,
+            timeout_ms: decl.timeout_ms,
             warned: AtomicBool::new(false),
             cache: Mutex::new(None),
         }
@@ -137,7 +137,7 @@ impl PromptSegment for HelperSegment {
             "--status".into(),
             status.to_string(),
         ];
-        let Some(out) = run(&self.cmd, &args, cwd, SEGMENT_TIMEOUT_MS, Some(&self.dir)) else {
+        let Some(out) = run(&self.cmd, &args, cwd, self.timeout_ms, Some(&self.dir)) else {
             warn_once(
                 &self.warned,
                 format!(
@@ -445,6 +445,7 @@ mod tests {
             name: "up".into(),
             cmd: argv,
             cache_secs: 60,
+            timeout_ms: 10_000,
         };
         let seg = HelperSegment::new("demo", tmp.path().to_path_buf(), &decl);
         let cwd = tmp.path();
@@ -466,6 +467,7 @@ mod tests {
             name: "bad".into(),
             cmd: argv,
             cache_secs: 1,
+            timeout_ms: 10_000,
         };
         let seg = HelperSegment::new("demo", tmp.path().to_path_buf(), &decl);
         assert!(seg.render(0, tmp.path()).is_none());

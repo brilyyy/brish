@@ -1044,11 +1044,8 @@ impl Engine {
 
     /// `plugin`: list catalog plugins and whether they are installed.
     fn plugin_cmd(&mut self, argv: &[String]) {
-        for (name, on) in self.hooks.installed() {
-            println!("{name} {}", if *on { "on" } else { "off" });
-        }
-        let _ = argv;
-        self.env.status = 0;
+        self.env.status =
+            crate::store_cmd::dispatch(argv, self.hooks.installed(), &self.shell_cwd());
     }
 
     /// Translate a builtin's `Flow` into engine control flow.

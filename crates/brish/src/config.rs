@@ -74,11 +74,13 @@ impl Config {
     }
 }
 
-/// Load the user config (`~/.config/brish/config.toml`), warning about
-/// unknown plugin names against the in-tree catalog.
-pub fn load() -> Config {
+/// Load the user config (`~/.config/brish/config.toml`) with extra
+/// known plugin names (`extra` = store plugins found on disk) so
+/// disabling an installed plugin does not warn as unknown.
+pub fn load_with_known(extra: &[&str]) -> Config {
     let catalog = builtin::catalog();
     let mut known: Vec<&str> = catalog.iter().map(|e| e.plugin.name()).collect();
+    known.extend_from_slice(extra);
     known.push(crate::completion::DEFAULT_COMPLETION);
     load_from(&config_path(), &known)
 }

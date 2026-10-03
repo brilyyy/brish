@@ -66,7 +66,14 @@ fn main() {
     // The var-name snapshot is shared between the REPL (writer) and the
     // default completion provider (reader).
     let var_names: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let config = config::load();
+    // Store plugins are discovered before config loads so their names
+    // count as known (disabling an installed plugin must not warn).
+    let (stored, store_warnings) = brish_builtin::store::scan(&brish_builtin::paths::plugins_dir());
+    for w in &store_warnings {
+        eprintln!("brish: {w}");
+    }
+    let store_names: Vec<&str> = stored.iter().map(|p| p.manifest.name.as_str()).collect();
+    let config = config::load_with_known(&store_names);
     let mut registry = brish_plugin::Registry::default();
     for entry in brish_plugin::builtin::catalog() {
         let plugin = entry.plugin;
@@ -85,12 +92,8 @@ fn main() {
     } else {
         registry.record(completion::DEFAULT_COMPLETION, false);
     }
-    // Store plugins from ~/.config/brish/plugins/, config-gated the
-    // same way (installed = enabled by default).
-    let (stored, store_warnings) = brish_builtin::store::scan(&brish_builtin::paths::plugins_dir());
-    for w in &store_warnings {
-        eprintln!("brish: {w}");
-    }
+    // Store plugins, config-gated like the catalog (installed =
+    // enabled by default).
     for p in stored {
         let name = p.manifest.name.clone();
         if config.plugin_enabled(&name, true) {

@@ -16,6 +16,7 @@ pub mod helper;
 pub mod paths;
 mod run;
 pub mod store;
+pub mod store_cmd;
 
 /// Shared test locks (process-wide state like cwd must not race).
 #[cfg(test)]

@@ -8,7 +8,7 @@ use brish_plugin::{
     Completion, CompletionCtx, CompletionProvider, KeymapProvider, Plugin, PromptSegment, Registry,
     Theme,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -66,17 +66,24 @@ pub struct CompletionDecl {
     pub args: BTreeMap<String, Vec<String>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct SegmentDecl {
     pub name: String,
     pub cmd: Vec<String>,
     /// Cache TTL in seconds (0 = re-run on every prompt render).
     #[serde(default = "default_cache_secs")]
     pub cache_secs: u64,
+    /// Per-run deadline in milliseconds.
+    #[serde(default = "default_segment_timeout_ms")]
+    pub timeout_ms: u64,
 }
 
 fn default_cache_secs() -> u64 {
     1
+}
+
+fn default_segment_timeout_ms() -> u64 {
+    500
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,21 +111,48 @@ fn default_timeout_ms() -> u64 {
 
 /// `.brish-store.toml` written by `plugin add` — where the plugin came
 /// from, so `update`/`info` can find it again.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct StoreMeta {
     pub source: String,
-    /// Pinned commit for index installs.
+    /// Pinned commit for git installs (head at install time).
     #[serde(default)]
     pub commit: Option<String>,
     /// True when installed through the index (commit must verify).
     #[serde(default)]
     pub index: bool,
+    /// Subdirectory of the source repo holding the plugin root.
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 /// One discovered plugin: manifest + its directory.
 pub struct Stored {
     pub dir: PathBuf,
     pub manifest: Manifest,
+}
+
+/// Plugin names become directory names — reject anything that could
+/// escape `plugins/` or hide.
+pub fn safe_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.starts_with('.')
+        && !name.contains('/')
+        && !name.contains('\\')
+}
+
+/// Read + validate a single `plugin.toml` (no directory-name rule —
+/// install sources may use a different directory until placed).
+pub fn load_manifest(dir: &Path) -> Result<Manifest, String> {
+    let mpath = dir.join(MANIFEST);
+    let text = std::fs::read_to_string(&mpath).map_err(|e| format!("{}: {e}", mpath.display()))?;
+    let manifest: Manifest =
+        toml::from_str(&text).map_err(|e| format!("{}: {e}", mpath.display()))?;
+    if manifest.name.is_empty() {
+        return Err(format!("{}: empty `name`", mpath.display()));
+    }
+    Ok(manifest)
 }
 
 /// Discover `plugins/<name>/plugin.toml` entries. Bad manifests warn and
@@ -144,25 +178,14 @@ pub fn scan(plugins_dir: &Path) -> (Vec<Stored>, Vec<String>) {
         if !mpath.is_file() {
             continue;
         }
-        let text = match std::fs::read_to_string(&mpath) {
-            Ok(t) => t,
-            Err(e) => {
-                warnings.push(format!("plugin store: {}: {e}", mpath.display()));
-                continue;
-            }
-        };
-        let manifest: Manifest = match toml::from_str(&text) {
+        let manifest = match load_manifest(&dir) {
             Ok(m) => m,
             Err(e) => {
-                warnings.push(format!("plugin store: {}: {e}", mpath.display()));
+                warnings.push(format!("plugin store: {e}"));
                 continue;
             }
         };
         let dirname = dir.file_name().and_then(|s| s.to_str()).unwrap_or_default();
-        if manifest.name.is_empty() {
-            warnings.push(format!("plugin store: {}: empty `name`", mpath.display()));
-            continue;
-        }
         if manifest.name != dirname {
             warnings.push(format!(
                 "plugin store: {}: name `{}` does not match directory `{}`",
@@ -547,8 +570,10 @@ timeout_ms = 400
             name: "s".into(),
             cmd: vec!["echo".into()],
             cache_secs: default_cache_secs(),
+            timeout_ms: default_segment_timeout_ms(),
         };
         assert_eq!(seg.cache_secs, 1);
+        assert_eq!(seg.timeout_ms, 500);
         let h = HelperDecl {
             path: PathBuf::from("h"),
             timeout_ms: default_timeout_ms(),

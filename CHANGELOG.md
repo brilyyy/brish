@@ -72,3 +72,12 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
   keymap via line protocol (`value[\tdescription[\tdrop]]`), 250ms
   default deadline (`timeout_ms` override), kill-on-timeout,
   warn-once per adapter.
+- Plugin store commands (engine `plugin` builtin): `list` (registry +
+  disk), `add <name|url|path>` (index lookup via cached git index,
+  pinned-commit verify fail-closed, local copy, auto-enable in
+  `config.toml` comment-preserving via `toml_edit`), `rm [--purge]`
+  (disable + optional file delete, traversal-safe names), `update`
+  (re-clone/re-copy + atomic swap with rollback), `search`, `info`.
+  Index URL: `$BRISH_INDEX` > `[store] index` > default. Added
+  plugins activate on next shell start (registry immutable after
+  startup). Segment manifests gain `timeout_ms` (default 500).
