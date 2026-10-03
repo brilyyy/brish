@@ -137,3 +137,38 @@ stages simply never see them v1).
 Each phase lands with its tests green under the workspace gate
 (`cargo test/clippy/fmt` + Windows `cargo check`). P1 is the smallest
 useful slice; P2/P3 wait for a real consumer of each trait.
+
+## State
+
+Implemented 2026-10-04 (P1+P2+P3), one commit per stage:
+
+| Stage | Commit | Delivers |
+|---|---|---|
+| S1 | `e1d7c7d` | `brish-plugin` crate: traits, `Registry`, `HookAction`, `Completion` |
+| S2 | `faaf248` | engine hook wiring (pre/post/chdir, parent-only, `theme`/`plugin` builtins) |
+| S3 | `ccfbd4f` | builtin catalog: `default-themes`, `git-prompt`, `announce-cd` |
+| S4 | `bd30881` | `config.toml` loader, `~/.config/brish/*` paths, `--theme`/`BRISH_THEME` |
+| S5 | `1f8516a` | themes wired into the prompt, `PS1` still wins |
+| S6 | `661cffb` | completion provider chain (`default-completion` plugin) |
+| S7 | `b2d0310` | keymap provider merge with conflict warnings |
+| S8 | (this docs stage) | state/deviations, `docs/PLUGINS.md` authoring guide |
+
+Trait signatures drifted from the draft above as the seams were
+exercised (see deviations); **`docs/PLUGINS.md` is the authoritative
+API reference**.
+
+## Deviations
+
+- **No cargo features.** Tier 1 (feature flags) replaced by
+  config-only gating: every catalog plugin is compiled in, `config.toml`
+  selects which run. One mechanism instead of two.
+- **`Theme` seam added** (not in the draft trait list): whole-prompt
+  rendering, with `Theme::render` receiving the registered segments —
+  themes decide whether to show them (`minimal`/`plain` ignore them).
+- **`Completion` is structured** (value/description/keep_typing) and the
+  router takes `CompletionCtx` (command/`$var`/file position), not bare
+  `(word, is_command)`.
+- **`Registry::install`/`record`** replace the draft `register`;
+  `installed()` powers the `plugin` builtin.
+- **Downstream custom binaries (tier 2)** not yet exercised — no
+  in-repo consumer besides `brish` itself.

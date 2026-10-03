@@ -46,3 +46,7 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
 - Keymap providers: plugins contribute stringly `(key, event)` pairs,
   parsed into reedline bindings at startup; unknown keys/events warn,
   conflicting keys warn and last provider wins (`keymap` module).
+- `docs/PLUGINS.md` — plugin authoring guide (seams, config gate,
+  worked examples); `docs/PLUGIN-PLAN.md` gains State + Deviations;
+  technical plan 6.6 marked implemented; README refreshed (themes,
+  config paths, extending).

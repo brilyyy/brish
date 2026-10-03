@@ -25,22 +25,33 @@ cargo check --workspace --target x86_64-pc-windows-msvc   # Windows gate
 brish -c 'echo hi'           # run a command string
 brish script.sh arg1 arg2    # run a script ($0 = path, $1 = arg1)
 brish                        # interactive (reedline: editing, history, completion)
+brish --theme plain -c 'hi'  # pick a prompt theme for this run
 echo 'echo from stdin' | brish
 ```
 
-Interactive default prompt is **robbyrussell-style**: `➜` arrow (green
-on success, red on failure) + cyan cwd basename. `PS1`/`PS2` set in the
-environment override it as literal strings; `NO_COLOR` disables ANSI.
-Tab completes command names (builtins + `$PATH`), `$VARS`, and files.
+Interactive default theme is **robbyrussell**: `➜` arrow (green on
+success, red on failure) + cyan cwd basename + git segment. `theme`
+lists/switches themes, `plugin` lists installed plugins. `PS1`/`PS2`
+set in the environment override the theme as literal strings;
+`NO_COLOR` disables ANSI. Tab runs the completion provider chain
+(commands, `$VARS`, files — plugins can add more).
+
+Files (all optional, `~/.config/brish/`):
+
+| Path | Purpose |
+|---|---|
+| `config.toml` | `[theme] name`, `[plugins] enabled/disabled` |
+| `.brishrc` | default rcfile (override with `--rcfile`) |
+| `.brish_history` | interactive history, 1000 entries |
 
 Environment knobs:
 
 | Variable | Effect |
 |---|---|
 | `PS1`, `PS2` | prompt / continuation prompt override (interactive) |
+| `BRISH_THEME` | theme name for this run (overrides config) |
 | `BRISH_DEBUG` | space-separated tags `lexer parser expand exec jobs` → stderr traces |
 | `NO_COLOR` | disable prompt colors |
-| `~/.brish_history` | interactive history, 1000 entries |
 
 ## What works
 
@@ -57,6 +68,10 @@ Environment knobs:
   cannot take the shell with it.
 - Background jobs get their own process group; `wait`/`jobs`/`kill %n`
   with POSIX statuses (`128+signal`).
+- Plugin system (`brish-plugin` crate): pre/post/chdir hooks (parent
+  process only), themes, prompt segments, completion providers, keymap
+  providers; catalog gated by `config.toml`, never crashes on bad
+  config.
 
 ## POSIX conformance
 
@@ -69,14 +84,15 @@ never panic on arbitrary input.
 
 ## Extending
 
-The static plugin/extension design (hooks, prompt segments, completion
-providers, keymaps) is specified in [`docs/PLUGIN-PLAN.md`](docs/PLUGIN-PLAN.md).
-The engineering roadmap is [`docs/bsh-technical-plan.md`](docs/bsh-technical-plan.md)
+Write a plugin: [`docs/PLUGINS.md`](docs/PLUGINS.md) — traits, config
+gate, worked examples (hooks, themes, completion, keymaps). The design
+record is [`docs/PLUGIN-PLAN.md`](docs/PLUGIN-PLAN.md); the engineering
+roadmap is [`docs/bsh-technical-plan.md`](docs/bsh-technical-plan.md)
 (original project name; still the source of truth for phases).
 
 ## Deliberately not yet implemented
 
 Brace expansion, here-strings, `$'...'`, globstar, `~user`, `echo -e`
 escapes, `((…))` arithmetic command, full job control (`fg`/`bg`,
-Ctrl-Z/`tcsetpgrp`), plugins (plan only), config files, git prompt
-segment (planned as a `PromptSegment` example).
+Ctrl-Z/`tcsetpgrp`), runtime plugin toggling (config is read at
+startup), history builtin, right prompt, quote-aware completion.
