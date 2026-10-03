@@ -151,7 +151,7 @@ Implemented 2026-10-04 (P1+P2+P3), one commit per stage:
 | S5 | `1f8516a` | themes wired into the prompt, `PS1` still wins |
 | S6 | `661cffb` | completion provider chain (`default-completion` plugin) |
 | S7 | `b2d0310` | keymap provider merge with conflict warnings |
-| S8 | (this docs stage) | state/deviations, `docs/PLUGINS.md` authoring guide |
+| S8 | `cf47398` | state/deviations, `docs/PLUGINS.md` authoring guide |
 
 Trait signatures drifted from the draft above as the seams were
 exercised (see deviations); **`docs/PLUGINS.md` is the authoritative
