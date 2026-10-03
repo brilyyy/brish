@@ -62,6 +62,9 @@ fn main() {
     let mut engine = Engine::new();
 
     // Startup plugins: catalog filtered through config.toml (plan P3).
+    // The var-name snapshot is shared between the REPL (writer) and the
+    // default completion provider (reader).
+    let var_names: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let config = config::load();
     let mut registry = brish_plugin::Registry::default();
     for entry in brish_plugin::builtin::catalog() {
@@ -72,6 +75,14 @@ fn main() {
         } else {
             registry.record(&name, false);
         }
+    }
+    let default_completion = completion::DefaultCompletion {
+        vars: Arc::clone(&var_names),
+    };
+    if config.plugin_enabled(completion::DEFAULT_COMPLETION, true) {
+        registry.install(&default_completion);
+    } else {
+        registry.record(completion::DEFAULT_COMPLETION, false);
     }
     // Theme: --theme > $BRISH_THEME > config > default, validated
     // against the registry (unknown → warn + default).
@@ -105,7 +116,7 @@ fn main() {
             }
         }
     } else if cli.interactive || std::io::stdin().is_terminal() {
-        repl(&mut engine, &cli)
+        repl(&mut engine, &cli, var_names)
     } else {
         let mut src = String::new();
         match std::io::stdin().read_to_string(&mut src) {
@@ -157,7 +168,7 @@ fn fatal(engine: &mut Engine, e: brish_core::error::Error) -> Run {
 /// Startup files: default `~/.config/brish/.brishrc`, `--rcfile`
 /// overrides, `--norc` skips. Missing default is fine; a missing
 /// explicit `--rcfile` is an error (kept from before).
-fn repl(engine: &mut Engine, cli: &Cli) -> i32 {
+fn repl(engine: &mut Engine, cli: &Cli, var_names: Arc<Mutex<Vec<String>>>) -> i32 {
     if !cli.norc {
         let rc = cli.rcfile.clone().unwrap_or_else(config::rc_path);
         match std::fs::read_to_string(&rc) {
@@ -177,16 +188,16 @@ fn repl(engine: &mut Engine, cli: &Cli) -> i32 {
 
     let interactive = cli.interactive || std::io::stdin().is_terminal();
     if interactive && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-        return edit_repl(engine);
+        return edit_repl(engine, var_names);
     }
     plain_repl(engine, interactive)
 }
 
 /// Interactive reedline REPL (plan phase 5): line editing, history,
 /// PS1/PS2 continuation, Ctrl-C clears the pending line, Ctrl-D exits.
-fn edit_repl(engine: &mut Engine) -> i32 {
+fn edit_repl(engine: &mut Engine, var_names: Arc<Mutex<Vec<String>>>) -> i32 {
     let _ = std::fs::create_dir_all(config::config_dir());
-    let var_names: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let registry = Arc::clone(engine.hooks());
     let mut keybindings = default_emacs_keybindings();
     keybindings.add_binding(
         KeyModifiers::NONE,
@@ -197,7 +208,7 @@ fn edit_repl(engine: &mut Engine) -> i32 {
         ]),
     );
     let mut rl = Reedline::create()
-        .with_completer(Box::new(BrishCompleter::new(Arc::clone(&var_names))))
+        .with_completer(Box::new(BrishCompleter::new(Arc::clone(&registry))))
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(
             ColumnarMenu::default().with_name("completion_menu"),
         )))

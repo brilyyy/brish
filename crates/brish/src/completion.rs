@@ -1,37 +1,70 @@
-//! Lite tab completion (plan 5.3): command names at command position,
-//! `$VARS` after `$`, file paths elsewhere.
+//! Tab completion: a thin **router** over the registry's
+//! [`CompletionProvider`]s (plan 6.6).
 //!
-//! Completion context is heuristic (whitespace + `;`/`|`/`&`/`&&`/`||`
-//! segmentation) — quotes are not honoured yet; that arrives with the
-//! plugin `CompletionProvider` work (`docs/PLUGIN-PLAN.md`).
+//! Context is heuristic (whitespace + `;`/`|`/`&`/`&&`/`||` segmentation)
+//! — quotes are not honoured yet. The three default providers
+//! (`default-completion` plugin) reproduce the lite behaviour: command
+//! names at command position, `$VARS` after `$`, files elsewhere.
+//! Providers early-return when the context is not theirs, so the router
+//! stays a plain loop with merge + dedupe + cap.
 
 use brish_builtin::BuiltIn;
+use brish_plugin::{Completion, CompletionCtx, Plugin, Registry};
 use reedline::{Completer, CompletionResult, Span, Suggestion};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
+
+/// Catalog name of the built-in completion plugin.
+pub const DEFAULT_COMPLETION: &str = "default-completion";
 
 /// Commands the engine intercepts itself (exec.rs) — not in `BuiltIn`.
 const ENGINE_COMMANDS: &[&str] = &["eval", "wait", "jobs", "kill", "true", "false"];
 
 const MAX_SUGGESTIONS: usize = 100;
 
-pub struct BrishCompleter {
-    path_cmds: OnceLock<Vec<String>>,
-    /// Shell variable names, refreshed before each prompt by the REPL.
-    vars: Arc<Mutex<Vec<String>>>,
+/// Word under the cursor and its byte start.
+fn word_at(line: &str, pos: usize) -> (usize, &str) {
+    let start = line[..pos].rfind(char::is_whitespace).map_or(0, |i| i + 1);
+    (start, &line[start..pos])
 }
 
-impl BrishCompleter {
-    pub fn new(vars: Arc<Mutex<Vec<String>>>) -> Self {
-        Self {
-            path_cmds: OnceLock::new(),
-            vars,
+/// True when the cursor sits at the start of a command (prefix contains
+/// no word after the last `;`/`|`/`&`/`&&`/`||` separator).
+fn command_position(prefix: &str) -> bool {
+    let mut cut = 0;
+    for op in ["&&", "||", ";", "|", "&"] {
+        if let Some(i) = prefix.rfind(op) {
+            cut = cut.max(i + op.len());
         }
     }
+    prefix[cut..].trim().is_empty()
+}
 
+fn sug(value: String, span: &Span, desc: Option<&str>, keep_typing: bool) -> Suggestion {
+    Suggestion {
+        value,
+        display_override: None,
+        description: desc.map(str::to_string),
+        style: None,
+        extra: None,
+        span: *span,
+        append_whitespace: !keep_typing,
+        match_indices: None,
+    }
+}
+
+// ---- default-completion providers ----
+
+/// Builtins + engine commands + `$PATH` executables.
+#[derive(Default)]
+pub struct CommandsProvider {
     /// PATH executables, scanned once per session (names only — the
-    /// executable-bit filter is not worth a stat storm for a prompt cache).
+    /// executable-bit filter is not worth a stat storm).
+    path_cmds: OnceLock<Vec<String>>,
+}
+
+impl CommandsProvider {
     fn path_commands(&self) -> &[String] {
         self.path_cmds.get_or_init(|| {
             let mut set = HashSet::new();
@@ -54,62 +87,69 @@ impl BrishCompleter {
     }
 }
 
-/// Word under the cursor and its byte start.
-fn word_at(line: &str, pos: usize) -> (usize, &str) {
-    let start = line[..pos].rfind(char::is_whitespace).map_or(0, |i| i + 1);
-    (start, &line[start..pos])
-}
-
-/// True when the cursor sits at the start of a command (prefix contains
-/// no word after the last `;`/`|`/`&`/`&&`/`||` separator).
-fn command_position(prefix: &str) -> bool {
-    let mut cut = 0;
-    for op in ["&&", "||", ";", "|", "&"] {
-        if let Some(i) = prefix.rfind(op) {
-            cut = cut.max(i + op.len());
+impl brish_plugin::CompletionProvider for CommandsProvider {
+    fn complete(&self, ctx: &CompletionCtx<'_>) -> Vec<Completion> {
+        if !ctx.is_command {
+            return Vec::new();
         }
-    }
-    prefix[cut..].trim().is_empty()
-}
-
-fn sug(value: String, span: &Span, desc: Option<&str>, append_space: bool) -> Suggestion {
-    Suggestion {
-        value,
-        display_override: None,
-        description: desc.map(str::to_string),
-        style: None,
-        extra: None,
-        span: *span,
-        append_whitespace: append_space,
-        match_indices: None,
-    }
-}
-
-fn commands(word: &str, span: &Span, path: &[String], out: &mut Vec<Suggestion>) {
-    let mut seen: HashSet<&str> = HashSet::new();
-    for c in BuiltIn::names().iter().chain(ENGINE_COMMANDS) {
-        if c.starts_with(word) && seen.insert(c) {
-            out.push(sug((*c).to_string(), span, Some("builtin"), true));
+        let mut out = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
+        for c in BuiltIn::names().iter().chain(ENGINE_COMMANDS) {
+            if c.starts_with(ctx.word) && seen.insert(c) {
+                out.push(Completion {
+                    value: (*c).to_string(),
+                    description: Some("builtin".to_string()),
+                    keep_typing: false,
+                });
+            }
         }
-    }
-    for c in path {
-        if c.starts_with(word) && seen.insert(c.as_str()) && out.len() < MAX_SUGGESTIONS {
-            out.push(sug(c.clone(), span, None, true));
+        for c in self.path_commands() {
+            if c.starts_with(ctx.word) && seen.insert(c.as_str()) && out.len() < MAX_SUGGESTIONS {
+                out.push(Completion {
+                    value: c.clone(),
+                    description: None,
+                    keep_typing: false,
+                });
+            }
         }
+        out
     }
 }
 
-fn vars(word: &str, span: &Span, names: &Mutex<Vec<String>>, out: &mut Vec<Suggestion>) {
-    let names = names.lock().unwrap_or_else(|e| e.into_inner());
-    for v in names.iter() {
-        if v.starts_with(word) && out.len() < MAX_SUGGESTIONS {
-            out.push(sug(format!("${v}"), span, None, false));
-        }
+/// `$NAME` completion from the REPL's variable-name snapshot.
+pub struct VarsProvider {
+    names: Arc<Mutex<Vec<String>>>,
+}
+
+impl VarsProvider {
+    pub fn new(names: Arc<Mutex<Vec<String>>>) -> Self {
+        Self { names }
     }
 }
 
-/// File/dir suggestions for `word`, relative to `base`.
-fn files(word: &str, span: &Span, base: &Path, out: &mut Vec<Suggestion>) {
+impl brish_plugin::CompletionProvider for VarsProvider {
+    fn complete(&self, ctx: &CompletionCtx<'_>) -> Vec<Completion> {
+        if !ctx.after_dollar {
+            return Vec::new();
+        }
+        let names = self.names.lock().unwrap_or_else(|e| e.into_inner());
+        names
+            .iter()
+            .filter(|v| v.starts_with(ctx.word))
+            .take(MAX_SUGGESTIONS)
+            .map(|v| Completion {
+                value: format!("${v}"),
+                description: None,
+                keep_typing: true, // `$FOO` may be followed by more
+            })
+            .collect()
+    }
+}
+
+/// File/dir suggestions relative to `ctx.cwd` (`~` honoured).
+pub struct FilesProvider;
+
+fn completions_for(word: &str, base: &Path) -> Vec<Completion> {
     let (dir_part, name_part) = match word.rfind('/') {
         Some(i) => (&word[..=i], &word[i + 1..]),
         None => ("", word),
@@ -117,7 +157,7 @@ fn files(word: &str, span: &Span, base: &Path, out: &mut Vec<Suggestion>) {
     let dir: PathBuf = if dir_part == "~" || dir_part.starts_with("~/") {
         match dirs::home_dir() {
             Some(home) => home.join(dir_part.trim_start_matches('~').trim_start_matches('/')),
-            None => return,
+            None => return Vec::new(),
         }
     } else if dir_part.is_empty() {
         base.to_path_buf()
@@ -125,7 +165,7 @@ fn files(word: &str, span: &Span, base: &Path, out: &mut Vec<Suggestion>) {
         base.join(dir_part)
     };
     let Ok(rd) = std::fs::read_dir(&dir) else {
-        return;
+        return Vec::new();
     };
     let mut entries: Vec<(String, bool)> = rd
         .flatten()
@@ -136,41 +176,107 @@ fn files(word: &str, span: &Span, base: &Path, out: &mut Vec<Suggestion>) {
         })
         .collect();
     entries.sort();
-    for (n, is_dir) in entries.into_iter().take(MAX_SUGGESTIONS) {
-        let value = if is_dir {
-            format!("{dir_part}{n}/")
-        } else {
-            format!("{dir_part}{n}")
+    entries
+        .into_iter()
+        .take(MAX_SUGGESTIONS)
+        .map(|(n, is_dir)| {
+            let value = if is_dir {
+                format!("{dir_part}{n}/")
+            } else {
+                format!("{dir_part}{n}")
+            };
+            Completion {
+                value,
+                description: if is_dir { Some("dir".into()) } else { None },
+                keep_typing: is_dir, // dirs stay open, no trailing space
+            }
+        })
+        .collect()
+}
+
+impl brish_plugin::CompletionProvider for FilesProvider {
+    fn complete(&self, ctx: &CompletionCtx<'_>) -> Vec<Completion> {
+        if ctx.is_command || ctx.after_dollar {
+            return Vec::new();
+        }
+        completions_for(ctx.word, ctx.cwd)
+    }
+}
+
+/// Catalog plugin `default-completion` (on by default).
+pub struct DefaultCompletion {
+    pub vars: Arc<Mutex<Vec<String>>>,
+}
+
+impl Plugin for DefaultCompletion {
+    fn name(&self) -> &str {
+        DEFAULT_COMPLETION
+    }
+
+    fn install(&self, reg: &mut Registry) {
+        reg.completion_providers
+            .push(Box::new(CommandsProvider::default()));
+        reg.completion_providers
+            .push(Box::new(VarsProvider::new(Arc::clone(&self.vars))));
+        reg.completion_providers.push(Box::new(FilesProvider));
+    }
+}
+
+// ---- router ----
+
+/// Completer over a registry snapshot. Context detection stays here;
+/// providers answer only for their slice.
+pub struct BrishCompleter {
+    providers: Arc<Registry>,
+}
+
+impl BrishCompleter {
+    pub fn new(providers: Arc<Registry>) -> Self {
+        Self { providers }
+    }
+
+    fn suggestions(&self, line: &str, pos: usize) -> Vec<Suggestion> {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        self.suggestions_in(line, pos, &cwd)
+    }
+
+    fn suggestions_in(&self, line: &str, pos: usize, cwd: &Path) -> Vec<Suggestion> {
+        let (start, word) = word_at(line, pos);
+        let span = Span { start, end: pos };
+        let after_dollar = word.starts_with('$');
+        let w = word.strip_prefix('$').unwrap_or(word);
+        let is_command = !after_dollar && command_position(&line[..start]);
+        let ctx = CompletionCtx {
+            word: w,
+            is_command,
+            after_dollar,
+            cwd,
         };
-        out.push(sug(
-            value,
-            span,
-            if is_dir { Some("dir") } else { None },
-            !is_dir,
-        ));
+
+        let mut merged: Vec<Completion> = Vec::new();
+        for p in &self.providers.completion_providers {
+            merged.extend(p.complete(&ctx));
+        }
+        let mut seen = HashSet::new();
+        merged
+            .into_iter()
+            .filter(|c| seen.insert(c.value.clone()))
+            .take(MAX_SUGGESTIONS)
+            .map(|c| sug(c.value, &span, c.description.as_deref(), c.keep_typing))
+            .collect()
     }
 }
 
 impl Completer for BrishCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> CompletionResult {
-        let (start, word) = word_at(line, pos);
-        let span = Span { start, end: pos };
-        let mut out = Vec::new();
-        if let Some(v) = word.strip_prefix('$') {
-            vars(v, &span, &self.vars, &mut out);
-        } else if command_position(&line[..start]) {
-            commands(word, &span, self.path_commands(), &mut out);
-        } else {
-            let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            files(word, &span, &base, &mut out);
-        }
-        CompletionResult::fresh(out)
+        CompletionResult::fresh(self.suggestions(line, pos))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brish_plugin::CompletionProvider as _;
 
     #[test]
     fn word_at_splits_on_whitespace() {
@@ -193,40 +299,138 @@ mod tests {
         assert!(!command_position("echo hi; cat "));
     }
 
-    #[test]
-    fn completes_builtin_prefixes() {
-        let mut out = Vec::new();
-        let span = Span { start: 0, end: 2 };
-        commands("ec", &span, &[], &mut out);
-        assert!(out.iter().any(|s| s.value == "echo"), "{out:?}");
-        assert!(!out.iter().any(|s| s.value == "cd"));
+    fn ctx<'a>(
+        word: &'a str,
+        is_command: bool,
+        after_dollar: bool,
+        cwd: &'a Path,
+    ) -> CompletionCtx<'a> {
+        CompletionCtx {
+            word,
+            is_command,
+            after_dollar,
+            cwd,
+        }
     }
 
     #[test]
-    fn completes_vars_from_snapshot() {
-        let names = Mutex::new(vec!["PATH".to_string(), "PS1".to_string()]);
-        let span = Span { start: 0, end: 1 };
-        let mut out = Vec::new();
-        vars("P", &span, &names, &mut out);
-        let vals: Vec<_> = out.iter().map(|s| s.value.as_str()).collect();
+    fn commands_provider_completes_builtin_prefixes() {
+        let p = CommandsProvider::default();
+        // inject a fake PATH so the scan is deterministic
+        p.path_cmds.set(vec!["zztool".into()]).ok();
+        let dir = Path::new(".");
+        let out = p.complete(&ctx("ec", true, false, dir));
+        assert!(out.iter().any(|c| c.value == "echo"), "{out:?}");
+        assert!(!out.iter().any(|c| c.value == "cd"));
+        assert!(
+            p.complete(&ctx("zz", true, false, dir))
+                .iter()
+                .any(|c| c.value == "zztool")
+        );
+        // not a command position → silent
+        assert!(p.complete(&ctx("ec", false, false, dir)).is_empty());
+    }
+
+    #[test]
+    fn vars_provider_reads_snapshot_only_after_dollar() {
+        let names = Arc::new(Mutex::new(vec!["PATH".to_string(), "PS1".to_string()]));
+        let p = VarsProvider::new(Arc::clone(&names));
+        let dir = Path::new(".");
+        let out = p.complete(&ctx("P", false, true, dir));
+        let vals: Vec<&str> = out.iter().map(|c| c.value.as_str()).collect();
         assert_eq!(vals, vec!["$PATH", "$PS1"]);
+        assert!(out.iter().all(|c| c.keep_typing));
+        assert!(p.complete(&ctx("P", false, false, dir)).is_empty());
     }
 
     #[test]
-    fn completes_files_and_dirs_relative_to_base() {
+    fn files_provider_completes_files_and_dirs_relative_to_cwd() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("alpha.txt"), "x").unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
 
-        let span = Span { start: 0, end: 2 };
-        let mut out = Vec::new();
-        files("al", &span, dir.path(), &mut out);
+        let out = FilesProvider.complete(&ctx("al", false, false, dir.path()));
         assert_eq!(out.len(), 1, "{out:?}");
         assert_eq!(out[0].value, "alpha.txt");
+        assert!(!out[0].keep_typing, "file accepts trailing space");
 
-        let mut out = Vec::new();
-        files("su", &span, dir.path(), &mut out);
+        let out = FilesProvider.complete(&ctx("su", false, false, dir.path()));
         assert_eq!(out[0].value, "sub/");
-        assert!(!out[0].append_whitespace, "dir keeps typing open");
+        assert!(out[0].keep_typing, "dir keeps typing open");
+
+        // context guards: never for commands or $-words
+        assert!(
+            FilesProvider
+                .complete(&ctx("al", true, false, dir.path()))
+                .is_empty()
+        );
+        assert!(
+            FilesProvider
+                .complete(&ctx("al", false, true, dir.path()))
+                .is_empty()
+        );
+    }
+
+    struct Dup(&'static str);
+    impl brish_plugin::CompletionProvider for Dup {
+        fn complete(&self, _ctx: &CompletionCtx<'_>) -> Vec<Completion> {
+            vec![
+                Completion {
+                    value: "same".into(),
+                    description: Some(self.0.into()),
+                    keep_typing: false,
+                },
+                Completion {
+                    value: self.0.into(),
+                    description: None,
+                    keep_typing: false,
+                },
+            ]
+        }
+    }
+
+    #[test]
+    fn router_merges_dedupes_and_caps() {
+        let mut reg = Registry::default();
+        reg.completion_providers.push(Box::new(Dup("one")));
+        reg.completion_providers.push(Box::new(Dup("two")));
+        let c = BrishCompleter::new(Arc::new(reg));
+        let out = c.suggestions("x", 1);
+        let vals: Vec<&str> = out.iter().map(|s| s.value.as_str()).collect();
+        // "same" appears once (first provider wins), one/two both kept
+        assert_eq!(vals.iter().filter(|v| **v == "same").count(), 1);
+        assert!(vals.contains(&"one"));
+        assert!(vals.contains(&"two"));
+        assert_eq!(out[0].description.as_deref(), Some("one"));
+    }
+
+    #[test]
+    fn router_routes_context_to_right_provider() {
+        let names = Arc::new(Mutex::new(vec!["HOME".to_string()]));
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("file.txt"), "x").unwrap();
+
+        let mut reg = Registry::default();
+        reg.completion_providers
+            .push(Box::new(CommandsProvider::default()));
+        reg.completion_providers
+            .push(Box::new(VarsProvider::new(names)));
+        reg.completion_providers.push(Box::new(FilesProvider));
+        let c = BrishCompleter::new(Arc::new(reg));
+
+        // command position: builtins, not files
+        let out = c.suggestions_in("ec", 2, dir.path());
+        assert!(out.iter().any(|s| s.value == "echo"));
+        assert!(!out.iter().any(|s| s.value == "file.txt"));
+
+        // $-word: vars only
+        let out = c.suggestions_in("$HO", 3, dir.path());
+        assert!(out.iter().any(|s| s.value == "$HOME"));
+        assert!(!out.iter().any(|s| s.value == "echo"));
+
+        // arg position: files only
+        let out = c.suggestions_in("cat fi", 6, dir.path());
+        assert!(out.iter().any(|s| s.value == "file.txt"));
+        assert!(!out.iter().any(|s| s.value == "echo"));
     }
 }

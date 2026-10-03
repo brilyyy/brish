@@ -57,6 +57,7 @@ pub trait Theme: Send + Sync {
 
 /// One completion candidate. `keep_typing` suppresses the trailing space
 /// (directories stay open).
+#[derive(Debug, Clone)]
 pub struct Completion {
     pub value: String,
     pub description: Option<String>,

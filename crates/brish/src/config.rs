@@ -93,7 +93,8 @@ impl Config {
 /// unknown plugin names against the in-tree catalog.
 pub fn load() -> Config {
     let catalog = builtin::catalog();
-    let known: Vec<&str> = catalog.iter().map(|e| e.plugin.name()).collect();
+    let mut known: Vec<&str> = catalog.iter().map(|e| e.plugin.name()).collect();
+    known.push(crate::completion::DEFAULT_COMPLETION);
     load_from(&config_path(), &known)
 }
 

@@ -39,3 +39,7 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
 - Theme system wired into the REPL: prompt renders the active theme
   from the registry with segments appended; `PS1`/`PS2` still win;
   core `$ ` fallback when no theme resolves.
+- Completion is now a provider chain: the completer is a context
+  router (command / `$var` / file positions) that merges, dedupes and
+  caps suggestions from registry providers; builtin behaviour ships as
+  the `default-completion` plugin (on by default).
