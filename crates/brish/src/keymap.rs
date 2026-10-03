@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 /// Menu the shell registers for completion (Tab opens it).
 pub const MENU_NAME: &str = "completion_menu";
+pub const HISTORY_MENU: &str = "history_menu";
 
 /// `tab`, `ctrl-x`, `alt-1`, `shift-tab`, `up`, single chars, …
 pub fn parse_key(desc: &str) -> Option<(KeyCode, KeyModifiers)> {
@@ -52,6 +53,7 @@ pub fn parse_key(desc: &str) -> Option<(KeyCode, KeyModifiers)> {
 pub fn parse_event(name: &str) -> Option<ReedlineEvent> {
     Some(match name {
         "menu" => ReedlineEvent::Menu(MENU_NAME.to_string()),
+        "history-menu" => ReedlineEvent::Menu(HISTORY_MENU.to_string()),
         "menu-next" => ReedlineEvent::MenuNext,
         "menu-previous" => ReedlineEvent::MenuPrevious,
         "menu-accept" => ReedlineEvent::MenuAccept,

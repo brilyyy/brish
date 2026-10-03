@@ -3,6 +3,8 @@ use std::io::{BufRead, IsTerminal, Read, Write};
 use brish_builtin::exec::{Engine, Outcome};
 mod completion;
 mod config;
+mod highlight;
+mod hinter;
 mod keymap;
 mod prompt;
 
@@ -91,6 +93,12 @@ fn main() {
         registry.install(&default_completion);
     } else {
         registry.record(completion::DEFAULT_COMPLETION, false);
+    }
+    // Interactive trio: capability plugins recorded like catalog
+    // entries; the REPL wires each seam when the name is installed
+    // (everything stays config-gated).
+    for name in ["syntax-highlight", "autosuggest", "history-search"] {
+        registry.record(name, config.plugin_enabled(name, true));
     }
     // Store plugins, config-gated like the catalog (installed =
     // enabled by default).
@@ -251,6 +259,17 @@ fn edit_repl(engine: &mut Engine, var_names: Arc<Mutex<Vec<String>>>) -> i32 {
         KeyCode::Char('z'),
         ReedlineEvent::ExecuteHostCommand("brish-suspend".to_string()),
     );
+    let installed =
+        |name: &str| -> bool { registry.installed().iter().any(|(n, on)| n == name && *on) };
+    // Ctrl-R opens the history menu; without the plugin reedline's
+    // default inline SearchHistory binding stays.
+    if installed("history-search") {
+        keybindings.add_binding(
+            KeyModifiers::CONTROL,
+            KeyCode::Char('r'),
+            ReedlineEvent::Menu(keymap::HISTORY_MENU.to_string()),
+        );
+    }
     // Provider keymaps merge last (they may override core bindings).
     for warning in keymap::merge(&mut keybindings, &registry.keymaps) {
         eprintln!("brish: {warning}");
@@ -263,6 +282,17 @@ fn edit_repl(engine: &mut Engine, var_names: Arc<Mutex<Vec<String>>>) -> i32 {
         .with_edit_mode(Box::new(Emacs::new(keybindings)));
     if let Ok(hist) = FileBackedHistory::with_file(1000, config::history_path()) {
         rl = rl.with_history(Box::new(hist));
+    }
+    if installed("syntax-highlight") {
+        rl = rl.with_highlighter(Box::new(highlight::BrishHighlighter));
+    }
+    if installed("autosuggest") {
+        rl = rl.with_hinter(Box::new(hinter::BrishHinter::default()));
+    }
+    if installed("history-search") {
+        rl = rl.with_menu(ReedlineMenu::HistoryMenu(Box::new(
+            reedline::ListMenu::default().with_name(keymap::HISTORY_MENU),
+        )));
     }
     let mut buf = String::new();
     loop {

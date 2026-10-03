@@ -101,6 +101,7 @@ dependencies = [
  "brish-plugin",
  "clap",
  "dirs",
+ "nu-ansi-term",
  "reedline",
  "serde",
  "tempfile",

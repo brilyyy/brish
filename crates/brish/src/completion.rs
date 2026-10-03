@@ -19,7 +19,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub const DEFAULT_COMPLETION: &str = "default-completion";
 
 /// Commands the engine intercepts itself (exec.rs) — not in `BuiltIn`.
-const ENGINE_COMMANDS: &[&str] = &["eval", "wait", "jobs", "kill", "fg", "bg", "true", "false"];
+pub(crate) const ENGINE_COMMANDS: &[&str] =
+    &["eval", "wait", "jobs", "kill", "fg", "bg", "true", "false"];
+
+/// Every built-in shell command: in-enum ones (cd/echo/…) plus the
+/// engine-intercepted commands (eval/true/…).
+pub(crate) fn is_builtin(name: &str) -> bool {
+    ENGINE_COMMANDS.contains(&name) || brish_builtin::BuiltIn::names().contains(&name)
+}
 
 const MAX_SUGGESTIONS: usize = 100;
 
