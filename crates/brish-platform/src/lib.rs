@@ -24,8 +24,10 @@ pub use error::PlatformError;
 pub use guard::{FdGuard, RawModeGuard};
 pub use mock::{MockEvent, MockPlatform, MockState};
 pub use proc::{
-    FdOp, FdScope, FdSetup, fork_run, fork_spawn, preexec_fd_ops, reset_sigpipe, send_signal,
-    try_wait, wait_pid, with_fds,
+    ChildState, FdOp, FdScope, FdSetup, SIGCONT, SIGSTOP, SIGTSTP, claim_terminal, fork_run,
+    fork_spawn, ignore_jobctl_signals, kill_group, open_tty, poll_pid, preexec_fd_ops,
+    reset_sigpipe, send_signal, set_group_leader, shell_pgrp, signal_by_name, suspend_self,
+    tcsetpgrp_fd, try_wait, wait_pid, wait_untraced, with_fds,
 };
 pub use traits::{
     ChildHandle, CommandSpec, EnvApi, Filesystem, JobControl, Pgid, Pid, Platform, Process, RawFd,

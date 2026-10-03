@@ -302,6 +302,226 @@ pub fn fork_run(
     wait_pid(pid)
 }
 
+/// Job-control signal numbers, platform-correct (macOS: TSTP=18,
+/// CONT=19; Linux: TSTP=20, CONT=18 — never hardcode these).
+#[cfg(unix)]
+pub const SIGCONT: i32 = nix::sys::signal::Signal::SIGCONT as i32;
+#[cfg(unix)]
+pub const SIGTSTP: i32 = nix::sys::signal::Signal::SIGTSTP as i32;
+#[cfg(unix)]
+pub const SIGSTOP: i32 = nix::sys::signal::Signal::SIGSTOP as i32;
+#[cfg(not(unix))]
+pub const SIGCONT: i32 = 18;
+#[cfg(not(unix))]
+pub const SIGTSTP: i32 = 20;
+#[cfg(not(unix))]
+pub const SIGSTOP: i32 = 19;
+
+/// Signal number by common POSIX name (platform-correct), for
+/// `kill -SIGNAME`. Unknown name → `None`.
+#[cfg(unix)]
+pub fn signal_by_name(name: &str) -> Option<i32> {
+    use nix::sys::signal::Signal;
+    let s = match name {
+        "HUP" => Signal::SIGHUP,
+        "INT" => Signal::SIGINT,
+        "QUIT" => Signal::SIGQUIT,
+        "KILL" => Signal::SIGKILL,
+        "USR1" => Signal::SIGUSR1,
+        "USR2" => Signal::SIGUSR2,
+        "TERM" => Signal::SIGTERM,
+        "CONT" => Signal::SIGCONT,
+        "TSTP" => Signal::SIGTSTP,
+        "STOP" => Signal::SIGSTOP,
+        "TTIN" => Signal::SIGTTIN,
+        "TTOU" => Signal::SIGTTOU,
+        "CHLD" => Signal::SIGCHLD,
+        "ALRM" => Signal::SIGALRM,
+        "PIPE" => Signal::SIGPIPE,
+        _ => return None,
+    };
+    Some(s as i32)
+}
+
+#[cfg(not(unix))]
+pub fn signal_by_name(name: &str) -> Option<i32> {
+    Some(match name {
+        "HUP" => 1,
+        "INT" => 2,
+        "QUIT" => 3,
+        "KILL" => 9,
+        "USR1" => 10,
+        "USR2" => 12,
+        "TERM" => 15,
+        "CONT" => 18,
+        "TSTP" => 20,
+        "STOP" => 19,
+        _ => return None,
+    })
+}
+
+/// Child state seen by job-control waits: exited (status or
+/// 128+signal) or stopped by a job-control signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildState {
+    Exited(i32),
+    Stopped,
+}
+
+/// Non-blocking wait that also reports stops (`WNOHANG | WUNTRACED`);
+/// `None` = still running (or stopped-but-already-reported).
+#[cfg(unix)]
+pub fn poll_pid(pid: i32) -> Result<Option<ChildState>, PlatformError> {
+    use nix::sys::wait::WaitPidFlag;
+    let flags = WaitPidFlag::WNOHANG | WaitPidFlag::WUNTRACED;
+    // SAFETY: waitpid with a valid pid and safe flag bits.
+    match nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(pid), Some(flags)) {
+        Ok(nix::sys::wait::WaitStatus::Exited(_, code)) => Ok(Some(ChildState::Exited(code))),
+        Ok(nix::sys::wait::WaitStatus::Signaled(_, sig, _)) => {
+            Ok(Some(ChildState::Exited(128 + sig as i32)))
+        }
+        Ok(nix::sys::wait::WaitStatus::Stopped(_, _)) => Ok(Some(ChildState::Stopped)),
+        Ok(_) => Ok(None),
+        Err(nix::errno::Errno::ECHILD) => Ok(Some(ChildState::Exited(0))),
+        Err(nix::errno::Errno::EINTR) => Ok(None),
+        Err(e) => Err(io_err(
+            "waitpid",
+            std::io::Error::from_raw_os_error(e as i32),
+        )),
+    }
+}
+
+/// Blocking wait that reports stops (`WUNTRACED`): returns when `pid`
+/// exits or is stopped. Never returns `Running`.
+#[cfg(unix)]
+pub fn wait_untraced(pid: i32) -> Result<ChildState, PlatformError> {
+    loop {
+        // SAFETY: waitpid with a valid pid and safe flag bits.
+        match nix::sys::wait::waitpid(
+            nix::unistd::Pid::from_raw(pid),
+            Some(nix::sys::wait::WaitPidFlag::WUNTRACED),
+        ) {
+            Ok(nix::sys::wait::WaitStatus::Exited(_, code)) => return Ok(ChildState::Exited(code)),
+            Ok(nix::sys::wait::WaitStatus::Signaled(_, sig, _)) => {
+                return Ok(ChildState::Exited(128 + sig as i32));
+            }
+            Ok(nix::sys::wait::WaitStatus::Stopped(_, _)) => return Ok(ChildState::Stopped),
+            Ok(_) => continue, // Continued/StillAlive: keep waiting
+            Err(nix::errno::Errno::EINTR) => continue,
+            Err(nix::errno::Errno::ECHILD) => return Ok(ChildState::Exited(0)),
+            Err(e) => {
+                return Err(io_err(
+                    "waitpid",
+                    std::io::Error::from_raw_os_error(e as i32),
+                ));
+            }
+        }
+    }
+}
+
+/// Parent half of the group-leader race: `&` jobs become group
+/// leaders from the parent too, so a `kill %1` immediately after the
+/// `&` never sees a not-yet-created group. (The child also calls
+/// setpgid before exec; whichever lands first wins.)
+#[cfg(unix)]
+pub fn set_group_leader(pid: i32) {
+    // SAFETY: setpgid on our own just-forked child; no-op if the
+    // child already led the group.
+    let _ = nix::unistd::setpgid(
+        nix::unistd::Pid::from_raw(pid),
+        nix::unistd::Pid::from_raw(pid),
+    );
+}
+
+/// Signal a whole process group (bg jobs lead their own group).
+#[cfg(unix)]
+pub fn kill_group(pgid: i32, sig: i32) -> Result<(), PlatformError> {
+    // SAFETY: killpg semantics — positive pid selects the group; sig
+    // validated by the caller (parse_signal) or is a fixed job-control
+    // signal.
+    let r = unsafe { nix::libc::killpg(pgid, sig) };
+    if r == 0 {
+        Ok(())
+    } else {
+        Err(io_err("killpg", std::io::Error::last_os_error()))
+    }
+}
+
+/// The shell's own process group id.
+#[cfg(unix)]
+pub fn shell_pgrp() -> i32 {
+    nix::unistd::getpgrp().as_raw()
+}
+
+/// The controlling terminal (`/dev/tty`); drop to close.
+#[cfg(unix)]
+pub fn open_tty() -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(nix::libc::O_NOCTTY | nix::libc::O_CLOEXEC)
+        .open("/dev/tty")
+}
+
+/// Give the terminal to `pgid` (job control handoff).
+#[cfg(unix)]
+pub fn tcsetpgrp_fd(fd: std::os::fd::RawFd, pgid: i32) -> Result<(), PlatformError> {
+    use std::os::fd::BorrowedFd;
+    // SAFETY: caller passes an open tty fd for the duration of this
+    // call; pgid is a real process group id.
+    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+    nix::unistd::tcsetpgrp(borrowed, nix::unistd::Pid::from_raw(pgid))
+        .map_err(|e| PlatformError::Job(format!("tcsetpgrp: {e}")))
+}
+
+/// Interactive startup: stop letting line-discipline signals stop the
+/// shell itself (children still honor them) — bash does the same.
+#[cfg(unix)]
+pub fn ignore_jobctl_signals() {
+    use nix::sys::signal::{self, SigHandler, Signal};
+    for sig in [Signal::SIGTSTP, Signal::SIGTTIN, Signal::SIGTTOU] {
+        // SAFETY: signal(2) with a constant handler; process-wide but
+        // only ever called from single-threaded shell startup.
+        unsafe {
+            let _ = signal::signal(sig, SigHandler::SigIgn);
+        };
+    }
+}
+
+/// Take over the terminal: lead our own process group (when we are
+/// not one already), become the foreground group, ignore job-control
+/// signals. Call only when stdin is a tty.
+#[cfg(unix)]
+pub fn claim_terminal() -> Result<(), PlatformError> {
+    let pid = nix::unistd::getpid();
+    if nix::unistd::getpgrp() != pid {
+        // SAFETY: setpgid(0,0) puts ourselves in a new group we lead;
+        // fails only if we are already a session leader (then the
+        // group is already ours).
+        let _ = nix::unistd::setpgid(nix::unistd::Pid::from_raw(0), nix::unistd::Pid::from_raw(0));
+    }
+    let tty = open_tty().map_err(|e| PlatformError::Job(format!("open /dev/tty: {e}")))?;
+    tcsetpgrp_fd(tty.as_raw_fd(), nix::unistd::getpgrp().as_raw())?;
+    ignore_jobctl_signals();
+    Ok(())
+}
+
+/// Suspend the shell (Ctrl-Z at the prompt): briefly restore the
+/// default disposition, raise SIGTSTP on ourselves, re-ignore on
+/// resume (SIGCONT). Only for interactive shells that ignored it.
+#[cfg(unix)]
+pub fn suspend_self() {
+    use nix::sys::signal::{self, SigHandler, Signal};
+    // SAFETY: flip our own SIGTSTP disposition, stop, restore —
+    // single-threaded shell, no concurrent signal users.
+    unsafe {
+        let _ = signal::signal(Signal::SIGTSTP, SigHandler::SigDfl);
+        let _ = signal::raise(Signal::SIGTSTP);
+        let _ = signal::signal(Signal::SIGTSTP, SigHandler::SigIgn);
+    }
+}
+
 /// Reap `pid` if it already exited (background jobs); `None` = still running.
 #[cfg(unix)]
 pub fn try_wait(pid: i32) -> Result<Option<i32>, PlatformError> {
@@ -385,6 +605,53 @@ pub fn fork_run(
 pub fn try_wait(_pid: i32) -> Result<Option<i32>, PlatformError> {
     Ok(None)
 }
+
+#[cfg(not(unix))]
+pub fn poll_pid(pid: i32) -> Result<Option<ChildState>, PlatformError> {
+    Ok(try_wait(pid)?.map(ChildState::Exited))
+}
+
+#[cfg(not(unix))]
+pub fn wait_untraced(pid: i32) -> Result<ChildState, PlatformError> {
+    Ok(ChildState::Exited(wait_pid(pid)?))
+}
+
+#[cfg(not(unix))]
+pub fn set_group_leader(_pid: i32) {}
+
+#[cfg(not(unix))]
+pub fn kill_group(_pgid: i32, _sig: i32) -> Result<(), PlatformError> {
+    Err(PlatformError::Job("job control unsupported".into()))
+}
+
+#[cfg(not(unix))]
+pub fn shell_pgrp() -> i32 {
+    0
+}
+
+#[cfg(not(unix))]
+pub fn open_tty() -> std::io::Result<std::fs::File> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "no controlling terminal",
+    ))
+}
+
+#[cfg(not(unix))]
+pub fn tcsetpgrp_fd(_fd: i32, _pgid: i32) -> Result<(), PlatformError> {
+    Err(PlatformError::Job("job control unsupported".into()))
+}
+
+#[cfg(not(unix))]
+pub fn ignore_jobctl_signals() {}
+
+#[cfg(not(unix))]
+pub fn claim_terminal() -> Result<(), PlatformError> {
+    Err(PlatformError::Job("job control unsupported".into()))
+}
+
+#[cfg(not(unix))]
+pub fn suspend_self() {}
 
 #[cfg(not(unix))]
 pub fn preexec_fd_ops(_cmd: &mut std::process::Command, _ops: Vec<FdOp>) {}
@@ -477,5 +744,45 @@ mod tests {
         let e = PlatformError::Process("boom".into());
         assert_eq!(e.to_string(), "process error: boom");
         let _ = err.write_all(b"");
+    }
+
+    #[test]
+    fn poll_and_wait_untraced_see_stops() {
+        let pid = fork_spawn(vec![], false, || {
+            // Stop ourselves as soon as we run; CONT resumes to 0.
+            let _ = send_signal(std::process::id() as i32, SIGSTOP);
+            0
+        })
+        .unwrap();
+        let mut saw_stop = false;
+        for _ in 0..400 {
+            match poll_pid(pid) {
+                Ok(Some(ChildState::Stopped)) => {
+                    saw_stop = true;
+                    break;
+                }
+                Ok(Some(ChildState::Exited(c))) => panic!("exited before stop: {c}"),
+                _ => std::thread::sleep(std::time::Duration::from_millis(5)),
+            }
+        }
+        assert!(saw_stop, "poll_pid must report WUNTRACED stops");
+        send_signal(pid, SIGCONT).unwrap();
+        match wait_untraced(pid).unwrap() {
+            ChildState::Exited(c) => assert_eq!(c, 0),
+            ChildState::Stopped => panic!("stopped again after CONT"),
+        }
+    }
+
+    #[test]
+    fn set_group_leader_prevents_killpg_race() {
+        let pid = fork_spawn(vec![], true, || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            0
+        })
+        .unwrap();
+        set_group_leader(pid);
+        // Group exists immediately: killpg to it must not be ESRCH.
+        kill_group(pid, 0).expect("group must exist right after fork");
+        let _ = wait_pid(pid);
     }
 }

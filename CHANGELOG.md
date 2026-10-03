@@ -88,3 +88,26 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
 - `docs/PLUGINS.md`: store install/distribute sections, index entry
   format, helper protocol table, trust model (no sandbox). README
   plugin store section; parse tests pin examples/index to the schema.
+
+## 0.1.0 — job control (unreleased)
+
+- Full job control in interactive (tty) shells: `fg [%n]`, `bg [%n]`,
+  `jobs` states (`Running`/`Stopped`/`Done`), `kill %n` group-kills
+  background jobs (own process group), stop detection via
+  `WUNTRACED` with `128+SIGTSTP` statuses (platform-correct signal
+  numbers — macOS and Linux differ). Stopped/finished jobs are
+  notified (`[n] + Stopped …` / `[n]+ Done …`) before each prompt,
+  each once.
+- Terminal handoff: claim the controlling terminal at startup
+  (`setpgid` + `tcsetpgrp`, TSTP/TTIN/TTOU ignored in the shell),
+  `fg` gives the job group the terminal (`tcsetpgrp`), waits
+  untraced, and returns the terminal on exit/stop. Ctrl-Z (raw-mode
+  keybinding → `ExecuteHostCommand`) suspends the shell itself;
+  background-launch parent calls `setpgid` to close the killpg race.
+- New platform primitives in `brish-platform`: `poll_pid`,
+  `wait_untraced`, `kill_group`, `claim_terminal`, `suspend_self`,
+  `set_group_leader`, `signal_by_name` (POSIX names incl. `STOP`,
+  numeric passthrough), `SIGCONT`/`SIGTSTP`/`SIGSTOP` consts from
+  `nix::sys::signal`. Batch + unit tests cover bg/fg/stop/resume,
+  notification-once, and group-safety; interactive TTY path (real
+  Ctrl-Z, `tcsetpgrp` handoff) verified manually.

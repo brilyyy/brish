@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub const DEFAULT_COMPLETION: &str = "default-completion";
 
 /// Commands the engine intercepts itself (exec.rs) — not in `BuiltIn`.
-const ENGINE_COMMANDS: &[&str] = &["eval", "wait", "jobs", "kill", "true", "false"];
+const ENGINE_COMMANDS: &[&str] = &["eval", "wait", "jobs", "kill", "fg", "bg", "true", "false"];
 
 const MAX_SUGGESTIONS: usize = 100;
 

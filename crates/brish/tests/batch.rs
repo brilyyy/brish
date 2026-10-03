@@ -271,3 +271,21 @@ fn background_in_its_own_process_group() {
     // make pgid the *shell's* pid, which differs from the child's).
     assert_eq!(nums[0], nums[1], "bg job must lead its own group: {line:?}");
 }
+
+#[test]
+fn fg_waits_for_background_job() {
+    let o = run(&["-c", "sleep 0.1 & fg; echo $?"]);
+    assert_eq!(out(&o), "sleep 0.1\n0\n", "stderr: {}", err(&o));
+}
+
+#[cfg(unix)]
+#[test]
+fn stopped_background_job_recovers_via_fg() {
+    let o = run(&[
+        "-c",
+        "sleep 0.3 & kill -STOP $!; sleep 0.05; jobs; fg; echo $?",
+    ]);
+    let text = out(&o);
+    assert!(text.contains("Stopped"), "jobs must show Stopped: {text:?}");
+    assert!(text.trim().ends_with('0'), "fg resumed job to 0: {text:?}");
+}

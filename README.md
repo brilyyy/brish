@@ -82,12 +82,14 @@ Examples live in `examples/plugins/`, authoring guide in
   `$?`, `$!`, `$@`/`$*`, positional parameters.
 - Builtins: `cd pwd echo printf test [ true false : exit return eval .
   source unset export readonly shift set type command break continue
-  alias wait jobs kill` (+ PATH externals).
+  alias wait jobs kill fg bg` (+ PATH externals).
 - Execution model: builtins run in-process (fd save/restore), pipelines
   /subshells/background/command-substitutions fork — a crashing command
   cannot take the shell with it.
-- Background jobs get their own process group; `wait`/`jobs`/`kill %n`
-  with POSIX statuses (`128+signal`).
+- Job control: background jobs get their own process group;
+  `wait`/`jobs`/`kill %n` with POSIX statuses (`128+signal`); in
+  interactive tty shells also `fg`/`bg`, `%n` job specs, Ctrl-Z
+  suspend, and terminal handoff (`tcsetpgrp`).
 - Plugin system (`brish-plugin` crate): pre/post/chdir hooks (parent
   process only), themes, prompt segments, completion providers, keymap
   providers; catalog gated by `config.toml`, never crashes on bad
@@ -113,6 +115,5 @@ roadmap is [`docs/bsh-technical-plan.md`](docs/bsh-technical-plan.md)
 ## Deliberately not yet implemented
 
 Brace expansion, here-strings, `$'...'`, globstar, `~user`, `echo -e`
-escapes, `((…))` arithmetic command, full job control (`fg`/`bg`,
-Ctrl-Z/`tcsetpgrp`), runtime plugin toggling (config is read at
+escapes, `((…))` arithmetic command, runtime plugin toggling (config is read at
 startup), history builtin, right prompt, quote-aware completion.

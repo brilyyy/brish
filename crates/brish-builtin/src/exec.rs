@@ -26,7 +26,9 @@ use brish_plugin::{CmdCtx, DEFAULT_THEME, HookAction, Registry};
 
 use crate::{BuiltIn, Flow, run as run_builtin};
 use brish_platform::proc::{
-    FdOp, FdSetup, fork_run, fork_spawn, preexec_fd_ops, send_signal, try_wait, wait_pid, with_fds,
+    ChildState, FdOp, FdSetup, SIGCONT, fork_run, fork_spawn, kill_group, open_tty, poll_pid,
+    preexec_fd_ops, send_signal, set_group_leader, shell_pgrp, signal_by_name, tcsetpgrp_fd,
+    wait_pid, wait_untraced, with_fds,
 };
 
 use brish_platform::RawFd;
@@ -91,12 +93,37 @@ impl Src {
 
 type Plan = HashMap<usize, Src>;
 
-/// A background job: pid, display text (for `jobs`), cached status
-/// once reaped (so `wait` still sees it).
+/// 128 + SIGTSTP: `$?` after a job stops under `fg` (bash parity;
+/// platform-correct — macOS TSTP=18, Linux TSTP=20).
+const STOPPED_STATUS: i32 = 128 + brish_platform::SIGTSTP;
+
+/// One job: `&` background, or an interactive foreground pipeline that
+/// stopped (Ctrl-Z). `pids` are waited in order; the last stage's
+/// status wins (POSIX pipeline). `own_pgrp` = launched as a group
+/// leader (bg) — else the pids share the shell's group.
 struct Job {
-    pid: i32,
+    pids: Vec<i32>,
+    /// Per-pid cached status; `None` = not reaped yet.
+    st: Vec<Option<i32>>,
     cmd: String,
-    status: Option<i32>,
+    /// A stop was observed (SIGTSTP/SIGTTIN/SIGTTOU).
+    stopped: bool,
+    /// `fg` handed this job the terminal (released on stop/exit/bg).
+    tty_held: bool,
+    /// `jobs`/notify already printed this job's state.
+    notified: bool,
+    own_pgrp: bool,
+}
+
+impl Job {
+    fn done(&self) -> bool {
+        self.st.iter().all(Option::is_some)
+    }
+
+    /// Pipeline status: last stage (POSIX); 0 if nothing reaped yet.
+    fn status(&self) -> i32 {
+        self.st.last().and_then(|s| *s).unwrap_or(0)
+    }
 }
 
 /// The shell: environment, function table, background jobs, plugins.
@@ -105,6 +132,9 @@ pub struct Engine {
     funcs: HashMap<String, Cmd>,
     depth: usize,
     bg: Vec<Job>,
+    /// Interactive job control on: WUNTRACED waits, terminal handoff.
+    /// Batch scripts keep POSIX semantics (a stopped fg job blocks).
+    job_control: bool,
     /// Did the last batch of expansions run a command substitution?
     cs_seen: bool,
     /// Static plugin registry (immutable after startup).
@@ -196,18 +226,8 @@ fn parse_signal(spec: &str) -> Option<i32> {
     if let Ok(n) = spec.parse::<i32>() {
         return (n > 0).then_some(n);
     }
-    Some(match spec.to_ascii_uppercase().as_str() {
-        "HUP" => 1,
-        "INT" => 2,
-        "QUIT" => 3,
-        "KILL" => 9,
-        "USR1" => 10,
-        "USR2" => 12,
-        "TERM" => 15,
-        "CONT" => 18,
-        "TSTP" => 20,
-        _ => return None,
-    })
+    // Platform-correct numbers (macOS USR1 is 30, not 10, etc.).
+    signal_by_name(&spec.to_ascii_uppercase())
 }
 
 /// Apply `plan` around `f` in-process (restores on exit *and* panic).
@@ -301,6 +321,7 @@ fn run_subst(src: &str, env: &Env, funcs: &HashMap<String, Cmd>) -> Result<(Stri
             funcs: funcs.clone(),
             depth: 0,
             bg: Vec::new(),
+            job_control: false,
             cs_seen: false,
             hooks: Arc::new(Registry::default()),
             in_child: true,
@@ -336,6 +357,7 @@ impl Engine {
             funcs: HashMap::new(),
             depth: 0,
             bg: Vec::new(),
+            job_control: false,
             cs_seen: false,
             hooks: Arc::new(Registry::default()),
             in_child: false,
@@ -351,6 +373,11 @@ impl Engine {
     /// Swap in the startup-built registry (binary calls once).
     pub fn set_hooks(&mut self, hooks: Arc<Registry>) {
         self.hooks = hooks;
+    }
+
+    /// Turn interactive job control on (tty REPL does; batch never).
+    pub fn set_job_control(&mut self, on: bool) {
+        self.job_control = on;
     }
 
     /// Working directory as the shell sees it (PWD, no syscall when set).
@@ -376,28 +403,57 @@ impl Engine {
         }
     }
 
-    /// Reap finished background jobs (opportunistic; no zombies pile up),
-    /// caching status for a later `wait`.
+    /// Reap finished/stopped job members (opportunistic; no zombies
+    /// pile up), caching status for a later `wait`.
     pub fn reap_bg(&mut self) {
         for j in &mut self.bg {
-            if j.status.is_none()
-                && let Ok(Some(code)) = try_wait(j.pid)
-            {
-                j.status = Some(code);
-                if brish_core::debug_on("jobs") {
-                    eprintln!("brish[jobs]: reaped {} -> {code}", j.pid);
+            for i in 0..j.pids.len() {
+                if j.st[i].is_none()
+                    && let Ok(Some(state)) = poll_pid(j.pids[i])
+                {
+                    match state {
+                        ChildState::Exited(code) => {
+                            j.st[i] = Some(code);
+                            if brish_core::debug_on("jobs") {
+                                eprintln!("brish[jobs]: reaped {} -> {code}", j.pids[i]);
+                            }
+                        }
+                        ChildState::Stopped => j.stopped = true,
+                    }
                 }
             }
         }
         // ponytail: remember at most 64 finished jobs; drop oldest done.
-        while self.bg.iter().filter(|j| j.status.is_some()).count() > 64 {
-            match self.bg.iter().position(|j| j.status.is_some()) {
+        while self.bg.iter().filter(|j| j.done()).count() > 64 {
+            match self.bg.iter().position(|j| j.done()) {
                 Some(i) => {
                     self.bg.remove(i);
                 }
                 None => break,
             }
         }
+    }
+
+    /// Done/stopped notices printed before the next prompt (bash-style
+    /// asynchronous notification). Interactive only.
+    pub fn job_notifications(&mut self) -> Vec<String> {
+        self.reap_bg();
+        let mut out = Vec::new();
+        for (n, j) in self.bg.iter_mut().enumerate() {
+            if j.notified {
+                continue;
+            }
+            let state = if j.done() {
+                "Done"
+            } else if j.stopped {
+                "Stopped"
+            } else {
+                continue;
+            };
+            out.push(format!("[{}]+ {}  {}", n + 1, state, j.cmd));
+            j.notified = true;
+        }
+        out
     }
 
     // ---- lists ----
@@ -441,31 +497,39 @@ impl Engine {
             }
         })
         .map_err(platform_err)?;
+        set_group_leader(pid);
         self.env.status = 0;
         self.env.last_bg = Some(pid as u32);
         self.bg.push(Job {
-            pid,
+            pids: vec![pid],
+            st: vec![None],
             cmd: text,
-            status: None,
+            stopped: false,
+            tty_held: false,
+            notified: false,
+            own_pgrp: true,
         });
         Ok(())
     }
 
     // ---- job control (plan 4.10 minimal: wait / jobs / kill) ----
 
-    /// Blocking wait for the job at `i`; caches and returns its status,
-    /// or `None` if the pid is not a child of this shell.
-    fn wait_at(&mut self, i: usize) -> Option<i32> {
-        if let Some(c) = self.bg[i].status {
-            return Some(c);
+    /// Blocking wait for the job at `i` (a stopped job blocks until
+    /// it is continued); caches and returns its status, or `None` if a
+    /// pid is not a child of this shell.
+    fn wait_job_blocking(&mut self, i: usize) -> Option<i32> {
+        if self.bg[i].done() {
+            return Some(self.bg[i].status());
         }
-        match wait_pid(self.bg[i].pid) {
-            Ok(code) => {
-                self.bg[i].status = Some(code);
-                Some(code)
+        for k in 0..self.bg[i].pids.len() {
+            if self.bg[i].st[k].is_none() {
+                match wait_pid(self.bg[i].pids[k]) {
+                    Ok(c) => self.bg[i].st[k] = Some(c),
+                    Err(_) => return None,
+                }
             }
-            Err(_) => None,
         }
+        Some(self.bg[i].status())
     }
 
     fn wait_cmd(&mut self, argv: &[String]) {
@@ -473,7 +537,7 @@ impl Engine {
             // POSIX: no operands waits for every known job. bash returns 0
             // even when a waited job failed (`false & wait` → 0).
             for i in 0..self.bg.len() {
-                let _ = self.wait_at(i);
+                let _ = self.wait_job_blocking(i);
             }
             self.env.status = 0;
             return;
@@ -483,7 +547,7 @@ impl Engine {
             if let Some(n) = arg.strip_prefix('%') {
                 let idx = n.parse::<usize>().ok().and_then(|n| n.checked_sub(1));
                 status = match idx {
-                    Some(i) if i < self.bg.len() => self.wait_at(i).unwrap_or(127),
+                    Some(i) if i < self.bg.len() => self.wait_job_blocking(i).unwrap_or(127),
                     _ => {
                         eprintln!("brish: wait: {arg}: no such job");
                         127
@@ -493,9 +557,9 @@ impl Engine {
                 let idx = arg
                     .parse::<i32>()
                     .ok()
-                    .and_then(|pid| self.bg.iter().position(|j| j.pid == pid));
+                    .and_then(|pid| self.bg.iter().position(|j| j.pids.contains(&pid)));
                 status = match idx {
-                    Some(i) => self.wait_at(i).unwrap_or(127),
+                    Some(i) => self.wait_job_blocking(i).unwrap_or(127),
                     _ => {
                         eprintln!("brish: wait: {arg}: not a child of this shell");
                         127
@@ -508,13 +572,16 @@ impl Engine {
 
     fn jobs_cmd(&mut self) {
         self.reap_bg();
-        for (n, j) in self.bg.iter().enumerate() {
-            let state = if j.status.is_some() {
+        for (n, j) in self.bg.iter_mut().enumerate() {
+            let state = if j.done() {
                 "Done"
+            } else if j.stopped {
+                "Stopped"
             } else {
                 "Running"
             };
             println!("[{}]+  {}  {} &", n + 1, state, j.cmd);
+            j.notified = true;
         }
     }
 
@@ -542,29 +609,185 @@ impl Engine {
         }
         let mut status = 0;
         for t in targets {
-            let pid = if let Some(n) = t.strip_prefix('%') {
-                n.parse::<usize>()
+            if let Some(n) = t.strip_prefix('%') {
+                let idx = n
+                    .parse::<usize>()
                     .ok()
                     .and_then(|n| n.checked_sub(1))
-                    .filter(|i| *i < self.bg.len())
-                    .map(|i| self.bg[i].pid)
-            } else {
-                t.parse::<i32>().ok()
-            };
-            match pid {
-                Some(p) => {
-                    if let Err(e) = send_signal(p, sig) {
-                        eprintln!("brish: kill: ({p}): {e}");
+                    .filter(|i| *i < self.bg.len());
+                match idx {
+                    Some(i) => {
+                        // bg jobs lead their own group: signal it whole;
+                        // interrupted fg jobs share ours: hit each pid.
+                        let j = &self.bg[i];
+                        let res = if j.own_pgrp {
+                            kill_group(j.pids[0], sig)
+                        } else {
+                            j.pids.iter().try_for_each(|&p| send_signal(p, sig))
+                        };
+                        if let Err(e) = res {
+                            eprintln!("brish: kill: {t}: {e}");
+                            status = 1;
+                        }
+                    }
+                    None => {
+                        eprintln!("brish: kill: {t}: no such job");
                         status = 1;
                     }
                 }
-                None => {
-                    eprintln!("brish: kill: {t}: no such job");
-                    status = 1;
+            } else {
+                match t.parse::<i32>().ok() {
+                    Some(p) => {
+                        if let Err(e) = send_signal(p, sig) {
+                            eprintln!("brish: kill: ({p}): {e}");
+                            status = 1;
+                        }
+                    }
+                    None => {
+                        eprintln!("brish: kill: {t}: no such job");
+                        status = 1;
+                    }
                 }
             }
         }
         self.env.status = status;
+    }
+
+    /// Current job index: the newest one that is not done.
+    fn current_job(&self) -> Option<usize> {
+        self.bg.iter().rposition(|j| !j.done())
+    }
+
+    /// Resolve `[%]N` (default = current); `None` = no such/no
+    /// current job (message printed). Call after `reap_bg`.
+    fn job_arg(&self, argv: &[String], cmd: &str) -> Option<usize> {
+        match argv.get(1).map(String::as_str) {
+            None => self.current_job().or_else(|| {
+                eprintln!("{cmd}: no current job");
+                None
+            }),
+            Some(a) => match a.strip_prefix('%') {
+                Some(n) => {
+                    let idx = n
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|n| n.checked_sub(1))
+                        .filter(|i| *i < self.bg.len() && !self.bg[*i].done());
+                    if idx.is_none() {
+                        eprintln!("{cmd}: {a}: no such job");
+                    }
+                    idx
+                }
+                None => {
+                    eprintln!("{cmd}: {a}: no such job");
+                    None
+                }
+            },
+        }
+    }
+
+    /// Hand the terminal to job `i` (interactive, different group).
+    fn hold_terminal(&mut self, i: usize) -> bool {
+        if !self.job_control {
+            return false;
+        }
+        let pgrp = self.bg[i].pids[0];
+        if pgrp == shell_pgrp() {
+            return false;
+        }
+        let Ok(tty) = open_tty() else {
+            return false;
+        };
+        if tcsetpgrp_fd(tty.as_raw_fd(), pgrp).is_ok() {
+            self.bg[i].tty_held = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Give the terminal back to the shell if job `i` holds it.
+    fn release_terminal(&mut self, i: usize) {
+        if self.bg[i].tty_held {
+            if let Ok(tty) = open_tty() {
+                let _ = tcsetpgrp_fd(tty.as_raw_fd(), shell_pgrp());
+            }
+            self.bg[i].tty_held = false;
+        }
+    }
+
+    /// SIGCONT a stopped job (group leader → whole group; else each pid).
+    fn cont_job(&mut self, i: usize) {
+        let own = self.bg[i].own_pgrp;
+        let first = self.bg[i].pids[0];
+        if own {
+            let _ = kill_group(first, SIGCONT);
+        } else {
+            for &p in &self.bg[i].pids.clone() {
+                let _ = send_signal(p, SIGCONT);
+            }
+        }
+        self.bg[i].stopped = false;
+    }
+
+    /// `fg [%job]`: bring a job to the foreground and wait for it.
+    fn fg_cmd(&mut self, argv: &[String]) {
+        self.reap_bg();
+        let Some(i) = self.job_arg(argv, "fg") else {
+            self.env.status = 1;
+            return;
+        };
+        println!("{}", self.bg[i].cmd);
+        let held = self.hold_terminal(i);
+        // CONT unconditionally: no-op on a running group, and it also
+        // covers a stop that raced with our reap.
+        self.cont_job(i);
+        let mut stopped_now = false;
+        for k in 0..self.bg[i].pids.len() {
+            if self.bg[i].st[k].is_none() {
+                match wait_untraced(self.bg[i].pids[k]) {
+                    Ok(ChildState::Exited(c)) => self.bg[i].st[k] = Some(c),
+                    Ok(ChildState::Stopped) => {
+                        self.bg[i].stopped = true;
+                        stopped_now = true;
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("brish: fg: {e}");
+                        break;
+                    }
+                }
+            }
+        }
+        if held {
+            self.release_terminal(i);
+        }
+        // ponytail: a stop event not yet drained by reap_bg can be
+        // reported here as a stale "Stopped"; the next fg converges
+        // (the prompt reaper normally drains stops first).
+        if stopped_now {
+            // bash reports the stop right away; notify stays quiet.
+            println!("[{}] + Stopped  {}", i + 1, self.bg[i].cmd);
+            self.bg[i].notified = true;
+            self.env.status = STOPPED_STATUS;
+        } else {
+            self.env.status = self.bg[i].status();
+        }
+    }
+
+    /// `bg [%job]`: continue a stopped job in the background.
+    fn bg_cmd(&mut self, argv: &[String]) {
+        self.reap_bg();
+        let Some(i) = self.job_arg(argv, "bg") else {
+            self.env.status = 1;
+            return;
+        };
+        self.release_terminal(i);
+        if self.bg[i].stopped {
+            self.cont_job(i);
+        }
+        println!("[{}] + {} &", i + 1, self.bg[i].cmd);
+        self.env.status = 0;
     }
 
     fn and_or(&mut self, ao: &ast::AndOr, errexit_ctx: bool) -> R<()> {
@@ -601,7 +824,7 @@ impl Engine {
         if p.cmds.len() == 1 {
             self.cmd(&p.cmds[0])?;
         } else {
-            self.pipeline_multi(&p.cmds)?;
+            self.pipeline_multi(p)?;
         }
         if p.negated {
             self.env.status = i32::from(self.env.status == 0);
@@ -612,7 +835,8 @@ impl Engine {
     /// Every stage runs in a forked child whose pipe fds are applied on
     /// entry. Parent spawns all stages first (concurrency!), then waits
     /// in order; the last stage's status wins (POSIX).
-    fn pipeline_multi(&mut self, cmds: &[Cmd]) -> R<()> {
+    fn pipeline_multi(&mut self, p: &ast::Pipeline) -> R<()> {
+        let cmds = p.cmds.as_slice();
         let n = cmds.len();
         // pipes[i] connects stage i → i+1: (read end, write end)
         let mut pipes: Vec<(std::io::PipeReader, std::io::PipeWriter)> = Vec::new();
@@ -673,8 +897,31 @@ impl Engine {
         drop(pipes);
 
         let mut last = 0;
-        for pid in pids {
-            last = wait_pid(pid).map_err(platform_err)?;
+        for (k, pid) in pids.iter().enumerate() {
+            if !self.job_control {
+                last = wait_pid(*pid).map_err(platform_err)?;
+                continue;
+            }
+            // Interactive: Ctrl-Z stops the stage group; hand the
+            // remaining stages to the job table and return to prompt.
+            match wait_untraced(*pid) {
+                Ok(ChildState::Exited(c)) => last = c,
+                Ok(ChildState::Stopped) => {
+                    let rest = pids[k..].to_vec();
+                    self.bg.push(Job {
+                        st: vec![None; rest.len()],
+                        pids: rest,
+                        cmd: pipeline_text(p),
+                        stopped: true,
+                        tty_held: false,
+                        notified: false,
+                        own_pgrp: false,
+                    });
+                    self.env.status = STOPPED_STATUS;
+                    return Ok(());
+                }
+                Err(e) => return Err(platform_err(e)),
+            }
         }
         self.env.status = last;
         Ok(())
@@ -987,11 +1234,13 @@ impl Engine {
         }
         // Job-control builtins need the engine's job table (plan 4.10);
         // `theme`/`plugin` need the plugin registry (plan 6.6).
-        if name == "wait" || name == "jobs" || name == "kill" {
+        if name == "wait" || name == "jobs" || name == "kill" || name == "fg" || name == "bg" {
             return apply_plan(plan, || match name.as_str() {
                 "wait" => self.wait_cmd(argv),
                 "jobs" => self.jobs_cmd(),
-                _ => self.kill_cmd(argv),
+                "kill" => self.kill_cmd(argv),
+                "fg" => self.fg_cmd(argv),
+                _ => self.bg_cmd(argv),
             });
         }
         if name == "theme" {
@@ -1233,7 +1482,34 @@ impl Engine {
         preexec_fd_ops(&mut cmd, ops);
 
         match cmd.spawn() {
-            Ok(mut child) => {
+            Ok(child) => {
+                if self.job_control {
+                    // Interactive: a Ctrl-Z stop must return us to the
+                    // prompt instead of hanging in waitpid.
+                    let pid = child.id() as i32;
+                    drop(child); // waitpid below owns the reaping
+                    return match wait_untraced(pid) {
+                        Ok(ChildState::Exited(c)) => {
+                            self.env.status = c;
+                            Ok(())
+                        }
+                        Ok(ChildState::Stopped) => {
+                            self.bg.push(Job {
+                                pids: vec![pid],
+                                st: vec![None],
+                                cmd: argv.join(" "),
+                                stopped: true,
+                                tty_held: false,
+                                notified: false,
+                                own_pgrp: false,
+                            });
+                            self.env.status = STOPPED_STATUS;
+                            Ok(())
+                        }
+                        Err(e) => Err(Stop::Fail(Error::Exec(format!("{name}: wait: {e}")))),
+                    };
+                }
+                let mut child = child;
                 let st = child
                     .wait()
                     .map_err(|e| Stop::Fail(Error::Exec(format!("{name}: wait: {e}"))))?;
@@ -1586,13 +1862,13 @@ mod tests {
         // Give the child a moment, then reap until the status is cached.
         for _ in 0..100 {
             e.reap_bg();
-            if e.bg.iter().all(|j| j.status.is_some()) {
+            if e.bg.iter().all(|j| j.done()) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert!(
-            e.bg.iter().all(|j| j.status.is_some()),
+            e.bg.iter().all(|j| j.done()),
             "background job must be reaped"
         );
     }
@@ -1874,5 +2150,142 @@ mod tests {
             e.hooks().installed(),
             &[("x".to_string(), true), ("y".to_string(), false)]
         );
+    }
+
+    #[test]
+    fn fg_waits_for_background_job() {
+        let mut e = Engine::new();
+        let prog = brish_core::parser::parse("sleep 0.05 & fg").unwrap();
+        assert_eq!(e.run(&prog).unwrap(), Outcome::Status(0));
+        assert!(e.bg[0].done(), "fg must have reaped the job");
+        assert_eq!(e.bg[0].status(), 0);
+    }
+
+    #[test]
+    fn fg_with_no_current_job_is_status_1() {
+        let mut e = Engine::new();
+        let prog = brish_core::parser::parse("fg").unwrap();
+        assert_eq!(e.run(&prog).unwrap(), Outcome::Status(1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stopped_job_recovers_via_fg() {
+        let mut e = Engine::new();
+        let prog = brish_core::parser::parse("sleep 0.3 & kill -STOP $!").unwrap();
+        e.run(&prog).unwrap();
+        // Poll until the child's self-stop is observed.
+        for _ in 0..200 {
+            e.reap_bg();
+            if e.bg[0].stopped {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(e.bg[0].stopped, "self-stopped job must reap as Stopped");
+        assert!(!e.bg[0].done(), "stopped job is not done");
+        let prog = brish_core::parser::parse("fg").unwrap();
+        e.run(&prog).unwrap();
+        assert_eq!(e.env.status, 0, "fg continues the job to completion");
+        assert!(e.bg[0].done());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bg_continues_stopped_job() {
+        let mut e = Engine::new();
+        let prog = brish_core::parser::parse("sleep 0.3 & kill -STOP $!").unwrap();
+        e.run(&prog).unwrap();
+        for _ in 0..200 {
+            e.reap_bg();
+            if e.bg[0].stopped {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(e.bg[0].stopped);
+        let prog = brish_core::parser::parse("bg").unwrap();
+        e.run(&prog).unwrap();
+        assert_eq!(e.env.status, 0);
+        assert!(!e.bg[0].stopped, "bg resumes the job");
+        for _ in 0..200 {
+            e.reap_bg();
+            if e.bg[0].done() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(e.bg[0].done(), "continued job runs to completion");
+        assert_eq!(e.bg[0].status(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interactive_fg_stop_returns_148_and_job() {
+        let mut e = Engine::new();
+        e.set_job_control(true);
+        let prog = brish_core::parser::parse("sh -c 'kill -STOP $$'").unwrap();
+        e.run(&prog).unwrap();
+        assert_eq!(e.env.status, STOPPED_STATUS, "128 + SIGTSTP");
+        assert_eq!(e.bg.len(), 1);
+        assert!(e.bg[0].stopped);
+        // `jobs` reports it; fg resumes to completion.
+        let prog = brish_core::parser::parse("fg").unwrap();
+        e.run(&prog).unwrap();
+        assert_eq!(e.env.status, 0);
+        assert!(e.bg[0].done());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fg_waits_multi_pid_job_last_status_wins() {
+        // Pipeline-shaped job (two members), `fg` waits every member
+        // and the last stage's status wins (POSIX). Stop/resume is
+        // covered by `stopped_job_recovers_via_fg` + the batch test.
+        let mut e = Engine::new();
+        let spawn = || {
+            brish_platform::proc::fork_spawn(vec![], true, || {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                7
+            })
+            .unwrap()
+        };
+        let a = spawn();
+        let b = spawn();
+        e.bg.push(Job {
+            pids: vec![a, b],
+            st: vec![None, None],
+            cmd: "sleeper | sleeper".into(),
+            stopped: false,
+            tty_held: false,
+            notified: false,
+            own_pgrp: true,
+        });
+        let prog = brish_core::parser::parse("fg").unwrap();
+        e.run(&prog).unwrap();
+        assert_eq!(e.env.status, 7, "last stage wins");
+        assert!(e.bg[0].done());
+    }
+
+    #[test]
+    fn notify_reports_done_jobs_once() {
+        let mut e = Engine::new();
+        let prog = brish_core::parser::parse("true &").unwrap();
+        e.run(&prog).unwrap();
+        for _ in 0..200 {
+            e.reap_bg();
+            if e.bg.iter().all(|j| j.done()) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let notes = e.job_notifications();
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0].contains("[1]+") && notes[0].contains("Done"),
+            "{}",
+            notes[0]
+        );
+        assert!(e.job_notifications().is_empty(), "notify once");
     }
 }

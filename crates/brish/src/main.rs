@@ -225,6 +225,15 @@ fn repl(engine: &mut Engine, cli: &Cli, var_names: Arc<Mutex<Vec<String>>>) -> i
 /// PS1/PS2 continuation, Ctrl-C clears the pending line, Ctrl-D exits.
 fn edit_repl(engine: &mut Engine, var_names: Arc<Mutex<Vec<String>>>) -> i32 {
     let _ = std::fs::create_dir_all(config::config_dir());
+    // Job control: own process group + terminal, ignore TSTP/TTIN/TTOU
+    // (children still stop normally; Ctrl-Z at the prompt stops us on
+    // demand via `suspend_self`).
+    if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        engine.set_job_control(true);
+        if let Err(e) = brish_platform::claim_terminal() {
+            eprintln!("brish: job control unavailable: {e}");
+        }
+    }
     let registry = Arc::clone(engine.hooks());
     let mut keybindings = default_emacs_keybindings();
     keybindings.add_binding(
@@ -234,6 +243,13 @@ fn edit_repl(engine: &mut Engine, var_names: Arc<Mutex<Vec<String>>>) -> i32 {
             ReedlineEvent::Menu(keymap::MENU_NAME.to_string()),
             ReedlineEvent::MenuNext,
         ]),
+    );
+    // Ctrl-Z suspends the shell (raw mode swallows the line-discipline
+    // signal, so we stop ourselves from the read loop).
+    keybindings.add_binding(
+        KeyModifiers::CONTROL,
+        KeyCode::Char('z'),
+        ReedlineEvent::ExecuteHostCommand("brish-suspend".to_string()),
     );
     // Provider keymaps merge last (they may override core bindings).
     for warning in keymap::merge(&mut keybindings, &registry.keymaps) {
@@ -254,6 +270,10 @@ fn edit_repl(engine: &mut Engine, var_names: Arc<Mutex<Vec<String>>>) -> i32 {
             let mut names = var_names.lock().unwrap_or_else(|e| e.into_inner());
             names.clear();
             names.extend(engine.env.vars_iter().map(|(k, _)| k.clone()));
+        }
+        // bash prints completed/stopped job notices before each prompt.
+        for line in engine.job_notifications() {
+            println!("{line}");
         }
         let prompt = BrishPrompt::new(
             engine.env.status,
@@ -278,7 +298,10 @@ fn edit_repl(engine: &mut Engine, var_names: Arc<Mutex<Vec<String>>>) -> i32 {
             }
             Ok(Signal::CtrlC) => buf.clear(),
             Ok(Signal::CtrlD) => return engine.env.status,
-            // HostCommand passthrough: nothing registered, ignore.
+            Ok(Signal::HostCommand(cmd)) if cmd == "brish-suspend" => {
+                brish_platform::suspend_self();
+            }
+            // Other host commands: nothing registered, ignore.
             Ok(_) => {}
             Err(e) => {
                 eprintln!("brish: {e}");
