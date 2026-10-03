@@ -840,4 +840,20 @@ commands = ["fancy"]
         assert_eq!(meta.commit.as_deref(), Some("abc"));
         assert!(meta.index);
     }
+
+    #[test]
+    fn example_plugins_parse() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins");
+        let mut seen = 0;
+        for e in std::fs::read_dir(&root).unwrap() {
+            let dir = e.unwrap().path();
+            if !dir.join("plugin.toml").exists() {
+                continue;
+            }
+            let m = load_manifest(&dir).unwrap();
+            assert_eq!(m.name, dir.file_name().unwrap().to_str().unwrap());
+            seen += 1;
+        }
+        assert!(seen >= 2, "starter + sentinel examples expected");
+    }
 }

@@ -15,6 +15,10 @@ Plugins that need engine types (like the built-in `default-completion`
 provider) live in `crates/brish/src/` instead — `brish-plugin` itself
 stays zero-dependency and engine-free.
 
+Third-party plugins install into `~/.config/brish/plugins/<name>/`
+via the `plugin` builtin (see [Installing](#installing-store-plugins)
+below); each is a directory with a `plugin.toml` manifest.
+
 ## Config gate
 
 ```toml
@@ -32,6 +36,12 @@ enabled = ["default-themes"]  # exact list; replaces defaults
 - Unknown plugin names: warning, never a crash.
 - Bad TOML: warning, defaults used.
 - `plugin` builtin lists every catalog entry and its on/off state.
+
+```toml
+# ~/.config/brish/config.toml — optional store settings
+[store]
+index = "https://github.com/brilyyy/bsh"   # git repo of index/*.toml
+```
 
 ## The seams
 
@@ -135,6 +145,89 @@ Registering the `Theme` makes it selectable: `theme solarized`,
 `BRISH_THEME=solarized`, `brish --theme solarized`, or
 `[theme] name = "solarized"` in config. Unknown names warn and fall
 back to `robbyrussell`.
+
+## Installing (store plugins)
+
+```sh
+brish -c 'plugin search example'       # query the index (name/description/tags)
+brish -c 'plugin info starter'         # index entry + install state + seams
+brish -c 'plugin add starter'          # install by index name
+brish -c 'plugin add ~/src/my-plugin'  # install from a local directory
+brish -c 'plugin add https://github.com/user/repo'  # git URL (plugin.toml at root)
+brish -c 'plugin list'                 # catalog + installed, on/off
+brish -c 'plugin update starter'       # re-fetch, verify, atomic swap
+brish -c 'plugin rm --purge starter'   # disable + delete files (no flag: keep files)
+```
+
+- **Manifest**: one `plugin.toml` per plugin — any of `[theme]`,
+  `[keymap]`, `[completion]`, `[segment]`, `[hooks]`, `[helper]`
+  (all optional, merged into the registry alongside catalog plugins).
+  See [The seams](#the-seams) and [Helper protocol](#helper-protocol).
+- **Enable state**: `plugin add` adds the name to
+  `[plugins] enabled` in `config.toml` (comment-preserving via
+  `toml_edit`); `rm` moves it to `disabled`. Installed store plugins
+  are enabled by default when no lists exist. The registry is
+  immutable — **restart the shell to activate**.
+- **Index**: a git repo containing `index/<name>.toml` entries
+  (`name`, `description`, `source`, optional pinned `commit`,
+  subdirectory `path`, `tags`). URL resolution: `$BRISH_INDEX` >
+  `[store] index` > default. Index is cloned once into
+  `~/.config/brish/index`, then fetched on demand.
+- **Integrity**: when an entry pins `commit`, install/update run
+  `git rev-parse` against it and **fail closed on mismatch**; the
+  verified commit is recorded in `.brish-store-meta` next to the
+  plugin for `info`/`update`. Installs copy files only — no `.git`
+  inside the plugin dir; update = re-fetch + atomic swap (rollback on
+  failure). `plugin add` on an existing name refuses; use `update`.
+- **Trust model**: running a store plugin = running its helper scripts
+  and hooks as your user — same as any tool on `PATH`. There is **no
+  sandbox**; review third-party sources before `add`, prefer
+  commit-pinned index entries. Helper/segment/hook subprocesses are
+  deadline-killed (manifest `timeout_ms`, hooks 1000ms) but not
+  isolated.
+- Failures (missing `git`, bad TOML, unknown name, refused traversal)
+  print `brish: ...` and return status 1 (usage errors: 2) — the shell
+  never aborts.
+
+## Distributing a plugin
+
+1. Ship a directory with `plugin.toml` (schema above). Working
+   examples: `examples/plugins/starter/` (declarative only) and
+   `examples/plugins/sentinel/` (helper binary + guard hook).
+2. For the index: add `index/<name>.toml`:
+
+   ```toml
+   name = "starter"
+   description = "Example declarative plugin: theme, keymap, completion wordlists"
+   source = "https://github.com/you/repo"   # where the files live
+   commit = "<pinned sha>"                  # optional but recommended
+   path = "examples/plugins/starter"        # subdir inside source
+   tags = ["theme"]
+   ```
+
+   Point the index at your fork: `[store] index` /
+   `$BRISH_INDEX = "https://github.com/you/index"`.
+3. Local dev loop: `plugin add ../my-plugin`, edit, `plugin rm
+   --purge`, re-add — or `plugin update` after committing changes
+   when installing from a git URL.
+
+## Helper protocol
+
+`[helper] path` is a `PATH`-adjacent executable (relative to the
+plugin dir), invoked with `BRISH_PLUGIN_DIR` set to that dir and cwd
+inherited. Line-oriented protocol; any seam may be omitted. Default
+deadline 250ms (`[helper] timeout_ms`); `[segment] timeout_ms`
+defaults to 500ms; hooks 1000ms. Killed on timeout, warn-once, never
+wedge the shell.
+
+| argv | stdout |
+|---|---|
+| `complete --word W --cwd D --before LINE [--command]` | `value<TAB>description<TAB>drop` lines (3rd field drops entry) |
+| `segment --name S --cwd D --status N` | first line = segment text (exit 0) |
+| `hook pre --cwd D --status N -- argv…` | `abort N` on exit 0 skips the command, `$? = N` |
+| `hook post --cwd D --status N -- argv…` | ignored (run for side effects) |
+| `hook chdir --cwd D --old O` | ignored |
+| `keymap` | `key<TAB>event` lines (event vocab: `menu-next`, `history-next`, `enter`, …) |
 
 ## Rules
 

@@ -1,0 +1,16 @@
+name = "sentinel"
+version = "0.1.0"
+description = "Example helper plugin: guard hook, prompt segment, completion/keymap helper"
+
+[segment]
+name = "sentinel"
+cmd = ["sh", "-c", "echo sentinel $(date +%H%M%S)"]
+cache_secs = 1
+timeout_ms = 500
+
+[hooks]
+pre_exec = [["sh", "-c", "if [ -n \"$BRISH_SENTINEL_BLOCK\" ]; then echo 'abort 9'; fi"]]
+
+[helper]
+path = "bin/sentinel"
+timeout_ms = 500

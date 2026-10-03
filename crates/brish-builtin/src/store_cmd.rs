@@ -995,4 +995,21 @@ mod tests {
         // catalog entry + disk scan run without panic.
         assert!(r.join("plugins/fresh").is_dir());
     }
+
+    #[test]
+    fn index_manifests_parse() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../index");
+        let mut seen = 0;
+        for e in std::fs::read_dir(&root).unwrap() {
+            let path = e.unwrap().path();
+            if path.extension().and_then(|x| x.to_str()) != Some("toml") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let entry: IndexEntry = toml::from_str(&text).unwrap();
+            assert!(!entry.source.is_empty(), "{}", path.display());
+            seen += 1;
+        }
+        assert!(seen >= 2, "starter + sentinel index entries expected");
+    }
 }

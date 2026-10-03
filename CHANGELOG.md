@@ -81,3 +81,10 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
   Index URL: `$BRISH_INDEX` > `[store] index` > default. Added
   plugins activate on next shell start (registry immutable after
   startup). Segment manifests gain `timeout_ms` (default 500).
+- Example store plugins + index manifests: `examples/plugins/starter`
+  (theme/keymap/completion, zero deps), `examples/plugins/sentinel`
+  (guard `pre_exec`, cached segment, helper `bin/sentinel` for
+  completion/keymap protocol), `index/{starter,sentinel}.toml`.
+- `docs/PLUGINS.md`: store install/distribute sections, index entry
+  format, helper protocol table, trust model (no sandbox). README
+  plugin store section; parse tests pin examples/index to the schema.

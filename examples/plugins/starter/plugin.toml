@@ -1,0 +1,18 @@
+name = "starter"
+version = "0.1.0"
+description = "Example declarative plugin: template theme, keymaps, completion wordlists"
+
+[theme]
+name = "starter"
+prompt = "{fg:bright-magenta}{arrow} {fg:cyan}{cwd}{reset} {segments}"
+
+[keymap]
+"ctrl-g" = "menu-next"
+"ctrl-o" = "menu-previous"
+
+[completion]
+commands = ["starter-tool"]
+words = ["--starter-flag", "--starter-verbose"]
+
+[completion.args]
+git = ["checkout", "rebase", "switch", "restore"]

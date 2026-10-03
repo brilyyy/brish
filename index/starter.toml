@@ -1,0 +1,5 @@
+name = "starter"
+description = "Example declarative plugin: theme, keymap, completion wordlists"
+source = "https://github.com/brilyyy/bsh"
+path = "examples/plugins/starter"
+tags = ["theme", "example"]

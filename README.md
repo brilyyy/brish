@@ -40,9 +40,11 @@ Files (all optional, `~/.config/brish/`):
 
 | Path | Purpose |
 |---|---|
-| `config.toml` | `[theme] name`, `[plugins] enabled/disabled` |
+| `config.toml` | `[theme] name`, `[plugins] enabled/disabled`, `[store] index` |
 | `.brishrc` | default rcfile (override with `--rcfile`) |
 | `.brish_history` | interactive history, 1000 entries |
+| `plugins/` | store plugins, one dir per plugin (`plugin.toml`) |
+| `index/` | cached store index (git clone) |
 
 Environment knobs:
 
@@ -52,6 +54,24 @@ Environment knobs:
 | `BRISH_THEME` | theme name for this run (overrides config) |
 | `BRISH_DEBUG` | space-separated tags `lexer parser expand exec jobs` → stderr traces |
 | `NO_COLOR` | disable prompt colors |
+
+## Plugin store
+
+```sh
+brish -c 'plugin search example'    # query the index
+brish -c 'plugin add starter'       # index name, git URL, or local dir
+brish -c 'plugin list'              # installed + catalog, on/off
+brish -c 'plugin update starter'    # re-fetch, verify pinned commit, swap
+brish -c 'plugin rm --purge starter'  # disable + delete files
+```
+
+A plugin is a directory with a `plugin.toml` manifest (theme, keymaps,
+completion wordlists, prompt segment, hooks, helper binary). `add`
+enables it in `config.toml` — restart the shell to activate. Index
+installs are commit-pinned and fail closed on mismatch; helpers run
+deadline-killed but **unsandboxed** (same trust as `PATH` tools).
+Examples live in `examples/plugins/`, authoring guide in
+[`docs/PLUGINS.md`](docs/PLUGINS.md).
 
 ## What works
 

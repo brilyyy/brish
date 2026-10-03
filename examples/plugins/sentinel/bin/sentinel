@@ -1,0 +1,17 @@
+#!/bin/sh
+# Demo helper for briSH's plugin store (docs/PLUGINS.md protocol).
+# argv[1] = seam name; stdout = one record per line.
+case "$1" in
+  complete)
+    printf 'sentinel-check\tverifies sentinel state\n'
+    printf 'sentinel-status\t\tdrop\n'
+    ;;
+  keymap)
+    printf 'ctrl-x\thistory-next\n'
+    ;;
+  segment)
+    printf 'unused\n'
+    ;;
+  hook)
+    ;;
+esac
