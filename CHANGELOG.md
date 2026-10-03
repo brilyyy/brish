@@ -58,3 +58,10 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
   segment command, hooks, helper); discovery scans and validates
   (bad TOML/name mismatch warn and skip, never crash). Path family
   centralized in `brish-builtin::paths`.
+- Declarative store seams: `[theme]` template themes (`{arrow}` `{cwd}`
+  `{segments}` `{fg:…}`/`{bg:…}` named+hex, `NO_COLOR` aware),
+  `[keymap]` pairs merged into the emacs map, `[completion]`
+  wordlists with parent-command `args.<cmd>` matching —
+  `CompletionCtx` gains `line_before`. Store plugins are config-gated
+  like the catalog (installed = enabled by default); duplicate theme
+  names warn (first registered wins).
