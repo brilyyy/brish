@@ -212,7 +212,12 @@ fn edit_repl(engine: &mut Engine) -> i32 {
             names.clear();
             names.extend(engine.env.vars_iter().map(|(k, _)| k.clone()));
         }
-        let prompt = BrishPrompt::new(engine.env.status, !buf.is_empty());
+        let prompt = BrishPrompt::new(
+            engine.env.status,
+            !buf.is_empty(),
+            engine.hooks(),
+            &engine.theme,
+        );
         match rl.read_line(&prompt) {
             Ok(Signal::Success(line)) => {
                 buf.push_str(&line);

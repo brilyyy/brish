@@ -1,37 +1,49 @@
-//! Default interactive prompt: robbyrussell-style arrow + cwd basename.
+//! Interactive prompt assembly.
+//!
+//! Precedence (highest first): `PS2` while a continuation is pending,
+//! `PS1` env (literal), else the **active theme** — looked up by name
+//! in the plugin registry (`--theme` / `BRISH_THEME` / config /
+//! `theme` builtin decide the name). Unknown theme → core `$ ` fallback.
 //!
 //! ```text
-//! ➜  brish        # last status 0  → green arrow
-//! ➜  brish        # status ≠ 0     → red arrow
+//! ➜  brish git:(main)     # robbyrussell + segments (registry)
+//! y                       # minimal
+//! $                       # plain / fallback
 //! ```
-//!
-//! `PS1`/`PS2` set in the environment override the default as literal
-//! strings (no escape processing — plan: prompt sequences arrive with the
-//! theme/plugin work). `NO_COLOR` disables ANSI.
 
+use brish_plugin::{PromptSegment, Registry};
 use reedline::{
     Prompt, PromptEditMode, PromptHelixMode, PromptHistorySearch, PromptHistorySearchStatus,
     PromptViMode,
 };
 use std::borrow::Cow;
+use std::path::Path;
 
-const GREEN: &str = "\x1b[32m";
-const RED: &str = "\x1b[31m";
-const CYAN: &str = "\x1b[36m";
-const RESET: &str = "\x1b[0m";
-
-fn color_enabled() -> bool {
-    std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
+/// Render the theme named `theme` with the registry's segments.
+/// Pure — env reads happen in [`BrishPrompt::new`].
+fn theme_text(status: i32, cwd: &Path, registry: &Registry, theme: &str) -> String {
+    let segs: Vec<&dyn PromptSegment> = registry
+        .prompt_segments
+        .iter()
+        .map(|s| s.as_ref())
+        .collect();
+    registry
+        .themes
+        .iter()
+        .find(|t| t.name() == theme)
+        .map(|t| t.render(status, cwd, &segs))
+        .unwrap_or_else(|| "$ ".to_string())
 }
 
-/// Left-prompt text for one `read_line` call. Pure — env reads happen in
-/// [`BrishPrompt::new`] so tests can drive the rules directly.
+/// Continuation > PS1 (literal) > theme rendering.
 fn left_text(
     status: i32,
-    cwd: &str,
+    cwd: &Path,
     ps1: Option<&str>,
     ps2: Option<&str>,
     continuation: bool,
+    registry: &Registry,
+    theme: &str,
 ) -> String {
     if continuation {
         return ps2.map(str::to_string).unwrap_or_else(|| "> ".to_string());
@@ -39,21 +51,7 @@ fn left_text(
     if let Some(ps1) = ps1 {
         return ps1.to_string();
     }
-    let dir = basename(cwd);
-    if color_enabled() {
-        let arrow = if status == 0 { GREEN } else { RED };
-        format!("{arrow}➜ {RESET}{CYAN}{dir}{RESET} ")
-    } else {
-        format!("➜ {dir} ")
-    }
-}
-
-fn basename(cwd: &str) -> &str {
-    let p = std::path::Path::new(cwd);
-    match p.file_name() {
-        Some(name) => name.to_str().unwrap_or(cwd),
-        None => cwd, // root or trailing-slash-only
-    }
+    theme_text(status, cwd, registry, theme)
 }
 
 /// robbyrussell-style prompt for one `read_line` call.
@@ -63,14 +61,20 @@ pub struct BrishPrompt {
 
 impl BrishPrompt {
     /// `continuation` selects PS2 (a multi-line buffer is pending).
-    pub fn new(status: i32, continuation: bool) -> Self {
-        let cwd = std::env::current_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| ".".to_string());
+    pub fn new(status: i32, continuation: bool, registry: &Registry, theme: &str) -> Self {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
         let ps1 = std::env::var("PS1").ok();
         let ps2 = std::env::var("PS2").ok();
         Self {
-            left: left_text(status, &cwd, ps1.as_deref(), ps2.as_deref(), continuation),
+            left: left_text(
+                status,
+                &cwd,
+                ps1.as_deref(),
+                ps2.as_deref(),
+                continuation,
+                registry,
+                theme,
+            ),
         }
     }
 }
@@ -119,39 +123,64 @@ impl Prompt for BrishPrompt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brish_plugin::{Plugin, Registry, Theme};
 
-    #[test]
-    fn arrow_color_follows_status() {
-        fn plain(s: &str) -> String {
-            s.replace(GREEN, "")
-                .replace(RED, "")
-                .replace(CYAN, "")
-                .replace(RESET, "")
+    struct Dummy(&'static str);
+    impl Theme for Dummy {
+        fn name(&self) -> &str {
+            self.0
         }
-        let ok = left_text(0, "/home/u/brish", None, None, false);
-        let bad = left_text(1, "/home/u/brish", None, None, false);
-        assert_eq!(plain(&ok), "➜ brish ");
-        assert_eq!(plain(&bad), "➜ brish ");
-        if color_enabled() {
-            assert!(ok.starts_with(GREEN), "green arrow for status 0: {ok:?}");
-            assert!(bad.starts_with(RED), "red arrow for status != 0: {bad:?}");
-            assert!(ok.contains(CYAN), "cwd is cyan: {ok:?}");
+        fn render(&self, _s: i32, _c: &Path, _seg: &[&dyn PromptSegment]) -> String {
+            format!("{} ", self.0)
         }
     }
 
-    #[test]
-    fn basename_is_last_path_component() {
-        let t = left_text(0, "/home/u/dev", None, None, false);
-        assert!(t.contains("dev"), "{t:?}");
-        assert!(!t.contains("/home"), "{t:?}");
-        let root = left_text(0, "/", None, None, false);
-        assert!(root.contains('/'), "{root:?}");
+    fn registry_with(name: &'static str) -> Registry {
+        struct P(&'static str);
+        impl Plugin for P {
+            fn name(&self) -> &str {
+                "dummy"
+            }
+            fn install(&self, reg: &mut Registry) {
+                reg.themes.push(Box::new(Dummy(self.0)));
+            }
+        }
+        let mut reg = Registry::default();
+        reg.install(&P(name));
+        reg
     }
 
     #[test]
-    fn ps1_and_ps2_override_defaults() {
-        assert_eq!(left_text(0, "/x", Some("$ "), None, false), "$ ");
-        assert_eq!(left_text(0, "/x", None, None, true), "> ");
-        assert_eq!(left_text(0, "/x", Some("$ "), Some(".. "), true), ".. ");
+    fn active_theme_renders_from_registry() {
+        let reg = registry_with("t1");
+        let cwd = Path::new("/x");
+        assert_eq!(theme_text(0, cwd, &reg, "t1"), "t1 ");
+        assert_eq!(theme_text(1, cwd, &reg, "t1"), "t1 ");
+    }
+
+    #[test]
+    fn unknown_theme_falls_back_to_core_prompt() {
+        let reg = registry_with("t1");
+        assert_eq!(theme_text(0, Path::new("/x"), &reg, "nope"), "$ ");
+        assert_eq!(
+            theme_text(0, Path::new("/x"), &Registry::default(), "t1"),
+            "$ "
+        );
+    }
+
+    #[test]
+    fn ps1_and_ps2_beat_theme_and_continuation_uses_ps2() {
+        let reg = registry_with("t1");
+        let cwd = Path::new("/x");
+        // theme when nothing overrides
+        assert_eq!(left_text(0, cwd, None, None, false, &reg, "t1"), "t1 ");
+        // PS1 literal wins
+        assert_eq!(left_text(0, cwd, Some("$ "), None, false, &reg, "t1"), "$ ");
+        // continuation: PS2 or "> ", theme/PS1 irrelevant
+        assert_eq!(left_text(0, cwd, Some("$ "), None, true, &reg, "t1"), "> ");
+        assert_eq!(
+            left_text(0, cwd, Some("$ "), Some(".. "), true, &reg, "t1"),
+            ".. "
+        );
     }
 }
