@@ -2,6 +2,7 @@ use std::io::{BufRead, IsTerminal, Read, Write};
 
 use brish_builtin::exec::{Engine, Outcome};
 mod completion;
+mod config;
 mod prompt;
 
 use clap::Parser;
@@ -38,6 +39,10 @@ struct Cli {
     #[arg(long)]
     rcfile: Option<std::path::PathBuf>,
 
+    /// Prompt theme (overrides $BRISH_THEME and config.toml)
+    #[arg(long)]
+    theme: Option<String>,
+
     /// Script to run, followed by its arguments
     #[arg(trailing_var_arg = true)]
     script_args: Vec<String>,
@@ -55,6 +60,33 @@ fn main() {
     brish_platform::reset_sigpipe();
     let cli = Cli::parse();
     let mut engine = Engine::new();
+
+    // Startup plugins: catalog filtered through config.toml (plan P3).
+    let config = config::load();
+    let mut registry = brish_plugin::Registry::default();
+    for entry in brish_plugin::builtin::catalog() {
+        let plugin = entry.plugin;
+        let name = plugin.name().to_string();
+        if config.plugin_enabled(&name, entry.default_enabled) {
+            registry.install(&*plugin);
+        } else {
+            registry.record(&name, false);
+        }
+    }
+    // Theme: --theme > $BRISH_THEME > config > default, validated
+    // against the registry (unknown → warn + default).
+    if let Some(t) = cli.theme.clone() {
+        engine.theme = t;
+    } else if let Some(t) = std::env::var("BRISH_THEME").ok().filter(|v| !v.is_empty()) {
+        engine.theme = t;
+    } else if let Some(t) = config.theme.clone() {
+        engine.theme = t;
+    }
+    if !registry.themes.is_empty() && !registry.themes.iter().any(|t| t.name() == engine.theme) {
+        eprintln!("brish: unknown theme: {}", engine.theme);
+        engine.theme = brish_plugin::DEFAULT_THEME.to_string();
+    }
+    engine.set_hooks(Arc::new(registry));
 
     let code = if let Some(cmd) = &cli.command {
         // bash -c: first trailing arg becomes $0, the rest positionals.
@@ -122,21 +154,24 @@ fn fatal(engine: &mut Engine, e: brish_core::error::Error) -> Run {
     }
 }
 
-/// Line-based REPL (reedline + history arrive with plan phase 5).
+/// Startup files: default `~/.config/brish/.brishrc`, `--rcfile`
+/// overrides, `--norc` skips. Missing default is fine; a missing
+/// explicit `--rcfile` is an error (kept from before).
 fn repl(engine: &mut Engine, cli: &Cli) -> i32 {
-    if !cli.norc
-        && let Some(rc) = cli.rcfile.clone()
-    {
-        let src = match std::fs::read_to_string(&rc) {
-            Ok(s) => s,
+    if !cli.norc {
+        let rc = cli.rcfile.clone().unwrap_or_else(config::rc_path);
+        match std::fs::read_to_string(&rc) {
+            Ok(src) => {
+                let run = run_src(engine, &src);
+                if run.exited {
+                    return run.code;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && cli.rcfile.is_none() => {}
             Err(e) => {
                 eprintln!("brish: {}: {e}", rc.display());
                 return 1;
             }
-        };
-        let run = run_src(engine, &src);
-        if run.exited {
-            return run.code;
         }
     }
 
@@ -150,6 +185,7 @@ fn repl(engine: &mut Engine, cli: &Cli) -> i32 {
 /// Interactive reedline REPL (plan phase 5): line editing, history,
 /// PS1/PS2 continuation, Ctrl-C clears the pending line, Ctrl-D exits.
 fn edit_repl(engine: &mut Engine) -> i32 {
+    let _ = std::fs::create_dir_all(config::config_dir());
     let var_names: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let mut keybindings = default_emacs_keybindings();
     keybindings.add_binding(
@@ -166,9 +202,7 @@ fn edit_repl(engine: &mut Engine) -> i32 {
             ColumnarMenu::default().with_name("completion_menu"),
         )))
         .with_edit_mode(Box::new(Emacs::new(keybindings)));
-    if let Some(home) = dirs::home_dir()
-        && let Ok(hist) = FileBackedHistory::with_file(1000, home.join(".brish_history"))
-    {
+    if let Ok(hist) = FileBackedHistory::with_file(1000, config::history_path()) {
         rl = rl.with_history(Box::new(hist));
     }
     let mut buf = String::new();

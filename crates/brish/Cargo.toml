@@ -16,7 +16,10 @@ workspace = true
 brish-core = { path = "../brish-core" }
 brish-builtin = { path = "../brish-builtin" }
 brish-platform = { path = "../brish-platform" }
+brish-plugin = { path = "../brish-plugin" }
 clap.workspace = true
+serde.workspace = true
+toml.workspace = true
 reedline.workspace = true
 dirs.workspace = true
 

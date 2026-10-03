@@ -30,3 +30,9 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
   plain), `git-prompt` segment (`.git` ancestor pre-check + 1s cache,
   porcelain branch/ahead/behind/dirty parsing), `announce-cd` example
   hook (off by default).
+- Config: `~/.config/brish/config.toml` (`[theme] name`,
+  `[plugins] enabled/disabled`) with unknown-name warnings, bad-TOML
+  fallback; default rc `~/.config/brish/.brishrc` (loaded when present,
+  `--rcfile`/`--norc` unchanged); history moved to
+  `~/.config/brish/.brish_history`; `--theme` flag + `BRISH_THEME` +
+  config priority with validation against the registry.

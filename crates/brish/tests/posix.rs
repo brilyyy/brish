@@ -98,9 +98,14 @@ const CASES: &[(&str, &str, i32)] = &[
 ];
 
 fn run(prog: &str, args: &[&str], cwd: &Path) -> (String, i32) {
+    // Isolated $HOME: the real ~/.config/brish must not affect runs.
+    static HOME: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    let home =
+        HOME.get_or_init(|| tempfile::tempdir().unwrap_or_else(|e| panic!("test home: {e}")));
     let out = Command::new(prog)
         .args(args)
         .current_dir(cwd)
+        .env("HOME", home.path())
         .output()
         .unwrap_or_else(|e| panic!("spawn {prog}: {e}"));
     (

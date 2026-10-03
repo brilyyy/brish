@@ -6,8 +6,18 @@
 use std::io::Write;
 use std::process::{Command, Output, Stdio};
 
+/// Isolated `$HOME` so the real `~/.config/brish` (config/rc/history)
+/// can never leak into test output.
+fn test_home() -> &'static std::path::Path {
+    static HOME: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| tempfile::tempdir().expect("test home"))
+        .path()
+}
+
 fn brish() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_brish"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_brish"));
+    cmd.env("HOME", test_home());
+    cmd
 }
 
 fn run(args: &[&str]) -> Output {
