@@ -3,6 +3,7 @@
 //! `plugin.toml`; the manifest declares which seams it contributes
 //! (declarative data and/or helper subprocess commands).
 
+use crate::helper;
 use brish_plugin::{
     Completion, CompletionCtx, CompletionProvider, KeymapProvider, Plugin, PromptSegment, Registry,
     Theme,
@@ -219,6 +220,61 @@ impl Plugin for StorePlugin {
                 plugin: self.manifest.name.clone(),
                 decl: c.clone(),
             }));
+        }
+        if let Some(seg) = &self.manifest.segment {
+            reg.prompt_segments
+                .push(Box::new(helper::HelperSegment::new(
+                    &self.manifest.name,
+                    self.dir.clone(),
+                    seg,
+                )));
+        }
+        if let Some(hooks) = &self.manifest.hooks {
+            for argv in &hooks.pre_exec {
+                if !argv.is_empty() {
+                    reg.pre_exec.push(Box::new(helper::HelperHook::new(
+                        &self.manifest.name,
+                        self.dir.clone(),
+                        argv.clone(),
+                        helper::HookEvent::Pre,
+                    )));
+                }
+            }
+            for argv in &hooks.post_exec {
+                if !argv.is_empty() {
+                    reg.post_exec.push(Box::new(helper::HelperHook::new(
+                        &self.manifest.name,
+                        self.dir.clone(),
+                        argv.clone(),
+                        helper::HookEvent::Post,
+                    )));
+                }
+            }
+            for argv in &hooks.chdir {
+                if !argv.is_empty() {
+                    reg.on_chdir.push(Box::new(helper::HelperHook::new(
+                        &self.manifest.name,
+                        self.dir.clone(),
+                        argv.clone(),
+                        helper::HookEvent::Chdir,
+                    )));
+                }
+            }
+        }
+        if let Some(hlp) = &self.manifest.helper {
+            let cmd = vec![self.dir.join(&hlp.path).display().to_string()];
+            reg.completion_providers
+                .push(Box::new(helper::HelperCompletion::new(
+                    &self.manifest.name,
+                    cmd.clone(),
+                    self.dir.clone(),
+                    hlp.timeout_ms,
+                )));
+            let pairs = helper::keymap_pairs(&cmd, &self.dir, hlp.timeout_ms);
+            if !pairs.is_empty() {
+                reg.keymaps
+                    .push(Box::new(ManifestKeymap(pairs.into_iter().collect())));
+            }
         }
     }
 }
@@ -684,6 +740,37 @@ timeout_ms = 400
             line_before: "",
         };
         assert!(p.complete(&ctx).is_empty());
+    }
+
+    #[test]
+    fn store_plugin_installs_helper_seams() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("b").join("bin")).unwrap();
+        std::fs::write(
+            tmp.path().join("b").join(MANIFEST),
+            "name = \"b\"\n             [segment]\nname = \"up\"\ncmd = [\"echo\", \"up\"]\n             [hooks]\npre_exec = [[\"true\"]]\n             [helper]\npath = \"bin/h\"\n",
+        )
+        .unwrap();
+        let (plugins, _) = scan(tmp.path());
+        let plugin = plugins.into_iter().next().unwrap().into_plugin();
+        let mut reg = Registry::default();
+        reg.install(&plugin);
+        assert_eq!(reg.prompt_segments.len(), 1);
+        assert_eq!(reg.pre_exec.len(), 1);
+        assert_eq!(reg.completion_providers.len(), 1, "helper completion");
+        // helper `keymap` missing → empty pairs, no keymap provider
+        assert_eq!(reg.keymaps.len(), 0);
+    }
+
+    #[test]
+    fn store_plugin_skips_empty_hook_commands() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_plugin(tmp.path(), "e", "name = \"e\"\n[hooks]\npre_exec = [[]]\n");
+        let (plugins, _) = scan(tmp.path());
+        let plugin = plugins.into_iter().next().unwrap().into_plugin();
+        let mut reg = Registry::default();
+        reg.install(&plugin);
+        assert_eq!(reg.pre_exec.len(), 0, "empty argv never installed");
     }
 
     #[test]

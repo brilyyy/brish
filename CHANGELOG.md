@@ -65,3 +65,10 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
   `CompletionCtx` gains `line_before`. Store plugins are config-gated
   like the catalog (installed = enabled by default); duplicate theme
   names warn (first registered wins).
+- Helper subprocess bridge: `[segment]` command (first-line output,
+  500ms deadline, (cwd,status) TTL cache), `[hooks]` pre/post/chdir
+  external commands (1s deadline; pre honors `abort N` only on exit 0 —
+  a broken guard can never wedge the shell), `[helper]` completion +
+  keymap via line protocol (`value[\tdescription[\tdrop]]`), 250ms
+  default deadline (`timeout_ms` override), kill-on-timeout,
+  warn-once per adapter.
