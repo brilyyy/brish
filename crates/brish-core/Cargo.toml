@@ -1,0 +1,19 @@
+[package]
+name = "brish-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tempfile.workspace = true
+glob.workspace = true
+brish-words = { path = "../brish-words" }
+brish-platform = { path = "../brish-platform" }
+
+[dev-dependencies]
+proptest.workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "brish-words"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/brish",
+    "crates/brish-core",
+    "crates/brish-builtin",
+    "crates/brish-platform",
+    "crates/brish-words",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["briSH contributors"]
+license = "MIT"
+
+# Zero-panic policy (plan §5.2): deny unwrap/expect outside tests.
+# unsafe is forbidden per-crate via #![forbid(unsafe_code)] except brish-platform.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
+[workspace.dependencies]
+thiserror = "2"
+tempfile = "3"
+glob = "0.3"
+dirs = "6"
+clap = { version = "4", features = ["derive"] }
+reedline = "0.52"
+nix = { version = "0.31", features = ["fs", "process", "signal", "term", "user", "poll"] }
+proptest = "1"
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+debug = false

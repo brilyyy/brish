@@ -1,0 +1,24 @@
+[package]
+name = "brish"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "brish"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+brish-core = { path = "../brish-core" }
+brish-builtin = { path = "../brish-builtin" }
+brish-platform = { path = "../brish-platform" }
+clap.workspace = true
+reedline.workspace = true
+dirs.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

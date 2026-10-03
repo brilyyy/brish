@@ -1,0 +1,15 @@
+[package]
+name = "brish-builtin"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+brish-core = { path = "../brish-core" }
+brish-words = { path = "../brish-words" }
+brish-platform = { path = "../brish-platform" }
+tempfile.workspace = true
