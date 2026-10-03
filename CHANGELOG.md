@@ -130,3 +130,35 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
 - Tests: lexer/parser units (tokens, spans, incomplete inputs) plus
   batch end-to-end cases; not added to the `dash`-checked POSIX
   corpus (all three are bashisms).
+
+## 0.1.0 — brace expansion, globstar, ~user, echo -e, pipefail (unreleased)
+
+- Brace expansion: `{a,b}` lists (nested, empty variants; quoted and
+  escaped braces stay literal), `{1..3}` / `{01..03}` (zero-padded) /
+  `{a..c}` ranges with optional step, 4096-item runaway cap. Applies in
+  command words, `for` lists, here-strings, redirection targets, and
+  assignment values (`v={a,b}` → `a b`). Ceiling: braces spanning
+  quoted parts (`{a,"b,c"}`) stay literal — expansion only scans raw
+  and escaped characters.
+- `set -o globstar`: `**` matches zero or more directories, recursively
+  when final; default off, where `**` degrades to a single `*` like
+  bash. Globbing a literal segment that passes through a file
+  (`*/*.txt` with top-level files) now yields no match instead of a
+  `NotADirectory` error (pre-existing bug).
+- Tilde: `~user` resolves through the platform user database
+  (`nix::unistd::User::from_name`); assignment values expand a leading
+  `~`/`~user` (`v=~`, `v=~/bin`) — the value-only form was previously
+  left literal.
+- `echo -e` / `-E` / `-n` (also `-ne`): bash escapes (`\n \t \r \a \b
+  \f \v \e`, quoted backslashes, octal/hex/unicode, `\cX` line
+  truncation); unknown escapes keep the backslash; default off like
+  bash. Shares the ANSI-C decoder with `$'…'`.
+- `set -o pipefail` / `set +o pipefail`: pipeline status is the
+  rightmost non-zero exit when on (default off, last stage wins).
+- Fixed: assignments preceding a command (`FOO=abc cmd`) now reach the
+  child environment as POSIX requires (even for unexported shell vars),
+  with value and export flag restored after the command.
+- Tests: unit (brace variants, ranges, assignment tilde/braces,
+  globstar tree) + batch (braces, globstar on/off, pipefail, echo
+  escapes, prefix env, `~user`); the dash-checked POSIX corpus drops
+  `echo a{b,c}d` (now a bashism).

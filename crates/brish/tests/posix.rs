@@ -81,7 +81,6 @@ const CASES: &[(&str, &str, i32)] = &[
     ("exit 3", "", 3),
     ("false; exit", "", 1),
     ("x=1; export x; sh -c 'echo $x'", "1\n", 0),
-    ("echo a{b,c}d", "a{b,c}d\n", 0),
     (": ; echo ok", "ok\n", 0),
     (
         "mkdir g_$$; cd g_$$; touch a b c; echo *; cd ..; rm -rf g_$$",

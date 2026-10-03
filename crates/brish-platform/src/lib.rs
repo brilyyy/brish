@@ -18,6 +18,7 @@ pub mod proc;
 pub mod traits;
 #[cfg(unix)]
 pub mod unix;
+pub mod user;
 
 pub use error::PlatformError;
 #[cfg(unix)]

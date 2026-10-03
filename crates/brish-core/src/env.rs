@@ -44,6 +44,8 @@ pub struct Opts {
     pub xtrace: bool,
     pub monitor: bool,
     pub ignore_eof: bool,
+    pub globstar: bool,
+    pub pipefail: bool,
 }
 
 impl Opts {
@@ -60,6 +62,8 @@ impl Opts {
             "xtrace" => &mut self.xtrace,
             "monitor" => &mut self.monitor,
             "ignoreeof" => &mut self.ignore_eof,
+            "globstar" => &mut self.globstar,
+            "pipefail" => &mut self.pipefail,
             _ => return false,
         };
         *slot = on;
@@ -270,6 +274,26 @@ impl Env {
     }
 
     /// Exported variables as child-process environment pairs.
+    /// Snapshot `(value, exported)` for a temp assignment window.
+    pub fn snapshot(&self, name: &str) -> Option<(String, bool)> {
+        self.vars.get(name).map(|v| (v.value.clone(), v.exported))
+    }
+
+    /// Restore a `snapshot`; `None` removes the variable.
+    pub fn restore(&mut self, name: &str, prev: Option<(String, bool)>) {
+        match prev {
+            Some((val, exp)) => {
+                if let Some(v) = self.vars.get_mut(name) {
+                    v.value = val;
+                    v.exported = exp;
+                }
+            }
+            None => {
+                self.vars.remove(name);
+            }
+        }
+    }
+
     pub fn child_env(&self) -> Vec<(String, String)> {
         let mut pairs: Vec<(String, String)> = self
             .vars

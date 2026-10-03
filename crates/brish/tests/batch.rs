@@ -338,3 +338,118 @@ fn here_string_feeds_stdin() {
     let o = run(&["-c", "cat 3<<< x 2>&1 3>&-"]);
     assert_eq!(out(&o), "");
 }
+
+#[test]
+fn brace_expansion() {
+    let o = run(&["-c", "echo {a,b} x{1..3}y"]);
+    assert_eq!(out(&o), "a b x1y x2y x3y\n");
+    let o = run(&["-c", "echo {01..03} {a..c} {5..1}"]);
+    assert_eq!(out(&o), "01 02 03 a b c 5 4 3 2 1\n");
+    let o = run(&["-c", "echo {a,{b,c}}"]);
+    assert_eq!(out(&o), "a b c\n");
+    // literal: no separator, quoted, escaped braces
+    let o = run(&["-c", "echo {foo} \"{a,b}\" a\\{b,c\\}"]);
+    assert_eq!(out(&o), "{foo} {a,b} a{b,c}\n");
+    // empty variant is one empty field
+    let o = run(&["-c", "printf '<%s>' {,x}; echo"]);
+    assert_eq!(out(&o), "<><x>\n");
+    // for-loop word list and assignment/here-string values
+    let o = run(&["-c", "for i in {1..3}; do printf %s \"$i\"; done; echo"]);
+    assert_eq!(out(&o), "123\n");
+    let o = run(&["-c", "v={a,b}; echo \"$v\"; cat <<< {1..2}"]);
+    assert_eq!(out(&o), "a b\n1 2\n");
+}
+
+#[test]
+fn globstar_option() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("d/e")).expect("mkdir");
+    for f in ["a.txt", "d/a.txt", "d/e/a.txt", "d/e/b.log"] {
+        std::fs::write(root.join(f), "").expect("write");
+    }
+    let on = format!(
+        "cd {}; set -o globstar; printf '%s\\n' **/*.txt",
+        root.display()
+    );
+    let o = run(&["-c", &on]);
+    assert_eq!(out(&o), "a.txt\nd/a.txt\nd/e/a.txt\n");
+    let on = format!("cd {}; set -o globstar; printf '%s\\n' **", root.display());
+    let all = out(&run(&["-c", &on]));
+    let mut lines: Vec<&str> = all.split('\n').collect();
+    lines.pop(); // trailing empty
+    lines.sort();
+    assert_eq!(
+        lines,
+        ["a.txt", "d", "d/a.txt", "d/e", "d/e/a.txt", "d/e/b.log"]
+    );
+    // globstar off: `**` degrades to a single `*`
+    let off = format!("cd {}; printf '%s\\n' **/*.txt", root.display());
+    assert_eq!(out(&run(&["-c", &off])), "d/a.txt\n");
+}
+
+#[test]
+fn pipefail_option() {
+    let o = run(&["-c", "false | true; echo $?"]);
+    assert_eq!(out(&o), "0\n");
+    let o = run(&["-c", "set -o pipefail; false | true; echo $?"]);
+    assert_eq!(out(&o), "1\n");
+    let o = run(&["-c", "set -o pipefail; true | false | true; echo $?"]);
+    assert_eq!(out(&o), "1\n");
+    let o = run(&["-c", "set -o pipefail; true | true; echo $?"]);
+    assert_eq!(out(&o), "0\n");
+    let o = run(&[
+        "-c",
+        "set -o pipefail; set +o pipefail; false | true; echo $?",
+    ]);
+    assert_eq!(out(&o), "0\n");
+}
+
+#[test]
+fn echo_escape_and_newline_flags() {
+    let o = run(&["-c", "echo -e 'a\\tb\\nc'"]);
+    assert_eq!(out(&o), "a\tb\nc\n");
+    // backslash stays literal without -e
+    let o = run(&["-c", "echo 'a\\tb'"]);
+    assert_eq!(out(&o), "a\\tb\n");
+    // -E forces escapes off even after -e
+    let o = run(&["-c", "echo -e -E 'a\\tb'"]);
+    assert_eq!(out(&o), "a\\tb\n");
+    // -n suppresses the newline (bare "abc\n" proves it: no -n gives
+    // "abc\n\n")
+    let o = run(&["-c", "echo -n abc; echo"]);
+    assert_eq!(out(&o), "abc\n");
+    // \c truncates the rest of the line (including the newline)
+    let o = run(&["-c", "echo -e 'x\\cy'"]);
+    assert_eq!(out(&o), "x");
+    // unknown escapes keep the backslash
+    let o = run(&["-c", "echo -e 'a\\qb'"]);
+    assert_eq!(out(&o), "a\\qb\n");
+}
+
+#[test]
+fn prefix_assignments_reach_child() {
+    // POSIX: assignments before a command always hit the child env,
+    // even when the shell var itself is not exported.
+    let o = run(&["-c", "FOO=abc printenv FOO"]);
+    assert_eq!(out(&o), "abc\n");
+    // restored after the command
+    let o = run(&["-c", "FOO=abc printenv FOO >/dev/null; printenv FOO"]);
+    assert_eq!(out(&o), "");
+    // previously-exported var keeps its export flag and old value
+    let o = run(&["-c", "FOO=old; export FOO; FOO=tmp true; printenv FOO"]);
+    assert_eq!(out(&o), "old\n");
+    // plain assignment stays unexported
+    let o = run(&["-c", "BAR=1; printenv BAR"]);
+    assert_eq!(out(&o), "");
+}
+
+#[test]
+fn tilde_and_assign_expansion() {
+    // value-only assignment form: tilde at value start (bash)
+    let o = run(&["-c", "v=~; printf '%s' \"$v\""]);
+    assert_eq!(out(&o), test_home().display().to_string());
+    // `~user` resolves via the platform user database
+    let o = run(&["-c", "v=~root; printf '%s' \"$v\""]);
+    assert!(out(&o).starts_with('/') && !out(&o).contains('~'));
+}

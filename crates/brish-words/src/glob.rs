@@ -74,13 +74,18 @@ fn class_matches(name: &str, c: char) -> bool {
     }
 }
 
-pub fn expand(pattern: &str, case_sensitive: bool) -> Result<Option<Vec<PathBuf>>, GlobError> {
-    expand_with_budget(pattern, case_sensitive, BUDGET)
+pub fn expand(
+    pattern: &str,
+    case_sensitive: bool,
+    globstar: bool,
+) -> Result<Option<Vec<PathBuf>>, GlobError> {
+    expand_with_budget(pattern, case_sensitive, globstar, BUDGET)
 }
 
 fn expand_with_budget(
     pattern: &str,
     case_sensitive: bool,
+    globstar: bool,
     budget: usize,
 ) -> Result<Option<Vec<PathBuf>>, GlobError> {
     if !has_metachar(pattern) {
@@ -99,12 +104,11 @@ fn expand_with_budget(
     }
     let comps: Vec<String> = comps
         .into_iter()
-        .map(|s| {
-            if s == "**" {
-                s
-            } else {
-                collapse_double_star(&s)
-            }
+        .map(|s| match s.as_str() {
+            // bash: without globstar, `**` is just `*`
+            "**" if globstar => s,
+            "**" => "*".to_string(),
+            _ => collapse_double_star(&s),
         })
         .collect();
     if comps.len() > MAX_DEPTH {
@@ -201,7 +205,9 @@ fn walk(
 
     let meta = fs::metadata(base)?;
     if !meta.is_dir() {
-        return Err(GlobError::NotADirectory);
+        // e.g. `*/x` where `*` matched a file: no matches from here
+        // (bash returns nothing, not an error).
+        return Ok(Vec::new());
     }
 
     if !has_metachar(comp) {
@@ -228,6 +234,55 @@ fn walk(
             budget,
             trailing_slash,
         );
+    }
+
+    if comp == "**" {
+        // globstar: `**` matches zero or more directories (and, when it
+        // is the final component, every entry below base, recursively).
+        if rest.is_empty() {
+            let mut out = Vec::new();
+            for entry in fs::read_dir(base)? {
+                let entry = entry?;
+                budget.charge()?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with('.') {
+                    continue;
+                }
+                let p = base.join(&name);
+                out.push(p.clone());
+                if entry.file_type()?.is_dir() {
+                    out.append(&mut walk(
+                        comps,
+                        &p,
+                        case_sensitive,
+                        depth + 1,
+                        budget,
+                        trailing_slash,
+                    )?);
+                }
+            }
+            return Ok(out);
+        }
+        let mut out = walk(rest, base, case_sensitive, depth, budget, trailing_slash)?;
+        for entry in fs::read_dir(base)? {
+            let entry = entry?;
+            budget.charge()?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            if entry.file_type()?.is_dir() {
+                out.append(&mut walk(
+                    comps,
+                    &base.join(&name),
+                    case_sensitive,
+                    depth + 1,
+                    budget,
+                    trailing_slash,
+                )?);
+            }
+        }
+        return Ok(out);
     }
 
     let mut current: Vec<PathBuf> = Vec::new();
@@ -448,7 +503,11 @@ mod tests {
     }
 
     fn names(pattern: &str, case: bool) -> Vec<String> {
-        let out = expand(pattern, case).unwrap().unwrap_or_default();
+        names_gs(pattern, case, false)
+    }
+
+    fn names_gs(pattern: &str, case: bool, globstar: bool) -> Vec<String> {
+        let out = expand(pattern, case, globstar).unwrap().unwrap_or_default();
         out.iter()
             .map(|p| p.to_string_lossy().into_owned())
             .collect()
@@ -458,9 +517,9 @@ mod tests {
     fn literal_no_metachar() {
         let t = Tmp::new("lit");
         let f = t.file("a.txt", "x");
-        let got = expand(&f.to_string_lossy(), true).unwrap();
+        let got = expand(&f.to_string_lossy(), true, false).unwrap();
         assert_eq!(got, Some(vec![f.clone()]));
-        assert_eq!(expand("/definitely/not/here", true).unwrap(), None);
+        assert_eq!(expand("/definitely/not/here", true, false).unwrap(), None);
     }
 
     #[test]
@@ -536,14 +595,46 @@ mod tests {
     }
 
     #[test]
-    fn double_star_collapses() {
+    fn double_star_without_globstar_is_star() {
         let t = Tmp::new("ds");
         t.dir("d");
         t.file("d/x", "");
+        // bash: `**` == `*` when globstar is off
         let got = names(&t.path("**/x").to_string_lossy(), true);
-        assert_eq!(got.len(), 0);
+        assert_eq!(got.len(), 1);
         let got = names(&t.path("*/x").to_string_lossy(), true);
         assert_eq!(got.len(), 1);
+    }
+
+    #[test]
+    fn globstar_recursive() {
+        let t = Tmp::new("gs");
+        t.file("a.txt", "");
+        t.file("d/a.txt", "");
+        t.file("d/e/a.txt", "");
+        let pat = t.path("**/*.txt").to_string_lossy().into_owned();
+        let mut got = names_gs(&pat, true, true);
+        got.sort();
+        assert_eq!(got.len(), 3, "{got:?}");
+        // globstar off: ** is one level
+        let got = names(&pat, true);
+        assert_eq!(got.len(), 1, "{got:?}");
+        // final `**`: every entry recursively (hidden excluded, root not
+        // included as a result itself)
+        let all = t.path("**").to_string_lossy().into_owned();
+        let mut got = names_gs(&all, true, true);
+        got.sort();
+        let want: Vec<String> = [
+            t.path("a.txt"),
+            t.path("d"),
+            t.path("d/a.txt"),
+            t.path("d/e"),
+            t.path("d/e/a.txt"),
+        ]
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+        assert_eq!(got, want, "{got:?}");
     }
 
     #[test]
@@ -596,7 +687,10 @@ mod tests {
 
     #[test]
     fn no_glob_no_match_returns_none() {
-        assert_eq!(expand("definitely-not-here-xyz", true).unwrap(), None);
+        assert_eq!(
+            expand("definitely-not-here-xyz", true, false).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -606,9 +700,9 @@ mod tests {
         t.file("d/b", "");
         let pat = t.path("d/*").to_string_lossy().into_owned();
         // Limit below the entry count: expansion must error, not truncate.
-        assert!(expand_with_budget(&pat, true, 1).is_err());
+        assert!(expand_with_budget(&pat, true, false, 1).is_err());
         // The default budget still succeeds.
-        assert!(expand(&pat, true).is_ok());
+        assert!(expand(&pat, true, false).is_ok());
     }
 
     #[test]
@@ -616,7 +710,7 @@ mod tests {
         let t = Tmp::new("depth");
         t.dir("d");
         let deep = format!("d/{}", vec!["*"; 200].join("/"));
-        assert!(expand(&t.path(&deep).to_string_lossy(), true).is_err());
+        assert!(expand(&t.path(&deep).to_string_lossy(), true, false).is_err());
     }
 
     #[test]

@@ -356,6 +356,9 @@ fn run_subst(src: &str, env: &Env, funcs: &HashMap<String, Cmd>) -> Result<(Stri
     Ok((out, code))
 }
 
+/// Saved state per temp assignment: name -> (value, exported).
+type TempSaved = Vec<(String, Option<(String, bool)>)>;
+
 impl Engine {
     pub fn new() -> Self {
         Self::with_env(Env::from_std())
@@ -906,16 +909,16 @@ impl Engine {
         // Drop our copies now that every stage holds its own.
         drop(pipes);
 
-        let mut last = 0;
+        let mut sts: Vec<i32> = Vec::with_capacity(pids.len());
         for (k, pid) in pids.iter().enumerate() {
             if !self.job_control {
-                last = wait_pid(*pid).map_err(platform_err)?;
+                sts.push(wait_pid(*pid).map_err(platform_err)?);
                 continue;
             }
             // Interactive: Ctrl-Z stops the stage group; hand the
             // remaining stages to the job table and return to prompt.
             match wait_untraced(*pid) {
-                Ok(ChildState::Exited(c)) => last = c,
+                Ok(ChildState::Exited(c)) => sts.push(c),
                 Ok(ChildState::Stopped) => {
                     let rest = pids[k..].to_vec();
                     self.bg.push(Job {
@@ -933,7 +936,12 @@ impl Engine {
                 Err(e) => return Err(platform_err(e)),
             }
         }
-        self.env.status = last;
+        // pipefail: rightmost non-zero stage status, else zero.
+        self.env.status = if self.env.opts.pipefail {
+            sts.iter().rev().find(|&&s| s != 0).copied().unwrap_or(0)
+        } else {
+            sts.last().copied().unwrap_or(0)
+        };
         Ok(())
     }
 
@@ -1172,34 +1180,27 @@ impl Engine {
         out
     }
 
-    fn push_temp(
-        &mut self,
-        assigns: &[(String, String)],
-    ) -> Result<Vec<(String, Option<String>)>, ()> {
+    fn push_temp(&mut self, assigns: &[(String, String)]) -> Result<TempSaved, ()> {
         let mut saved = Vec::with_capacity(assigns.len());
         for (n, v) in assigns {
-            let prev = self.env.get(n).map(str::to_owned);
+            let prev = self.env.snapshot(n);
             if self.env.set(n, v).is_err() {
                 eprintln!("brish: {n}: readonly variable");
                 self.pop_temp(saved);
                 self.env.status = 1;
                 return Err(());
             }
+            // Pre-command assignments always reach the child's
+            // environment (POSIX), even for unexported shell vars.
+            let _ = self.env.export(n);
             saved.push((n.clone(), prev));
         }
         Ok(saved)
     }
 
-    fn pop_temp(&mut self, saved: Vec<(String, Option<String>)>) {
+    fn pop_temp(&mut self, saved: TempSaved) {
         for (n, prev) in saved.into_iter().rev() {
-            match prev {
-                Some(v) => {
-                    let _ = self.env.set(&n, v);
-                }
-                None => {
-                    let _ = self.env.unset(&n);
-                }
-            }
+            self.env.restore(&n, prev);
         }
     }
 

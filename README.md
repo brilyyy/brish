@@ -76,12 +76,14 @@ Examples live in `examples/plugins/`, authoring guide in
 ## What works
 
 - POSIX core: expansions (`$var`, `${…}` defaults, `$((…))`, `$(…)`,
-  backticks), quoting, field splitting, globbing, redirections
+  backticks, brace expansion `{a,b}` / `{1..3}`), quoting, field
+  splitting, globbing (`set -o globstar` for `**`), redirections
   (`>`, `>>`, `<`, `2>`, `>&N`, `>|`, heredocs, here-strings), pipelines,
   `&&`/`||`, `;`, `&`, `if/while/until/for/case`, functions, subshells,
   groups, `$?`, `$!`, `$@`/`$*`, positional parameters. Bash-style
   extras: `((…))` arithmetic command (exit status 0 iff non-zero),
-  `$'…'` ANSI-C quoting.
+  `$'…'` ANSI-C quoting, `~user` tilde, `echo -e`/`-E`/`-n` escapes,
+  `set -o pipefail`.
 - Builtins: `cd pwd echo printf test [ true false : exit return eval .
   source unset export readonly shift set type command break continue
   alias wait jobs kill fg bg` (+ PATH externals).
@@ -116,6 +118,6 @@ roadmap is [`docs/bsh-technical-plan.md`](docs/bsh-technical-plan.md)
 
 ## Deliberately not yet implemented
 
-Brace expansion, globstar, `~user`, `echo -e` escapes, runtime plugin
-toggling (config is read at startup), history builtin, right prompt,
-quote-aware completion.
+Runtime plugin toggling (config is read at startup), history builtin,
+right prompt, quote-aware completion, process substitution,
+`trap ERR`.

@@ -588,108 +588,30 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// Read `$'...'` ANSI-C quoted contents (opening `$'` consumed).
-    /// Escape decoding: `\n \t \\ \'` and friends, octal/hex/unicode
-    /// escapes; unknown escapes drop the backslash (bash behavior).
-    /// The result is literal — no expansions, no field splitting.
+    /// Read `$'...'` ANSI-C quoted contents (opening `$'` consumed):
+    /// scan to the closing quote (backslash escapes included), then
+    /// decode via the shared [`ansi_c_decode`] table.
     fn read_ansi_c(&mut self) -> Result<String, Error> {
-        let mut out = String::new();
+        let start = self.pos;
         loop {
             if self.pos >= self.src.len() {
                 return Err(Error::Incomplete);
             }
             let c = self.cur()?;
-            self.bump();
-            if c == '\'' {
-                return Ok(out);
-            }
-            if c != '\\' {
-                out.push(c);
+            if c == '\\' {
+                self.bump();
+                if self.pos >= self.src.len() {
+                    return Err(Error::Incomplete);
+                }
+                self.bump();
                 continue;
             }
-            if self.pos >= self.src.len() {
-                return Err(Error::Incomplete);
+            if c == '\'' {
+                let content = &self.src[start..self.pos];
+                self.bump(); // closing quote
+                return Ok(ansi_c_decode(content, false, false).0);
             }
-            let e = self.cur()?;
-            match e {
-                'n' => {
-                    self.bump();
-                    out.push('\n');
-                }
-                't' => {
-                    self.bump();
-                    out.push('\t');
-                }
-                'r' => {
-                    self.bump();
-                    out.push('\r');
-                }
-                'a' => {
-                    self.bump();
-                    out.push('\x07');
-                }
-                'b' => {
-                    self.bump();
-                    out.push('\x08');
-                }
-                'f' => {
-                    self.bump();
-                    out.push('\x0c');
-                }
-                'v' => {
-                    self.bump();
-                    out.push('\x0b');
-                }
-                '\\' | '\'' | '"' | '?' => {
-                    self.bump();
-                    out.push(e);
-                }
-                '0'..='7' => {
-                    let mut v: u32 = 0;
-                    for _ in 0..3 {
-                        let Some(x) = self.cur().ok().and_then(|d| d.to_digit(8)) else {
-                            break;
-                        };
-                        v = v * 8 + x;
-                        self.bump();
-                    }
-                    out.push(char::from_u32(v).unwrap_or('\u{fffd}'));
-                }
-                'x' | 'u' | 'U' => {
-                    self.bump();
-                    let max = match e {
-                        'x' => 2,
-                        'u' => 4,
-                        _ => 8,
-                    };
-                    let mut v: Option<u32> = None;
-                    for _ in 0..max {
-                        let Ok(d) = self.cur() else { break };
-                        let Some(x) = d.to_digit(16) else { break };
-                        self.bump();
-                        v = Some(v.unwrap_or(0) * 16 + x);
-                    }
-                    if let Some(x) = v.and_then(char::from_u32) {
-                        out.push(x);
-                    }
-                }
-                'c' => {
-                    self.bump();
-                    let Ok(d) = self.cur() else {
-                        return Err(Error::Incomplete);
-                    };
-                    self.bump();
-                    if d == '?' {
-                        out.push('\x7f');
-                    } else {
-                        out.push(char::from_u32((d as u32) & 0x1f).unwrap_or('\u{fffd}'));
-                    }
-                }
-                other => {
-                    self.bump();
-                    out.push(other);
-                }
-            }
+            self.bump();
         }
     }
 
@@ -770,6 +692,95 @@ impl<'a> Lexer<'a> {
             }
         }
     }
+}
+
+/// Decode ANSI-C backslash escapes (contents of `$'...'`, `echo -e`).
+///
+/// Supports `\n \t \r \a \b \f \v \e`, `\\ \' \" \?`, octal
+/// `\0nnn`, hex `\xHH`, `\uHHHH`, `\UHHHHHHHH`, and `\cX` control
+/// escapes. `keep_unknown` retains the backslash of unrecognized
+/// escapes (bash `echo -e` keeps `\q`, `$'\q'` drops it). With
+/// `c_cut`, a bare `\c` truncates the output and reports `cut` (echo's
+/// "no trailing newline" terminator); without it, `\cX` is the
+/// control escape from `$'...'` semantics.
+pub fn ansi_c_decode(s: &str, keep_unknown: bool, c_cut: bool) -> (String, bool) {
+    let mut out = String::new();
+    let mut cut = false;
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        let Some(e) = chars.next() else {
+            if keep_unknown {
+                out.push('\\');
+            }
+            break;
+        };
+        match e {
+            'n' => out.push('\n'),
+            't' => out.push('\t'),
+            'r' => out.push('\r'),
+            'a' => out.push('\x07'),
+            'b' => out.push('\x08'),
+            'f' => out.push('\x0c'),
+            'v' => out.push('\x0b'),
+            'e' => out.push('\x1b'),
+            '\\' | '\'' | '"' | '?' => out.push(e),
+            '0'..='7' => {
+                let mut v = e.to_digit(8).unwrap_or_default();
+                for _ in 0..2 {
+                    match chars.clone().next().and_then(|d| d.to_digit(8)) {
+                        Some(x) => {
+                            v = v * 8 + x;
+                            chars.next();
+                        }
+                        None => break,
+                    }
+                }
+                out.push(char::from_u32(v).unwrap_or('\u{fffd}'));
+            }
+            'x' | 'u' | 'U' => {
+                let max = match e {
+                    'x' => 2,
+                    'u' => 4,
+                    _ => 8,
+                };
+                let mut v: Option<u32> = None;
+                for _ in 0..max {
+                    match chars.clone().next().and_then(|d| d.to_digit(16)) {
+                        Some(x) => {
+                            v = Some(v.unwrap_or(0) * 16 + x);
+                            chars.next();
+                        }
+                        None => break,
+                    }
+                }
+                if let Some(x) = v.and_then(char::from_u32) {
+                    out.push(x);
+                }
+            }
+            'c' => {
+                if c_cut {
+                    cut = true;
+                    break;
+                }
+                match chars.next() {
+                    Some('?') => out.push('\x7f'),
+                    Some(d) => out.push(char::from_u32((d as u32) & 0x1f).unwrap_or('\u{fffd}')),
+                    None => out.push('\u{fffd}'),
+                }
+            }
+            other => {
+                if keep_unknown {
+                    out.push('\\');
+                }
+                out.push(other);
+            }
+        }
+    }
+    (out, cut)
 }
 
 fn flush_raw(raw: &mut String, parts: &mut Vec<Part>) {

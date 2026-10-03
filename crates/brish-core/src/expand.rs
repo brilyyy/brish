@@ -2,7 +2,9 @@
 //! substitution / arithmetic → field splitting → pathname globbing →
 //! quote removal.
 //!
-//! Brace expansion is out of scope (non-POSIX, plan §roadmap).
+//! Bash extras: brace expansion runs first (before everything above,
+//! on unquoted parts only); `~user` tilde lookup hits the platform
+//! user database.
 
 use crate::env::Env;
 use crate::error::Error;
@@ -51,7 +53,8 @@ pub fn expand_text(env: &mut Env, src: &str, cs: CmdSubst) -> Result<String, Err
         out.push_str(&src[prev_end..t.span.start]);
         prev_end = t.span.end;
         if let lexer::Tok::Word(w) = &t.tok {
-            out.push_str(&ex.value_of_word(w)?);
+            // no brace expansion in here-doc bodies (bash)
+            out.push_str(&ex.value_of_parts(&w.parts, false)?);
         } else {
             out.push_str(&src[t.span.start..t.span.end]);
         }
@@ -61,6 +64,270 @@ pub fn expand_text(env: &mut Env, src: &str, cs: CmdSubst) -> Result<String, Err
         eprintln!("brish[expand]: {src:?} -> {out:?}");
     }
     Ok(out)
+}
+
+// ---- brace expansion (bash, unquoted parts only) ----
+
+/// One rendered character of a `Raw`/`Esc` run.
+struct BraceCh {
+    c: char,
+    /// `true` for `Raw` text; `false` for `Esc` chars (escaped braces
+    /// and commas never act as separators).
+    active: bool,
+    part: usize,
+    /// Byte offset of `c` inside `parts[part]` (`usize::MAX` for Esc).
+    off: usize,
+}
+
+/// Bash brace expansion: `{a,b}`, `{m..n}`, `{m..n..step}` (integers
+/// with optional zero-padding, `{a..z}` letters), nested, applied to
+/// unquoted `Raw`/`Esc` runs only — a quoted or `$` part inside the
+/// braces suppresses expansion (`{$x,y}` stays literal — ponytail
+/// ceiling; extend by scanning across parts if anyone ever needs it).
+/// Returns every variant with all levels resolved, or a single copy
+/// of `parts` when nothing expands.
+pub fn brace_expand(parts: &[Part]) -> Vec<Vec<Part>> {
+    match brace_once(parts) {
+        None => vec![parts.to_vec()],
+        Some(vs) => vs.into_iter().flat_map(|v| brace_expand(&v)).collect(),
+    }
+}
+
+fn brace_chs(parts: &[Part], run_start: usize, run_end: usize) -> Vec<BraceCh> {
+    let mut chs = Vec::new();
+    for (pi, part) in parts.iter().enumerate().take(run_end).skip(run_start) {
+        match part {
+            Part::Raw(t) => {
+                for (off, c) in t.char_indices() {
+                    chs.push(BraceCh {
+                        c,
+                        active: true,
+                        part: pi,
+                        off,
+                    });
+                }
+            }
+            Part::Esc(c) => chs.push(BraceCh {
+                c: *c,
+                active: false,
+                part: pi,
+                off: usize::MAX,
+            }),
+            _ => {}
+        }
+    }
+    chs
+}
+
+/// Parts covering `ch[a..b]` (boundaries always fall on active chars,
+/// so `Esc` parts are never split).
+fn brace_region(parts: &[Part], chs: &[BraceCh], a: usize, b: usize) -> Vec<Part> {
+    let mut out = Vec::new();
+    let mut k = a;
+    while k < b {
+        let pi = chs[k].part;
+        let mut min_off = usize::MAX;
+        let mut max_end = 0usize;
+        let mut count = 0usize;
+        while k < b && chs[k].part == pi {
+            if chs[k].active {
+                min_off = min_off.min(chs[k].off);
+                max_end = max_end.max(chs[k].off + chs[k].c.len_utf8());
+            }
+            count += 1;
+            k += 1;
+        }
+        match &parts[pi] {
+            Part::Raw(t) => {
+                let whole = min_off == 0 && max_end == t.len() && count == t.chars().count();
+                if whole {
+                    out.push(parts[pi].clone());
+                } else {
+                    out.push(Part::Raw(t[min_off..max_end].to_string()));
+                }
+            }
+            other => out.push(other.clone()),
+        }
+    }
+    out
+}
+
+/// One pass: find the first expandable brace pair and split it.
+fn brace_once(parts: &[Part]) -> Option<Vec<Vec<Part>>> {
+    let mut i = 0;
+    while i < parts.len() {
+        if !matches!(parts[i], Part::Raw(_)) {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < parts.len() && matches!(parts[j], Part::Raw(_) | Part::Esc(_)) {
+            j += 1;
+        }
+        if let Some(res) = brace_scan(parts, i, j) {
+            return Some(res);
+        }
+        i = j;
+    }
+    None
+}
+
+fn brace_scan(parts: &[Part], run_start: usize, run_end: usize) -> Option<Vec<Vec<Part>>> {
+    let chs = brace_chs(parts, run_start, run_end);
+    let mut cursor = 0;
+    while cursor < chs.len() {
+        // next active `{`
+        let o = chs[cursor..]
+            .iter()
+            .position(|ch| ch.active && ch.c == '{')
+            .map(|p| p + cursor)?;
+        let mut depth: i32 = 0;
+        let mut close: Option<usize> = None;
+        let mut seps: Vec<usize> = Vec::new();
+        for (p, ch) in chs.iter().enumerate().skip(o) {
+            if !ch.active {
+                continue;
+            }
+            match ch.c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(p);
+                        break;
+                    }
+                }
+                ',' if depth == 1 => seps.push(p),
+                _ => {}
+            }
+        }
+        let Some(c) = close else {
+            cursor = o + 1;
+            continue;
+        };
+        let variant = |inside: Vec<Part>| {
+            let mut out = brace_region(parts, &chs, 0, o);
+            out.extend(inside);
+            out.extend(brace_region(parts, &chs, c + 1, chs.len()));
+            let mut full = parts[..run_start].to_vec();
+            full.extend(out);
+            full.extend_from_slice(&parts[run_end..]);
+            if full.is_empty() {
+                full.push(Part::Raw(String::new()));
+            }
+            full
+        };
+        if !seps.is_empty() {
+            let mut variants = Vec::new();
+            let mut start = o + 1;
+            for &sep in &seps {
+                variants.push(variant(brace_region(parts, &chs, start, sep)));
+                start = sep + 1;
+            }
+            variants.push(variant(brace_region(parts, &chs, start, c)));
+            return Some(variants);
+        }
+        // Range form: fully literal inside, `a..b` or `a..b..step`.
+        let inside = brace_region(parts, &chs, o + 1, c);
+        let literal = inside.iter().all(|p| matches!(p, Part::Raw(_)));
+        if literal {
+            let text: String = inside
+                .iter()
+                .map(|p| match p {
+                    Part::Raw(t) => t.as_str(),
+                    _ => "",
+                })
+                .collect();
+            if let Some(items) = brace_range(&text) {
+                return Some(
+                    items
+                        .into_iter()
+                        .map(|item| variant(vec![Part::Raw(item)]))
+                        .collect(),
+                );
+            }
+        }
+        cursor = o + 1; // literal pair: look for an inner expandable one
+    }
+    None
+}
+
+/// `{m..n}` / `{m..n..step}` / `{a..z..step}` → items, or `None`.
+fn brace_range(text: &str) -> Option<Vec<String>> {
+    // `a..b` or `a..b..step` (no further `..`)
+    let (a, rest) = text.split_once("..")?;
+    let (b, step_txt) = match rest.split_once("..") {
+        Some((b, s)) if !s.contains("..") => (b, Some(s)),
+        Some(_) => return None,
+        None => (rest, None),
+    };
+    let step: i64 = match step_txt {
+        Some(s) => s.parse().ok()?,
+        None => 1,
+    };
+    if step == 0 {
+        return None;
+    }
+    // integers
+    if let (Ok(x), Ok(y)) = (a.parse::<i64>(), b.parse::<i64>()) {
+        let mut step = step;
+        if (y - x).signum() != 0 && (y - x).signum() != step.signum() {
+            step = -step;
+        }
+        let pad = (a.starts_with('0') && a.len() > 1 || b.starts_with('0') && b.len() > 1)
+            && !a.starts_with('-')
+            && !b.starts_with('-');
+        let width = a.chars().count().max(b.chars().count());
+        let mut out = Vec::new();
+        let mut v = x;
+        loop {
+            if (step > 0 && v > y) || (step < 0 && v < y) {
+                break;
+            }
+            let item = if pad {
+                format!("{v:0width$}")
+            } else {
+                v.to_string()
+            };
+            out.push(item);
+            if out.len() > 4096 {
+                return None; // ponytail: refuse runaway ranges
+            }
+            v += step;
+        }
+        if out.is_empty() {
+            return None;
+        }
+        return Some(out);
+    }
+    // single letters, same case
+    let ca: Vec<char> = a.chars().collect();
+    let cb: Vec<char> = b.chars().collect();
+    if ca.len() == 1 && cb.len() == 1 && ca[0].is_ascii_alphabetic() && cb[0].is_ascii_alphabetic()
+    {
+        let (x, y) = (ca[0] as i64, cb[0] as i64);
+        let mut step = step;
+        if (y - x).signum() != 0 && (y - x).signum() != step.signum() {
+            step = -step;
+        }
+        let mut out = Vec::new();
+        let mut v = x;
+        loop {
+            if (step > 0 && v > y) || (step < 0 && v < y) {
+                break;
+            }
+            out.push(char::from_u32(v as u32)?.to_string());
+            if out.len() > 4096 {
+                return None;
+            }
+            v += step;
+        }
+        if out.is_empty() {
+            return None;
+        }
+        return Some(out);
+    }
+    None
 }
 
 /// One piece of an expanded word. `quoted` suppresses splitting/globbing.
@@ -84,24 +351,51 @@ struct Ex<'a> {
 
 impl<'a> Ex<'a> {
     fn expand_word(&mut self, w: &Word) -> Result<Vec<String>, Error> {
-        let segs = self.segs_of_word(w)?;
-        self.assemble(segs, !self.env.opts.noglob)
+        let variants = brace_expand(&w.parts);
+        // Unset params expand to zero fields; only an actual brace
+        // split contributes an empty field (`{,a}` → "" "a").
+        let braced = variants.len() > 1 || variants[0] != w.parts;
+        let mut out = Vec::new();
+        for parts in variants {
+            let segs = self.segs_of_parts(&parts)?;
+            let fields = self.assemble(segs, !self.env.opts.noglob)?;
+            if fields.is_empty() && braced {
+                out.push(String::new());
+            } else {
+                out.extend(fields);
+            }
+        }
+        Ok(out)
     }
 
     fn value_of_word(&mut self, w: &Word) -> Result<String, Error> {
-        let segs = self.segs_of_word(w)?;
-        let mut s = String::new();
-        for seg in segs {
-            match seg {
-                Seg::T { text, .. } => s.push_str(&text),
-                Seg::F { items, .. } => s.push_str(&items.join(" ")),
-            }
-        }
-        Ok(s)
+        self.value_of_parts(&w.parts, true)
     }
 
-    fn segs_of_word(&mut self, w: &Word) -> Result<Vec<Seg>, Error> {
-        let parts = w.parts.as_slice();
+    /// `braces: false` for heredoc bodies (bash does not brace-expand
+    /// here-doc content).
+    fn value_of_parts(&mut self, parts: &[Part], braces: bool) -> Result<String, Error> {
+        let variants = if braces {
+            brace_expand(parts)
+        } else {
+            vec![parts.to_vec()]
+        };
+        let mut outs = Vec::with_capacity(variants.len());
+        for parts in variants {
+            let segs = self.segs_of_parts(&parts)?;
+            let mut s = String::new();
+            for seg in segs {
+                match seg {
+                    Seg::T { text, .. } => s.push_str(&text),
+                    Seg::F { items, .. } => s.push_str(&items.join(" ")),
+                }
+            }
+            outs.push(s);
+        }
+        Ok(outs.join(" "))
+    }
+
+    fn segs_of_parts(&mut self, parts: &[Part]) -> Result<Vec<Seg>, Error> {
         // Tilde only from a literal `~` at word start (unquoted).
         if let Some(Part::Raw(t)) = parts.first()
             && let Some(rest) = t.strip_prefix('~')
@@ -124,23 +418,29 @@ impl<'a> Ex<'a> {
             s.push_str(rest);
             return Some(s);
         }
-        let first = rest.chars().next()?;
-        let tail = &rest[first.len_utf8()..];
-        match first {
-            '+' => {
+        let (name, tail) = match rest.find('/') {
+            Some(i) => (&rest[..i], &rest[i..]),
+            None => (rest, ""),
+        };
+        match name {
+            "+" => {
                 let pwd = self.env.get("PWD")?;
                 let mut s = pwd.to_string();
                 s.push_str(tail);
                 Some(s)
             }
-            '-' => {
+            "-" => {
                 let old = self.env.get("OLDPWD")?;
                 let mut s = old.to_string();
                 s.push_str(tail);
                 Some(s)
             }
-            // `~user`: needs getpwnam (libc) — ponytail: leave literal until
-            // brish-platform grows a user-database lookup.
+            // `~user`: unknown users stay literal (bash behavior).
+            _ if crate::env::is_name(name) => {
+                let mut s = brish_platform::user::user_home(name)?;
+                s.push_str(tail);
+                Some(s)
+            }
             _ => None,
         }
     }
@@ -494,7 +794,7 @@ impl<'a> Ex<'a> {
         let glob = std::mem::take(cur_glob);
         let text = std::mem::take(cur);
         if do_glob && glob && has_meta(&text) {
-            match glob_expand(&text, true) {
+            match glob_expand(&text, true, self.env.opts.globstar) {
                 Ok(Some(matches)) if matches.is_empty() => {
                     fields.push(text);
                     return Ok(());
@@ -530,37 +830,44 @@ fn path_to_string(p: &std::path::Path) -> String {
 /// tilde handling at value start, no split/glob.
 pub fn expand_assign_value(env: &mut Env, w: &Word, cs: CmdSubst) -> Result<String, Error> {
     let mut ex = Ex { env, cs, depth: 0 };
-    let mut out = String::new();
-    for (i, p) in w.parts.iter().enumerate() {
-        match p {
-            Part::Raw(t) if i == 0 => {
-                if let Some(eq) = t.find('=') {
-                    out.push_str(&t[..=eq]);
-                    let rest = &t[eq + 1..];
-                    // Tilde at value start (FOO=~/bin); quoted parts later
+    // Brace expansion applies to assignment values (bash: x={a,b} -> "a b").
+    let mut outs = Vec::new();
+    for variant in brace_expand(&w.parts) {
+        let mut out = String::new();
+        for (i, p) in variant.iter().enumerate() {
+            match p {
+                Part::Raw(t) if i == 0 => {
+                    // Full form `NAME=value`: emit `NAME=` then the value.
+                    // Value-only form (parser already split the name):
+                    // same handling, no prefix.
+                    let (prefix, rest) = match t.find('=') {
+                        Some(eq) => (&t[..=eq], &t[eq + 1..]),
+                        None => ("", t.as_str()),
+                    };
+                    out.push_str(prefix);
+                    // Tilde at value start (~/bin, ~root/bin); quoted parts
                     // are not Raw so they never hit this branch.
                     if let Some(r) = rest.strip_prefix('~')
                         && let Some(h) = ex.tilde(r)
                     {
                         out.push_str(&h);
-                        continue;
+                    } else {
+                        out.push_str(rest);
                     }
-                    out.push_str(rest);
-                } else {
-                    out.push_str(t);
                 }
-            }
-            _ => {
-                for s in ex.parts_segs(std::slice::from_ref(p), false)? {
-                    match s {
-                        Seg::T { text, .. } => out.push_str(&text),
-                        Seg::F { items, .. } => out.push_str(&items.join(" ")),
+                _ => {
+                    for s in ex.parts_segs(std::slice::from_ref(p), false)? {
+                        match s {
+                            Seg::T { text, .. } => out.push_str(&text),
+                            Seg::F { items, .. } => out.push_str(&items.join(" ")),
+                        }
                     }
                 }
             }
         }
+        outs.push(out);
     }
-    Ok(out)
+    Ok(outs.join(" "))
 }
 
 /// Word is an assignment prefix (`NAME=...`).
@@ -872,7 +1179,10 @@ mod tests {
         assert_eq!(expand(&mut e, vec![Part::Single("~".into())]), vec!["~"]);
         let mut e2 = env_with(&[]);
         assert_eq!(expand(&mut e2, vec![raw("~")]), vec!["~"]);
-        assert_eq!(expand(&mut e, vec![raw("~root/x")]), vec!["~root/x"]);
+        // `~user` hits the platform user database (`root` always exists)
+        let got = expand(&mut e, vec![raw("~root/x")]);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(got[0].starts_with('/') && !got[0].contains('~'), "{got:?}");
     }
 
     #[test]
@@ -994,6 +1304,69 @@ mod tests {
         let w3 = one_word(vec![raw("cmd")]);
         assert!(!is_assign_word(&w3));
         assert!(split_assign(&w3).is_none());
+    }
+
+    fn assign_value(env: &mut Env, parts: Vec<Part>) -> String {
+        let w = one_word(parts);
+        let mut cs = |_s: &str| -> Result<String, Error> { Ok(String::new()) };
+        expand_assign_value(env, &w, &mut cs).unwrap()
+    }
+
+    #[test]
+    fn brace_expansion() {
+        let mut e = env_with(&[]);
+        assert_eq!(expand(&mut e, vec![raw("{a,b}")]), vec!["a", "b"]);
+        assert_eq!(expand(&mut e, vec![raw("x{a,b}y")]), vec!["xay", "xby"]);
+        assert_eq!(expand(&mut e, vec![raw("{1..3}")]), vec!["1", "2", "3"]);
+        assert_eq!(
+            expand(&mut e, vec![raw("{01..03}")]),
+            vec!["01", "02", "03"]
+        );
+        assert_eq!(expand(&mut e, vec![raw("{a..c}")]), vec!["a", "b", "c"]);
+        assert_eq!(
+            expand(&mut e, vec![raw("{5..1}")]),
+            vec!["5", "4", "3", "2", "1"]
+        );
+        assert_eq!(expand(&mut e, vec![raw("{a,{b,c}}")]), vec!["a", "b", "c"]);
+        // empty variant keeps one empty field
+        assert_eq!(expand(&mut e, vec![raw("{,a}")]), vec!["", "a"]);
+        // literal: no separator, unbalanced, quoted, escaped
+        assert_eq!(expand(&mut e, vec![raw("{foo}")]), vec!["{foo}"]);
+        assert_eq!(expand(&mut e, vec![raw("x{1,")]), vec!["x{1,"]);
+        assert_eq!(
+            expand(&mut e, vec![Part::Double(vec![raw("{a,b}")])]),
+            vec!["{a,b}"]
+        );
+        assert_eq!(
+            expand(&mut e, vec![Part::Esc('{'), raw("a,b"), Part::Esc('}')]),
+            vec!["{a,b}"]
+        );
+        // quoted separator inside braces doesn't split
+        assert_eq!(
+            expand(&mut e, vec![raw("{a,\"b,c\"}")]),
+            vec!["a", "\"b", "c\""]
+        );
+    }
+
+    #[test]
+    fn assign_value_tilde_and_braces() {
+        let mut e = env_with(&[("HOME", "/h"), ("PWD", "/w"), ("OLDPWD", "/o")]);
+        // value-only form (parser already split the name)
+        assert_eq!(assign_value(&mut e, vec![raw("~/x")]), "/h/x");
+        assert_eq!(assign_value(&mut e, vec![raw("~")]), "/h");
+        assert_eq!(assign_value(&mut e, vec![raw("~+")]), "/w");
+        // full NAME=value form still works
+        assert_eq!(assign_value(&mut e, vec![raw("FOO=~/x")]), "FOO=/h/x");
+        // braces in assignment values
+        assert_eq!(assign_value(&mut e, vec![raw("{a,b}")]), "a b");
+        assert_eq!(assign_value(&mut e, vec![raw("p{1..2}")]), "p1 p2");
+        // quoted braces stay literal
+        assert_eq!(
+            assign_value(&mut e, vec![Part::Double(vec![raw("{a,b}")])]),
+            "{a,b}"
+        );
+        // other parts still expand (no glob)
+        assert_eq!(assign_value(&mut e, vec![raw("*")]), "*");
     }
 
     #[test]

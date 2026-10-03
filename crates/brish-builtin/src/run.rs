@@ -74,24 +74,40 @@ fn loop_control(args: &[String], mk: fn(usize) -> Flow) -> Flow {
 
 /// `echo` output: (text, add_newline). Only `-n` runs are recognized as
 /// flags; `-e`/`-E` print literally (ponytail: escapes when scripts need).
-fn echo_text(args: &[String]) -> (String, bool) {
+/// Leading `echo` flags: `-n` (no newline), `-e`/`-E` (escape
+/// interpretation on/off; off is the default, like bash).
+fn echo_text(args: &[String]) -> (String, bool, bool) {
     let mut i = 1;
     let mut newline = true;
+    let mut escape = false;
     while i < args.len() {
         let a = &args[i];
-        if a.starts_with('-') && a.len() > 1 && a[1..].chars().all(|c| c == 'n') {
-            newline = false;
+        if a.starts_with('-') && a.len() > 1 && a[1..].chars().all(|c| matches!(c, 'n' | 'e' | 'E'))
+        {
+            for c in a[1..].chars() {
+                match c {
+                    'n' => newline = false,
+                    'e' => escape = true,
+                    'E' => escape = false,
+                    _ => {}
+                }
+            }
             i += 1;
         } else {
             break;
         }
     }
-    (args[i..].join(" "), newline)
+    (args[i..].join(" "), newline, escape)
 }
 
 fn echo(args: &[String]) -> Flow {
-    let (text, newline) = echo_text(args);
-    if newline {
+    let (text, newline, escape) = echo_text(args);
+    let (text, cut) = if escape {
+        brish_core::lexer::ansi_c_decode(&text, true, true)
+    } else {
+        (text, false)
+    };
+    if newline && !cut {
         println!("{text}");
     } else {
         print!("{text}");
@@ -437,6 +453,8 @@ fn list_opts(env: &Env) {
         ("xtrace", env.opts.xtrace),
         ("monitor", env.opts.monitor),
         ("ignoreeof", env.opts.ignore_eof),
+        ("globstar", env.opts.globstar),
+        ("pipefail", env.opts.pipefail),
     ];
     for (n, on) in names {
         println!("{n} {}", if on { "on" } else { "off" });
@@ -705,23 +723,42 @@ mod tests {
     fn echo_flags() {
         assert_eq!(
             echo_text(&args(&["echo", "a", "b"])),
-            ("a b".to_string(), true)
+            ("a b".to_string(), true, false)
         );
         assert_eq!(
             echo_text(&args(&["echo", "-n", "x"])),
-            ("x".to_string(), false)
+            ("x".to_string(), false, false)
         );
         assert_eq!(
             echo_text(&args(&["echo", "-nnn", "x"])),
-            ("x".to_string(), false)
+            ("x".to_string(), false, false)
         );
-        assert_eq!(echo_text(&args(&["echo", "-n"])), (String::new(), false));
-        // `-e` is not a flag for us: printed literally
+        assert_eq!(
+            echo_text(&args(&["echo", "-n"])),
+            (String::new(), false, false)
+        );
+        // -e/-E select escape interpretation (default off, like bash)
         assert_eq!(
             echo_text(&args(&["echo", "-e", "x"])),
-            ("-e x".to_string(), true)
+            ("x".to_string(), true, true)
         );
-        assert_eq!(echo_text(&args(&["echo", "-"])), ("-".to_string(), true));
+        assert_eq!(
+            echo_text(&args(&["echo", "-ne", "x"])),
+            ("x".to_string(), false, true)
+        );
+        assert_eq!(
+            echo_text(&args(&["echo", "-e", "-E", "x"])),
+            ("x".to_string(), true, false)
+        );
+        // `-` alone or unknown flags end the flag run (printed literally)
+        assert_eq!(
+            echo_text(&args(&["echo", "-", "x"])),
+            ("- x".to_string(), true, false)
+        );
+        assert_eq!(
+            echo_text(&args(&["echo", "-q", "x"])),
+            ("-q x".to_string(), true, false)
+        );
     }
 
     #[test]
