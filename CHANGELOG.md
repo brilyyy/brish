@@ -36,3 +36,6 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
   `--rcfile`/`--norc` unchanged); history moved to
   `~/.config/brish/.brish_history`; `--theme` flag + `BRISH_THEME` +
   config priority with validation against the registry.
+- Theme system wired into the REPL: prompt renders the active theme
+  from the registry with segments appended; `PS1`/`PS2` still win;
+  core `$ ` fallback when no theme resolves.
