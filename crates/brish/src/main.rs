@@ -85,6 +85,30 @@ fn main() {
     } else {
         registry.record(completion::DEFAULT_COMPLETION, false);
     }
+    // Store plugins from ~/.config/brish/plugins/, config-gated the
+    // same way (installed = enabled by default).
+    let (stored, store_warnings) = brish_builtin::store::scan(&brish_builtin::paths::plugins_dir());
+    for w in &store_warnings {
+        eprintln!("brish: {w}");
+    }
+    for p in stored {
+        let name = p.manifest.name.clone();
+        if config.plugin_enabled(&name, true) {
+            registry.install(&p.into_plugin());
+        } else {
+            registry.record(&name, false);
+        }
+    }
+    {
+        // First registered wins on duplicate theme names (builtins go
+        // first); warn so a shadowed store theme is visible.
+        let mut seen = std::collections::HashSet::new();
+        for t in &registry.themes {
+            if !seen.insert(t.name()) {
+                eprintln!("brish: duplicate theme name: {}", t.name());
+            }
+        }
+    }
     // Theme: --theme > $BRISH_THEME > config > default, validated
     // against the registry (unknown → warn + default).
     if let Some(t) = cli.theme.clone() {

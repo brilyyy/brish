@@ -251,6 +251,7 @@ impl BrishCompleter {
             is_command,
             after_dollar,
             cwd,
+            line_before: &line[..start],
         };
 
         let mut merged: Vec<Completion> = Vec::new();
@@ -310,6 +311,7 @@ mod tests {
             is_command,
             after_dollar,
             cwd,
+            line_before: "",
         }
     }
 

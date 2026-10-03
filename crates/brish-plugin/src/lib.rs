@@ -72,6 +72,9 @@ pub struct CompletionCtx<'a> {
     /// Word follows a `$` (variable completion).
     pub after_dollar: bool,
     pub cwd: &'a Path,
+    /// Raw line text before the current word — lets providers match on
+    /// the parent command (e.g. `args.git` wordlists).
+    pub line_before: &'a str,
 }
 
 pub trait CompletionProvider: Send + Sync {

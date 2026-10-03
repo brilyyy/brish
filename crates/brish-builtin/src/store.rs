@@ -3,6 +3,10 @@
 //! `plugin.toml`; the manifest declares which seams it contributes
 //! (declarative data and/or helper subprocess commands).
 
+use brish_plugin::{
+    Completion, CompletionCtx, CompletionProvider, KeymapProvider, Plugin, PromptSegment, Registry,
+    Theme,
+};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -41,13 +45,13 @@ pub struct Manifest {
     pub helper: Option<HelperDecl>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ThemeDecl {
     pub name: String,
     pub prompt: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CompletionDecl {
     /// Suggestions at any argument position.
     #[serde(default)]
@@ -177,6 +181,221 @@ pub fn scan(plugins_dir: &Path) -> (Vec<Stored>, Vec<String>) {
 pub fn read_meta(dir: &Path) -> Option<StoreMeta> {
     let text = std::fs::read_to_string(dir.join(META)).ok()?;
     toml::from_str(&text).ok()
+}
+
+/// A discovered plugin packaged for `Registry::install`.
+pub struct StorePlugin {
+    pub dir: PathBuf,
+    pub manifest: Manifest,
+}
+
+impl Stored {
+    pub fn into_plugin(self) -> StorePlugin {
+        StorePlugin {
+            dir: self.dir,
+            manifest: self.manifest,
+        }
+    }
+}
+
+impl Plugin for StorePlugin {
+    fn name(&self) -> &str {
+        &self.manifest.name
+    }
+
+    fn install(&self, reg: &mut Registry) {
+        if let Some(t) = &self.manifest.theme {
+            reg.themes.push(Box::new(TemplateTheme {
+                name: t.name.clone(),
+                prompt: t.prompt.clone(),
+            }));
+        }
+        if !self.manifest.keymap.is_empty() {
+            reg.keymaps
+                .push(Box::new(ManifestKeymap(self.manifest.keymap.clone())));
+        }
+        if let Some(c) = &self.manifest.completion {
+            reg.completion_providers.push(Box::new(WordsProvider {
+                plugin: self.manifest.name.clone(),
+                decl: c.clone(),
+            }));
+        }
+    }
+}
+
+/// Declarative theme: template string expanded per render.
+pub struct TemplateTheme {
+    pub name: String,
+    pub prompt: String,
+}
+
+impl Theme for TemplateTheme {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn render(&self, status: i32, cwd: &Path, segments: &[&dyn PromptSegment]) -> String {
+        expand_template(
+            &self.prompt,
+            status,
+            cwd,
+            segments,
+            brish_plugin::color_enabled(),
+        )
+    }
+}
+
+/// Tokens: `{arrow}` `{cwd}` `{segments}` `{reset}` `{fg:…}` `{bg:…}`
+/// (named 8+bright or `#rrggbb`). Unknown tokens and unmatched braces
+/// pass through literally.
+pub fn expand_template(
+    tmpl: &str,
+    status: i32,
+    cwd: &Path,
+    segments: &[&dyn PromptSegment],
+    color: bool,
+) -> String {
+    let mut out = String::new();
+    let mut rest = tmpl;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let token = &after[..close];
+        let replacement = match token {
+            "arrow" => Some(arrow(status, color)),
+            "cwd" => Some(cwd_base(cwd)),
+            "segments" => Some(
+                segments
+                    .iter()
+                    .filter_map(|s| s.render(status, cwd))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+            "reset" => Some(if color {
+                "\x1b[0m".to_string()
+            } else {
+                String::new()
+            }),
+            t => t
+                .strip_prefix("fg:")
+                .and_then(|spec| styled(spec, true, color))
+                .or_else(|| {
+                    t.strip_prefix("bg:")
+                        .and_then(|spec| styled(spec, false, color))
+                }),
+        };
+        match replacement {
+            Some(r) => out.push_str(&r),
+            None => {
+                out.push('{');
+                out.push_str(token);
+                out.push('}');
+            }
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn arrow(status: i32, color: bool) -> String {
+    if !color {
+        return "\u{279c}".to_string();
+    }
+    let code = if status == 0 { 32 } else { 31 };
+    format!("\x1b[{code}m\u{279c}\x1b[0m")
+}
+
+fn cwd_base(cwd: &Path) -> String {
+    cwd.file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| cwd.display().to_string())
+}
+
+/// ANSI code for `red`/`bright-blue`/`#rrggbb`; `None` = unknown name.
+fn color_code(spec: &str, fg: bool) -> Option<String> {
+    let (bright, name) = match spec.strip_prefix("bright-") {
+        Some(n) => (true, n),
+        None => (false, spec),
+    };
+    let idx = match name {
+        "black" => 0,
+        "red" => 1,
+        "green" => 2,
+        "yellow" => 3,
+        "blue" => 4,
+        "magenta" => 5,
+        "cyan" => 6,
+        "white" => 7,
+        _ => return hex_code(spec, fg),
+    };
+    let base = if fg { 30 } else { 40 };
+    let n = if bright { base + 60 + idx } else { base + idx };
+    Some(format!("\x1b[{n}m"))
+}
+
+fn hex_code(spec: &str, fg: bool) -> Option<String> {
+    let h = spec.strip_prefix('#')?;
+    if h.len() != 6 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let r = u8::from_str_radix(&h[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&h[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&h[4..6], 16).ok()?;
+    Some(format!("\x1b[{};2;{r};{g};{b}m", if fg { 38 } else { 48 }))
+}
+
+fn styled(spec: &str, fg: bool, color: bool) -> Option<String> {
+    // Validate the name first so unknown colors fall back to literal.
+    color_code(spec, fg).map(|code| if color { code } else { String::new() })
+}
+
+/// `[keymap]` table → keymap provider (parsed by the binary's `keymap`
+/// module at REPL startup; unknown pairs warn there).
+struct ManifestKeymap(BTreeMap<String, String>);
+
+impl KeymapProvider for ManifestKeymap {
+    fn bindings(&self) -> Vec<(String, String)> {
+        self.0.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
+}
+
+/// `[completion]` wordlists, tagged with the plugin name in the menu
+/// description so users see where a suggestion came from.
+struct WordsProvider {
+    plugin: String,
+    decl: CompletionDecl,
+}
+
+impl CompletionProvider for WordsProvider {
+    fn complete(&self, ctx: &CompletionCtx<'_>) -> Vec<Completion> {
+        if ctx.after_dollar {
+            return Vec::new();
+        }
+        let mut pool: Vec<&String> = Vec::new();
+        if ctx.is_command {
+            pool.extend(&self.decl.commands);
+        } else {
+            pool.extend(&self.decl.words);
+            if let Some(parent) = ctx.line_before.split_whitespace().next()
+                && let Some(extra) = self.decl.args.get(parent)
+            {
+                pool.extend(extra);
+            }
+        }
+        pool.into_iter()
+            .filter(|c| c.starts_with(ctx.word))
+            .map(|c| Completion {
+                value: c.clone(),
+                description: Some(self.plugin.clone()),
+                keep_typing: false,
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -344,6 +563,155 @@ timeout_ms = 400
         let (plugins, _) = scan(tmp.path());
         let names: Vec<_> = plugins.iter().map(|p| p.manifest.name.as_str()).collect();
         assert_eq!(names, vec!["alpha", "zeta"]);
+    }
+
+    struct Dash;
+    impl PromptSegment for Dash {
+        fn render(&self, status: i32, _cwd: &Path) -> Option<String> {
+            if status == 0 {
+                Some("git:(main)".into())
+            } else {
+                None
+            }
+        }
+    }
+
+    fn tmpl(s: &str, status: i32, color: bool) -> String {
+        let cwd = Path::new("/home/u/proj");
+        expand_template(s, status, cwd, &[&Dash], color)
+    }
+
+    #[test]
+    fn template_expands_tokens() {
+        let out = tmpl("{arrow} {cwd} {segments}", 0, false);
+        assert_eq!(out, "\u{279c} proj git:(main)", "{out:?}");
+        // failing status: no segment (Dash returns None)
+        let out = tmpl("{arrow} {cwd}{segments}", 3, false);
+        assert_eq!(out, "\u{279c} proj", "{out:?}");
+    }
+
+    #[test]
+    fn template_colors_only_when_enabled() {
+        let on = tmpl("{arrow}", 0, true);
+        assert_eq!(on, "\x1b[32m\u{279c}\x1b[0m");
+        let off = tmpl("{fg:red}x{reset}", 0, false);
+        assert_eq!(off, "x", "colors collapse to empty when disabled");
+        let on = tmpl("{fg:red}x{reset}", 0, true);
+        assert_eq!(on, "\x1b[31mx\x1b[0m");
+        let hex = tmpl("{fg:#0a1b2c}", 0, true);
+        assert_eq!(hex, "\x1b[38;2;10;27;44m");
+        let bg = tmpl("{bg:bright-white}", 0, true);
+        assert_eq!(bg, "\x1b[107m");
+    }
+
+    #[test]
+    fn template_unknown_tokens_stay_literal() {
+        assert_eq!(tmpl("{nope} {cwd", 0, false), "{nope} {cwd");
+        assert_eq!(tmpl("{fg:chartreuse}", 0, true), "{fg:chartreuse}");
+        assert_eq!(tmpl("plain", 0, true), "plain");
+    }
+
+    #[test]
+    fn keymap_provider_returns_pairs() {
+        let mut m = BTreeMap::new();
+        m.insert("ctrl-g".to_string(), "menu-next".to_string());
+        let bindings = ManifestKeymap(m).bindings();
+        assert_eq!(
+            bindings,
+            vec![("ctrl-g".to_string(), "menu-next".to_string())]
+        );
+    }
+
+    fn wctx<'a>(word: &'a str, is_command: bool, before: &'a str) -> CompletionCtx<'a> {
+        CompletionCtx {
+            word,
+            is_command,
+            after_dollar: false,
+            cwd: Path::new("."),
+            line_before: before,
+        }
+    }
+
+    #[test]
+    fn words_provider_routes_by_position() {
+        let decl = CompletionDecl {
+            words: vec!["--verbose".into()],
+            commands: vec!["mytool".into()],
+            args: BTreeMap::from([(
+                "git".to_string(),
+                vec!["checkout".to_string(), "rebase".to_string()],
+            )]),
+        };
+        let p = WordsProvider {
+            plugin: "demo".into(),
+            decl,
+        };
+        let out = p.complete(&wctx("my", true, ""));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].value, "mytool");
+        assert_eq!(out[0].description.as_deref(), Some("demo"));
+
+        let out = p.complete(&wctx("--v", false, "mytool "));
+        assert_eq!(out.len(), 1, "generic words at any arg position");
+        assert_eq!(out[0].value, "--verbose");
+
+        let out = p.complete(&wctx("che", false, "git "));
+        assert_eq!(out.len(), 1, "args.git matched on parent word");
+        assert_eq!(out[0].value, "checkout");
+
+        let out = p.complete(&wctx("che", false, "hg "));
+        assert!(out.is_empty(), "args.git not offered under hg");
+
+        let out = p.complete(&wctx("x", true, ""));
+        assert!(out.is_empty(), "prefix filter");
+    }
+
+    #[test]
+    fn words_provider_ignores_dollar_words() {
+        let p = WordsProvider {
+            plugin: "demo".into(),
+            decl: CompletionDecl {
+                words: vec!["--x".into()],
+                commands: vec![],
+                args: BTreeMap::new(),
+            },
+        };
+        let ctx = CompletionCtx {
+            word: "HOM",
+            is_command: false,
+            after_dollar: true,
+            cwd: Path::new("."),
+            line_before: "",
+        };
+        assert!(p.complete(&ctx).is_empty());
+    }
+
+    #[test]
+    fn store_plugin_installs_all_seams() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_plugin(
+            tmp.path(),
+            "fancy",
+            r#"
+name = "fancy"
+[theme]
+name = "fancy"
+prompt = "{arrow} {cwd}"
+[keymap]
+"ctrl-g" = "menu-next"
+[completion]
+commands = ["fancy"]
+"#,
+        );
+        let (plugins, _) = scan(tmp.path());
+        let plugin = plugins.into_iter().next().unwrap().into_plugin();
+        let mut reg = Registry::default();
+        reg.install(&plugin);
+        assert_eq!(reg.themes.len(), 1);
+        assert_eq!(reg.themes[0].name(), "fancy");
+        assert_eq!(reg.keymaps.len(), 1);
+        assert_eq!(reg.completion_providers.len(), 1);
+        assert_eq!(reg.installed(), vec![("fancy".to_string(), true)]);
     }
 
     #[test]
