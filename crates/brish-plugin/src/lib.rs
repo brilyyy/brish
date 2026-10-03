@@ -4,6 +4,8 @@
 //! binary; the engine walks the resulting registry read-only (no locks
 //! after startup — dispatch is a slice walk over borrowed contexts).
 
+pub mod builtin;
+
 use std::path::Path;
 
 /// Fallback theme name when nothing else resolves.

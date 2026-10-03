@@ -26,3 +26,7 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
   command substitutions are hook-silent); `Abort(n)` skips a command
   and sets `$?`. New `theme` (list/switch) and `plugin` (list catalog)
   engine builtins.
+- Built-in plugin catalog: `default-themes` (robbyrussell/minimal/
+  plain), `git-prompt` segment (`.git` ancestor pre-check + 1s cache,
+  porcelain branch/ahead/behind/dirty parsing), `announce-cd` example
+  hook (off by default).

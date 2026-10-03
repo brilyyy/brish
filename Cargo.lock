@@ -139,6 +139,9 @@ dependencies = [
 [[package]]
 name = "brish-plugin"
 version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
 
 [[package]]
 name = "brish-words"
