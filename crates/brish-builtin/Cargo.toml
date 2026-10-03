@@ -13,4 +13,7 @@ brish-core = { path = "../brish-core" }
 brish-words = { path = "../brish-words" }
 brish-platform = { path = "../brish-platform" }
 brish-plugin = { path = "../brish-plugin" }
+dirs.workspace = true
+serde.workspace = true
+toml.workspace = true
 tempfile.workspace = true

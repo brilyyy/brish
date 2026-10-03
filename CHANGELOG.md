@@ -50,3 +50,11 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
   worked examples); `docs/PLUGIN-PLAN.md` gains State + Deviations;
   technical plan 6.6 marked implemented; README refreshed (themes,
   config paths, extending).
+
+## 0.1.0 — plugin store (unreleased)
+
+- Store plugin manifests: `~/.config/brish/plugins/<name>/plugin.toml`
+  declares any subset of seams (theme, keymap, completion wordlists,
+  segment command, hooks, helper); discovery scans and validates
+  (bad TOML/name mismatch warn and skip, never crash). Path family
+  centralized in `brish-builtin::paths`.

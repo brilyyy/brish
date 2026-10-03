@@ -7,26 +7,11 @@
 
 use brish_plugin::builtin;
 use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// `~/.config/brish`.
-pub fn config_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".config/brish")
-}
-
-pub fn config_path() -> PathBuf {
-    config_dir().join("config.toml")
-}
-
-pub fn rc_path() -> PathBuf {
-    config_dir().join(".brishrc")
-}
-
-pub fn history_path() -> PathBuf {
-    config_dir().join(".brish_history")
-}
+// The `~/.config/brish` path family lives with the engine so the
+// `plugin` builtin and the binary share one root.
+pub use brish_builtin::paths::{config_dir, config_path, history_path, rc_path};
 
 /// Parsed `config.toml` (all sections optional, unknown keys ignored).
 #[derive(Default, serde::Deserialize)]
@@ -137,6 +122,7 @@ pub fn load_from(path: &Path, known: &[&str]) -> Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn write(dir: &Path, text: &str) -> PathBuf {
         let p = dir.join("config.toml");

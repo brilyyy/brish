@@ -12,7 +12,9 @@ pub use run::{Flow, run};
 
 mod builtins;
 pub mod exec;
+pub mod paths;
 mod run;
+pub mod store;
 
 /// Shared test locks (process-wide state like cwd must not race).
 #[cfg(test)]

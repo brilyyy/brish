@@ -115,7 +115,10 @@ dependencies = [
  "brish-platform",
  "brish-plugin",
  "brish-words",
+ "dirs",
+ "serde",
  "tempfile",
+ "toml",
 ]
 
 [[package]]
