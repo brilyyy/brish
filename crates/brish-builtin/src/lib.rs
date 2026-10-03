@@ -13,3 +13,10 @@ pub use run::{Flow, run};
 mod builtins;
 pub mod exec;
 mod run;
+
+/// Shared test locks (process-wide state like cwd must not race).
+#[cfg(test)]
+pub(crate) mod test_util {
+    use std::sync::Mutex;
+    pub(crate) static CWD_LOCK: Mutex<()> = Mutex::new(());
+}

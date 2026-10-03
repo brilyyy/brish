@@ -690,9 +690,6 @@ mod tests {
         items.iter().map(|s| s.to_string()).collect()
     }
 
-    /// `cd` tests mutate the process CWD: serialize them.
-    static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// Run and unwrap (builtins under test never return engine errors).
     fn flow(b: BuiltIn, a: &[String], e: &mut Env) -> Flow {
         run(b, a, e).expect("builtin error")
@@ -968,7 +965,9 @@ mod tests {
 
     #[test]
     fn cd_relative_and_dash() {
-        let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::test_util::CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut e = env();
         let start = std::env::current_dir().unwrap();
         let tmp = tempfile::tempdir().unwrap();
@@ -1001,7 +1000,9 @@ mod tests {
 
     #[test]
     fn cd_home_unset() {
-        let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::test_util::CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let orig = std::env::current_dir().unwrap();
         let mut e = Env::new();
         assert_eq!(flow(BuiltIn::Cd, &args(&["cd"]), &mut e), Flow::Status(1));

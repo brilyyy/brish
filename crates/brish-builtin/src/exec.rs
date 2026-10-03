@@ -22,6 +22,8 @@ use brish_core::expand::{self, CmdSubst};
 use brish_core::lexer::Word;
 use brish_core::path::find_in_path;
 
+use brish_plugin::{CmdCtx, DEFAULT_THEME, HookAction, Registry};
+
 use crate::{BuiltIn, Flow, run as run_builtin};
 use brish_platform::proc::{
     FdOp, FdSetup, fork_run, fork_spawn, preexec_fd_ops, send_signal, try_wait, wait_pid, with_fds,
@@ -33,8 +35,9 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command as Proc, Stdio};
+use std::sync::Arc;
 
 /// Non-local control flow inside the engine.
 #[derive(Debug)]
@@ -96,7 +99,7 @@ struct Job {
     status: Option<i32>,
 }
 
-/// The shell: environment, function table, background jobs.
+/// The shell: environment, function table, background jobs, plugins.
 pub struct Engine {
     pub env: Env,
     funcs: HashMap<String, Cmd>,
@@ -104,6 +107,12 @@ pub struct Engine {
     bg: Vec<Job>,
     /// Did the last batch of expansions run a command substitution?
     cs_seen: bool,
+    /// Static plugin registry (immutable after startup).
+    hooks: Arc<Registry>,
+    /// True inside forked children: plugin hooks run in the parent only.
+    in_child: bool,
+    /// Active theme name (`theme` builtin switches it at runtime).
+    pub theme: String,
 }
 
 fn platform_err(e: impl std::fmt::Display) -> Stop {
@@ -293,6 +302,9 @@ fn run_subst(src: &str, env: &Env, funcs: &HashMap<String, Cmd>) -> Result<(Stri
             depth: 0,
             bg: Vec::new(),
             cs_seen: false,
+            hooks: Arc::new(Registry::default()),
+            in_child: true,
+            theme: DEFAULT_THEME.to_string(),
         };
         match child.program(&prog, true) {
             Ok(()) => child.env.status,
@@ -325,7 +337,28 @@ impl Engine {
             depth: 0,
             bg: Vec::new(),
             cs_seen: false,
+            hooks: Arc::new(Registry::default()),
+            in_child: false,
+            theme: DEFAULT_THEME.to_string(),
         }
+    }
+
+    /// Plugin registry backing hooks, themes, segments, providers.
+    pub fn hooks(&self) -> &Arc<Registry> {
+        &self.hooks
+    }
+
+    /// Swap in the startup-built registry (binary calls once).
+    pub fn set_hooks(&mut self, hooks: Arc<Registry>) {
+        self.hooks = hooks;
+    }
+
+    /// Working directory as the shell sees it (PWD, no syscall when set).
+    fn shell_cwd(&self) -> PathBuf {
+        self.env
+            .get("PWD")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
     }
 
     /// Run a parsed program. `Ok(Outcome)` for normal completion or
@@ -395,13 +428,16 @@ impl Engine {
         let _ = Write::flush(&mut std::io::stdout());
         let ao = ao.clone();
         let text = ao_text(&ao);
-        let pid = fork_spawn(Vec::new(), true, || match self.and_or(&ao, true) {
-            Ok(()) => self.env.status,
-            Err(Stop::Exit(c)) | Err(Stop::Return(c)) => c,
-            Err(Stop::Break(_)) | Err(Stop::Continue(_)) => self.env.status,
-            Err(Stop::Fail(e)) => {
-                eprintln!("brish: {e}");
-                1
+        let pid = fork_spawn(Vec::new(), true, || {
+            self.in_child = true;
+            match self.and_or(&ao, true) {
+                Ok(()) => self.env.status,
+                Err(Stop::Exit(c)) | Err(Stop::Return(c)) => c,
+                Err(Stop::Break(_)) | Err(Stop::Continue(_)) => self.env.status,
+                Err(Stop::Fail(e)) => {
+                    eprintln!("brish: {e}");
+                    1
+                }
             }
         })
         .map_err(platform_err)?;
@@ -618,13 +654,16 @@ impl Engine {
             #[cfg(not(unix))]
             let _ = &pipes;
             let stage = stage.clone();
-            let pid = fork_spawn(setups, false, || match self.cmd(&stage) {
-                Ok(()) => self.env.status,
-                Err(Stop::Exit(c)) | Err(Stop::Return(c)) => c,
-                Err(Stop::Break(_)) | Err(Stop::Continue(_)) => self.env.status,
-                Err(Stop::Fail(e)) => {
-                    eprintln!("brish: {e}");
-                    1
+            let pid = fork_spawn(setups, false, || {
+                self.in_child = true;
+                match self.cmd(&stage) {
+                    Ok(()) => self.env.status,
+                    Err(Stop::Exit(c)) | Err(Stop::Return(c)) => c,
+                    Err(Stop::Break(_)) | Err(Stop::Continue(_)) => self.env.status,
+                    Err(Stop::Fail(e)) => {
+                        eprintln!("brish: {e}");
+                        1
+                    }
                 }
             })
             .map_err(platform_err)?;
@@ -679,13 +718,16 @@ impl Engine {
     }
 
     fn subshell(&mut self, p: &Program, plan: Plan) -> R<()> {
-        let code = fork_run(plan_setups(plan), || match self.program(p, true) {
-            Ok(()) => self.env.status,
-            Err(Stop::Exit(c)) | Err(Stop::Return(c)) => c,
-            Err(Stop::Break(_)) | Err(Stop::Continue(_)) => self.env.status,
-            Err(Stop::Fail(e)) => {
-                eprintln!("brish: {e}");
-                1
+        let code = fork_run(plan_setups(plan), || {
+            self.in_child = true;
+            match self.program(p, true) {
+                Ok(()) => self.env.status,
+                Err(Stop::Exit(c)) | Err(Stop::Return(c)) => c,
+                Err(Stop::Break(_)) | Err(Stop::Continue(_)) => self.env.status,
+                Err(Stop::Fail(e)) => {
+                    eprintln!("brish: {e}");
+                    1
+                }
             }
         })
         .map_err(platform_err)?;
@@ -893,34 +935,77 @@ impl Engine {
     }
 
     /// Dispatch an already-expanded argv (no re-expansion).
+    ///
+    /// Plugin wrapper: fires pre/post/chdir hooks around the real
+    /// dispatch — parent process only. Forked work (pipeline stages,
+    /// background items, subshells, command substitutions) enters with
+    /// `in_child` set and skips hooks entirely (plan: hooks run in the
+    /// parent, documented gap for forked stages).
     fn exec_words(&mut self, argv: Vec<String>, plan: Plan, skip_funcs: bool) -> R<()> {
-        let name = argv[0].clone();
+        if self.in_child {
+            return self.exec_inner(&argv, plan, skip_funcs);
+        }
+        let cwd = self.shell_cwd();
+        let ctx = CmdCtx {
+            argv: &argv,
+            status_before: self.env.status,
+            cwd: &cwd,
+        };
+        if let HookAction::Abort(s) = self.hooks.run_pre(&ctx) {
+            self.env.status = s;
+            return Ok(());
+        }
+        let pwd_before = self.env.get("PWD").map(str::to_string);
+        let out = self.exec_inner(&argv, plan, skip_funcs);
+        self.hooks.run_post(&ctx, self.env.status);
+        // `cd` success is observed as a PWD change (hooks see every
+        // form, including function/eval/`command cd`).
+        if argv[0] == "cd"
+            && let Some(before) = pwd_before
+            && let Some(after) = self.env.get("PWD")
+            && before != after
+        {
+            self.hooks.run_chdir(Path::new(&before), Path::new(after));
+        }
+        out
+    }
+
+    /// Real dispatch, no hook bookkeeping.
+    fn exec_inner(&mut self, argv: &[String], plan: Plan, skip_funcs: bool) -> R<()> {
+        let name = argv[0].to_string();
 
         if !skip_funcs && self.funcs.contains_key(&name) {
             let body = self.funcs[&name].clone();
-            return self.call_function(body, argv, plan);
+            return self.call_function(body, argv.to_vec(), plan);
         }
         // These builtins need the shell itself:
         if name == "eval" {
-            return self.eval_cmd(&argv, plan);
+            return self.eval_cmd(argv, plan);
         }
         if name == "." || name == "source" {
-            return self.source_cmd(&argv, plan);
+            return self.source_cmd(argv, plan);
         }
-        // Job-control builtins need the engine's job table (plan 4.10).
+        // Job-control builtins need the engine's job table (plan 4.10);
+        // `theme`/`plugin` need the plugin registry (plan 6.6).
         if name == "wait" || name == "jobs" || name == "kill" {
             return apply_plan(plan, || match name.as_str() {
-                "wait" => self.wait_cmd(&argv),
+                "wait" => self.wait_cmd(argv),
                 "jobs" => self.jobs_cmd(),
-                _ => self.kill_cmd(&argv),
+                _ => self.kill_cmd(argv),
             });
+        }
+        if name == "theme" {
+            return apply_plan(plan, || self.theme_cmd(argv));
+        }
+        if name == "plugin" {
+            return apply_plan(plan, || self.plugin_cmd(argv));
         }
         if let Some(b) = BuiltIn::from_name(&name) {
             if b == BuiltIn::Command {
                 // Keep the original plan: `command ls > f` redirects the
                 // *target*, but `command -v x > f` redirects the builtin.
                 let run_plan = plan_clone(&plan)?;
-                let res = apply_plan(run_plan, || run_builtin(b, &argv, &mut self.env))?;
+                let res = apply_plan(run_plan, || run_builtin(b, argv, &mut self.env))?;
                 return match res? {
                     Flow::Status(s) => {
                         self.env.status = s;
@@ -930,10 +1015,40 @@ impl Engine {
                     other => self.flow(other),
                 };
             }
-            let res = apply_plan(plan, || run_builtin(b, &argv, &mut self.env))?;
+            let res = apply_plan(plan, || run_builtin(b, argv, &mut self.env))?;
             return self.flow(res?);
         }
-        self.spawn_external(&argv, plan)
+        self.spawn_external(argv, plan)
+    }
+
+    /// `theme [name]`: list registered themes (current marked `*`) or
+    /// switch the active one. Unknown name → status 1, keeps current.
+    fn theme_cmd(&mut self, argv: &[String]) {
+        if argv.len() == 1 {
+            for t in self.hooks.themes.iter() {
+                let mark = if t.name() == self.theme { "*" } else { " " };
+                println!("{mark} {}", t.name());
+            }
+            self.env.status = 0;
+            return;
+        }
+        let want = &argv[1];
+        if self.hooks.themes.iter().any(|t| t.name() == want) {
+            self.theme.clone_from(want);
+            self.env.status = 0;
+        } else {
+            eprintln!("brish: unknown theme: {want}");
+            self.env.status = 1;
+        }
+    }
+
+    /// `plugin`: list catalog plugins and whether they are installed.
+    fn plugin_cmd(&mut self, argv: &[String]) {
+        for (name, on) in self.hooks.installed() {
+            println!("{name} {}", if *on { "on" } else { "off" });
+        }
+        let _ = argv;
+        self.env.status = 0;
     }
 
     /// Translate a builtin's `Flow` into engine control flow.
@@ -1574,5 +1689,193 @@ mod tests {
     fn command_not_found_is_127_and_nonfatal() {
         assert_eq!(status("nosuchcmd-definitely-xyz"), 127);
         assert_eq!(status("nosuchcmd-definitely-xyz; true"), 0);
+    }
+
+    // ---- plugin hooks (plan 6.6) ----
+
+    use brish_plugin::{ChdirHook, PostExecHook, PreExecHook, PromptSegment, Theme};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Spy(Arc<Mutex<Vec<String>>>);
+
+    impl Spy {
+        fn log(&self, s: String) {
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).push(s);
+        }
+        fn lines(&self) -> Vec<String> {
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        }
+    }
+
+    impl PreExecHook for Spy {
+        fn before(&self, ctx: &CmdCtx<'_>) -> HookAction {
+            self.log(format!("pre:{}", ctx.argv[0]));
+            HookAction::Continue
+        }
+    }
+    impl PostExecHook for Spy {
+        fn after(&self, ctx: &CmdCtx<'_>, status: i32) {
+            self.log(format!("post:{}:{status}", ctx.argv[0]));
+        }
+    }
+    impl ChdirHook for Spy {
+        fn on_cd(&self, old: &Path, new: &Path) {
+            self.log(format!("cd:{}->{}", old.display(), new.display()));
+        }
+    }
+
+    fn engine_with(reg: Registry) -> Engine {
+        let mut e = Engine::new();
+        e.set_hooks(Arc::new(reg));
+        e
+    }
+
+    fn run_src(e: &mut Engine, src: &str) -> i32 {
+        let prog = brish_core::parser::parse(src).expect("parse");
+        match e.run(&prog) {
+            Ok(Outcome::Status(s)) | Ok(Outcome::Exit(s)) => s,
+            Err(err) => panic!("fatal: {err}"),
+        }
+    }
+
+    #[test]
+    fn plugin_hooks_fire_in_parent_in_order() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut reg = Registry::default();
+        reg.pre_exec.push(Box::new(Spy(Arc::clone(&log))));
+        reg.post_exec.push(Box::new(Spy(Arc::clone(&log))));
+        let mut e = engine_with(reg);
+        assert_eq!(run_src(&mut e, "false"), 1);
+        assert_eq!(
+            Spy(Arc::clone(&log)).lines(),
+            vec!["pre:false".to_string(), "post:false:1".to_string()]
+        );
+        assert_eq!(e.env.status, 1);
+    }
+
+    struct AbortTouch;
+    impl PreExecHook for AbortTouch {
+        fn before(&self, ctx: &CmdCtx<'_>) -> HookAction {
+            if ctx.argv[0] == "touch" {
+                HookAction::Abort(7)
+            } else {
+                HookAction::Continue
+            }
+        }
+    }
+
+    #[test]
+    fn abort_skips_command_and_sets_status() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let file = dir.path().join("nope");
+        let mut reg = Registry::default();
+        reg.pre_exec.push(Box::new(AbortTouch));
+        let mut e = engine_with(reg);
+        let src = format!("touch {}", file.display());
+        assert_eq!(run_src(&mut e, &src), 7);
+        assert_eq!(e.env.status, 7);
+        assert!(!file.exists(), "aborted command must not run");
+        // other commands unaffected
+        assert_eq!(run_src(&mut e, "true"), 0);
+    }
+
+    #[test]
+    fn hooks_skip_forked_children() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut reg = Registry::default();
+        reg.pre_exec.push(Box::new(Spy(Arc::clone(&log))));
+        reg.post_exec.push(Box::new(Spy(Arc::clone(&log))));
+        let mut e = engine_with(reg);
+        run_src(&mut e, "(true)");
+        run_src(&mut e, "true | true");
+        run_src(&mut e, "true &");
+        run_src(&mut e, "wait");
+        run_src(&mut e, "echo $(true)");
+        let lines = Spy(Arc::clone(&log)).lines();
+        // Only the parent-run `echo` fires; subshell/pipeline/background/
+        // command-substitution stages are hook-silent.
+        assert_eq!(
+            lines,
+            vec![
+                "pre:wait".to_string(),
+                "post:wait:0".to_string(),
+                "pre:echo".to_string(),
+                "post:echo:0".to_string(),
+            ],
+            "forked stages must not fire hooks: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn chdir_hook_fires_on_success_only() {
+        let _g = crate::test_util::CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let start = std::env::current_dir().expect("cwd");
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let target = tmp.path().to_str().expect("utf8").to_string();
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut reg = Registry::default();
+        reg.on_chdir.push(Box::new(Spy(Arc::clone(&log))));
+        let mut e = engine_with(reg);
+
+        assert_eq!(run_src(&mut e, &format!("cd {target}")), 0);
+        assert_eq!(Spy(Arc::clone(&log)).lines().len(), 1, "one chdir event");
+        assert!(
+            Spy(Arc::clone(&log)).lines()[0].contains(&target),
+            "new dir recorded"
+        );
+
+        assert_eq!(run_src(&mut e, "cd /definitely/not/a/dir"), 1);
+        assert_eq!(
+            Spy(Arc::clone(&log)).lines().len(),
+            1,
+            "failed cd fires nothing"
+        );
+        let _ = std::env::set_current_dir(start);
+    }
+
+    struct Dummy(&'static str);
+    impl Theme for Dummy {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn render(&self, _status: i32, _cwd: &Path, _segments: &[&dyn PromptSegment]) -> String {
+            self.0.to_string()
+        }
+    }
+
+    #[test]
+    fn theme_builtin_switches_and_rejects_unknown() {
+        let mut reg = Registry::default();
+        reg.themes.push(Box::new(Dummy("a")));
+        reg.themes.push(Box::new(Dummy("b")));
+        let mut e = engine_with(reg);
+        assert_eq!(e.theme, DEFAULT_THEME);
+
+        assert_eq!(run_src(&mut e, "theme b"), 0);
+        assert_eq!(e.theme, "b");
+
+        assert_eq!(run_src(&mut e, "theme nope"), 1);
+        assert_eq!(e.theme, "b", "unknown keeps current");
+
+        assert_eq!(run_src(&mut e, "theme"), 0);
+        assert_eq!(run_src(&mut e, "theme a"), 0);
+        assert_eq!(e.theme, "a");
+    }
+
+    #[test]
+    fn plugin_builtin_reports_catalog() {
+        let mut reg = Registry::default();
+        reg.record("x", true);
+        reg.record("y", false);
+        let mut e = engine_with(reg);
+        assert_eq!(run_src(&mut e, "plugin"), 0);
+        assert_eq!(
+            e.hooks().installed(),
+            &[("x".to_string(), true), ("y".to_string(), false)]
+        );
     }
 }

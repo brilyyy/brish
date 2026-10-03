@@ -110,6 +110,7 @@ version = "0.1.0"
 dependencies = [
  "brish-core",
  "brish-platform",
+ "brish-plugin",
  "brish-words",
  "tempfile",
 ]

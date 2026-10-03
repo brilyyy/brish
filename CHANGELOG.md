@@ -21,3 +21,8 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
 - Plugin system: new `brish-plugin` crate — hook/segment/theme/
   completion/keymap traits + `Registry` with registration-order
   dispatch and catalog records.
+- Engine hook wiring: pre/post/chdir hooks fire around command dispatch
+  in the parent process only (forked pipelines/background/subshells/
+  command substitutions are hook-silent); `Abort(n)` skips a command
+  and sets `$?`. New `theme` (list/switch) and `plugin` (list catalog)
+  engine builtins.
