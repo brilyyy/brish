@@ -41,6 +41,8 @@ pub struct Pipeline {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cmd {
     Simple(Simple),
+    /// `((expr))` — evaluate, status 0 iff non-zero.
+    Arith(String),
     Subshell(Program),
     Group(Program),
     If {
@@ -116,13 +118,15 @@ pub enum Redir {
         text: String,
         expand: bool,
     },
+    /// `<<<word` — expanded word plus a trailing newline.
+    HereString { fd: usize, target: Word },
 }
 
 impl Redir {
     /// The fd this redirection writes to (for `2>&1`-style resolution).
     pub fn fd(&self) -> usize {
         match self {
-            Redir::Input { fd, .. } | Redir::DupIn { fd, .. } => *fd,
+            Redir::Input { fd, .. } | Redir::DupIn { fd, .. } | Redir::HereString { fd, .. } => *fd,
             Redir::Output { fd, .. }
             | Redir::Append { fd, .. }
             | Redir::Clobber { fd, .. }

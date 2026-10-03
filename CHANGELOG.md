@@ -111,3 +111,22 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
   `nix::sys::signal`. Batch + unit tests cover bg/fg/stop/resume,
   notification-once, and group-safety; interactive TTY path (real
   Ctrl-Z, `tcsetpgrp` handoff) verified manually.
+
+## 0.1.0 — bash-isms: (( )), $'…', <<< (unreleased)
+
+- `((expr))` arithmetic command: lexed as its own token (never two
+  subshells, matching bash), evaluated against shell variables with
+  assignments; status 0 iff the value is non-zero, 1 on arithmetic
+  errors (diagnostic on stderr, shell keeps going). Works standalone,
+  in pipelines, negated (`! ((0))`), and with trailing redirections.
+- `$'…'` ANSI-C quoting: `\\n` `\\t` `\\r` `\\a` `\\b` `\\f` `\\v`,
+  `\\'` `\\\"` `\\\\` `\\?`, octal `\\0nnn`, hex `\\xHH`, `\\uHHHH`,
+  `\\UHHHHHHHH`, and `\\cX` control escapes — decoded at lex time to a
+  literal single-quoted part (no expansions inside, no field
+  splitting). Unterminated `$'…'` continues the REPL line.
+- `<<<` here-string redirection: expanded word plus trailing newline
+  fed to stdin via the same unlinked-tempfile path as here-docs;
+  works with IO numbers (`2<<< x`).
+- Tests: lexer/parser units (tokens, spans, incomplete inputs) plus
+  batch end-to-end cases; not added to the `dash`-checked POSIX
+  corpus (all three are bashisms).

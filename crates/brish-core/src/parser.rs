@@ -254,7 +254,7 @@ impl Parser {
     fn starts_command(&self, i: usize) -> bool {
         matches!(
             self.tokens.get(i).map(|t| &t.tok),
-            Some(Tok::Word(_)) | Some(Tok::IoNumber(_))
+            Some(Tok::Word(_)) | Some(Tok::IoNumber(_)) | Some(Tok::ArithCmd(_))
         ) || matches!(
             self.tokens.get(i).map(|t| &t.tok),
             Some(Tok::Op(
@@ -264,6 +264,7 @@ impl Parser {
                     | Op::DGreat
                     | Op::DLess
                     | Op::DLessDash
+                    | Op::DLessLess
                     | Op::GtAmp
                     | Op::LtAmp
                     | Op::Clobber
@@ -299,6 +300,11 @@ impl Parser {
         let cmd = match self.peek_tok() {
             None => return Err(Error::Incomplete),
             Some(Tok::Op(Op::LParen)) => self.parse_subshell()?,
+            Some(Tok::ArithCmd(src)) => {
+                let src = src.clone();
+                self.idx += 1;
+                Cmd::Arith(src)
+            }
             Some(Tok::Word(_)) => {
                 let lit = self.peek_word_literal();
                 match lit.as_deref() {
@@ -555,6 +561,7 @@ impl Parser {
             Op::Clobber => Redir::Clobber { fd, target },
             Op::LtAmp => Redir::DupIn { fd, target },
             Op::GtAmp => Redir::DupOut { fd, target },
+            Op::DLessLess => Redir::HereString { fd, target },
             Op::DLess | Op::DLessDash => {
                 let body = self
                     .heredocs
@@ -623,6 +630,7 @@ fn is_redir(o: Op) -> bool {
             | Op::DGreat
             | Op::DLess
             | Op::DLessDash
+            | Op::DLessLess
             | Op::GtAmp
             | Op::LtAmp
             | Op::Clobber
@@ -631,7 +639,7 @@ fn is_redir(o: Op) -> bool {
 
 fn default_fd(o: Op) -> usize {
     match o {
-        Op::Less | Op::LtAmp | Op::DLess | Op::DLessDash => 0,
+        Op::Less | Op::LtAmp | Op::DLess | Op::DLessDash | Op::DLessLess => 0,
         _ => 1,
     }
 }
@@ -729,6 +737,37 @@ mod tests {
         let s = simple("1A=1 cmd");
         assert!(s.assigns.is_empty());
         assert_eq!(s.words.len(), 2);
+    }
+
+    #[test]
+    fn arith_command_parses() {
+        let p = parse("((x = 1 + 2)) && echo done").unwrap();
+        assert!(matches!(&p.items[0].andor.first.cmds[0], Cmd::Arith(src) if src == "x = 1 + 2"));
+        // trailing redirections on the arith command
+        let p = parse("((1)) > f").unwrap();
+        assert!(matches!(
+            &p.items[0].andor.first.cmds[0],
+            Cmd::Redirected { inner, .. } if matches!(**inner, Cmd::Arith(_))
+        ));
+    }
+
+    #[test]
+    fn here_string_parses() {
+        let p = parse("cat <<< hi").unwrap();
+        let cmds = &p.items[0].andor.first.cmds;
+        match &cmds[0] {
+            Cmd::Simple(s) => assert!(matches!(
+                &s.redirs[0],
+                Redir::HereString { fd: 0, target }
+                    if literal_text(target).as_deref() == Some("hi")
+            )),
+            other => panic!("expected simple, got {other:?}"),
+        }
+        let p = parse("2<<< x").unwrap();
+        match &p.items[0].andor.first.cmds[0] {
+            Cmd::Simple(s) => assert!(matches!(&s.redirs[0], Redir::HereString { fd: 2, .. })),
+            other => panic!("expected simple, got {other:?}"),
+        }
     }
 
     #[test]

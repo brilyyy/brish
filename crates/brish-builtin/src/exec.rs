@@ -283,6 +283,16 @@ fn pipe_writer_file(w: std::io::PipeWriter) -> File {
 }
 
 /// Open `path` for `>`/`>>`/`>|` honoring `noclobber` (`>|` forces).
+/// Anonymous temp file holding `bytes`, unlinked at creation (no leak,
+/// 0600), rewound to 0 — shared by heredoc and here-string inputs.
+fn src_from_bytes(bytes: &[u8]) -> Result<Src, String> {
+    let mut f = tempfile::tempfile().map_err(|e| e.to_string())?;
+    f.write_all(bytes)
+        .and_then(|_| f.seek(SeekFrom::Start(0)))
+        .map_err(|e| e.to_string())?;
+    Ok(Src::File(f))
+}
+
 fn open_out(path: &str, append: bool, force: bool, noclobber: bool) -> std::io::Result<File> {
     let mut o = OpenOptions::new();
     o.write(true);
@@ -932,6 +942,18 @@ impl Engine {
     fn cmd(&mut self, c: &Cmd) -> R<()> {
         match c {
             Cmd::Simple(s) => self.simple(s, &[]),
+            Cmd::Arith(src) => {
+                let v = brish_words::eval_arith(src, &mut self.env);
+                self.env.status = match v {
+                    Ok(0) => 1,
+                    Ok(_) => 0,
+                    Err(e) => {
+                        eprintln!("brish: ((: {e}");
+                        1
+                    }
+                };
+                Ok(())
+            }
             Cmd::Group(p) => self.program(p, true),
             Cmd::Subshell(p) => self.subshell(p, Plan::new()),
             Cmd::Redirected { inner, redirs } => self.redirected(inner, redirs),
@@ -1608,20 +1630,16 @@ impl Engine {
                 } else {
                     text.clone()
                 };
-                // Anonymous temp file: unlinked at creation, no leak, 0600.
-                Ok(match tempfile::tempfile() {
-                    Ok(mut f) => {
-                        if let Err(e) = f
-                            .write_all(body.as_bytes())
-                            .and_then(|_| f.seek(SeekFrom::Start(0)))
-                        {
-                            Err(format!("heredoc: {e}"))
-                        } else {
-                            Ok((*fd, Src::File(f)))
-                        }
-                    }
-                    Err(e) => Err(format!("heredoc: {e}")),
-                })
+                Ok(src_from_bytes(body.as_bytes())
+                    .map_err(|e| format!("heredoc: {e}"))
+                    .map(|s| (*fd, s)))
+            }
+            Redir::HereString { fd, target } => {
+                let mut body = self.xvalue(target)?;
+                body.push('\n');
+                Ok(src_from_bytes(body.as_bytes())
+                    .map_err(|e| format!("here-string: {e}"))
+                    .map(|s| (*fd, s)))
             }
         }
     }

@@ -55,6 +55,7 @@ pub enum Op {
     DGreat,    // >>
     DLess,     // <<
     DLessDash, // <<-
+    DLessLess, // <<<
     GtAmp,     // >&
     LtAmp,     // <&
     Clobber,   // >|
@@ -66,6 +67,8 @@ pub enum Tok {
     Word(Word),
     IoNumber(i32),
     Op(Op),
+    /// `((expr))` arithmetic command (lexer consumed both paren pairs).
+    ArithCmd(String),
     Newline,
 }
 
@@ -250,6 +253,16 @@ impl<'a> Lexer<'a> {
 
     fn lex_operator(&mut self) -> Result<(), Error> {
         let start = self.pos;
+        if self.starts_with("((") {
+            // Arithmetic command: always `((expr))`, never two subshells
+            // (matches bash: `((` at word start is the arith command).
+            self.bump();
+            self.bump();
+            let content = self.scan_arith()?;
+            self.push(Tok::ArithCmd(content), start, self.pos);
+            self.at_word_start = true;
+            return Ok(());
+        }
         let op = if self.starts_with(";;") {
             self.bump();
             self.bump();
@@ -262,6 +275,11 @@ impl<'a> Lexer<'a> {
             self.bump();
             self.bump();
             Op::Or
+        } else if self.starts_with("<<<") {
+            self.bump();
+            self.bump();
+            self.bump();
+            Op::DLessLess
         } else if self.starts_with("<<-") {
             self.bump();
             self.bump();
@@ -516,6 +534,12 @@ impl<'a> Lexer<'a> {
     fn read_dollar(&mut self) -> Result<Part, Error> {
         let c1 = self.src[self.pos + 1..].chars().next();
         let c2 = self.src[self.pos + 1..].chars().nth(1);
+        if c1 == Some('\'') {
+            self.bump(); // `$`
+            self.bump(); // `'`
+            let s = self.read_ansi_c()?;
+            return Ok(Part::Single(s));
+        }
         if c1 == Some('(') && c2 == Some('(') {
             self.bump();
             self.bump();
@@ -560,6 +584,111 @@ impl<'a> Lexer<'a> {
             _ => {
                 self.bump(); // lone `$`
                 Ok(Part::Raw("$".into()))
+            }
+        }
+    }
+
+    /// Read `$'...'` ANSI-C quoted contents (opening `$'` consumed).
+    /// Escape decoding: `\n \t \\ \'` and friends, octal/hex/unicode
+    /// escapes; unknown escapes drop the backslash (bash behavior).
+    /// The result is literal — no expansions, no field splitting.
+    fn read_ansi_c(&mut self) -> Result<String, Error> {
+        let mut out = String::new();
+        loop {
+            if self.pos >= self.src.len() {
+                return Err(Error::Incomplete);
+            }
+            let c = self.cur()?;
+            self.bump();
+            if c == '\'' {
+                return Ok(out);
+            }
+            if c != '\\' {
+                out.push(c);
+                continue;
+            }
+            if self.pos >= self.src.len() {
+                return Err(Error::Incomplete);
+            }
+            let e = self.cur()?;
+            match e {
+                'n' => {
+                    self.bump();
+                    out.push('\n');
+                }
+                't' => {
+                    self.bump();
+                    out.push('\t');
+                }
+                'r' => {
+                    self.bump();
+                    out.push('\r');
+                }
+                'a' => {
+                    self.bump();
+                    out.push('\x07');
+                }
+                'b' => {
+                    self.bump();
+                    out.push('\x08');
+                }
+                'f' => {
+                    self.bump();
+                    out.push('\x0c');
+                }
+                'v' => {
+                    self.bump();
+                    out.push('\x0b');
+                }
+                '\\' | '\'' | '"' | '?' => {
+                    self.bump();
+                    out.push(e);
+                }
+                '0'..='7' => {
+                    let mut v: u32 = 0;
+                    for _ in 0..3 {
+                        let Some(x) = self.cur().ok().and_then(|d| d.to_digit(8)) else {
+                            break;
+                        };
+                        v = v * 8 + x;
+                        self.bump();
+                    }
+                    out.push(char::from_u32(v).unwrap_or('\u{fffd}'));
+                }
+                'x' | 'u' | 'U' => {
+                    self.bump();
+                    let max = match e {
+                        'x' => 2,
+                        'u' => 4,
+                        _ => 8,
+                    };
+                    let mut v: Option<u32> = None;
+                    for _ in 0..max {
+                        let Ok(d) = self.cur() else { break };
+                        let Some(x) = d.to_digit(16) else { break };
+                        self.bump();
+                        v = Some(v.unwrap_or(0) * 16 + x);
+                    }
+                    if let Some(x) = v.and_then(char::from_u32) {
+                        out.push(x);
+                    }
+                }
+                'c' => {
+                    self.bump();
+                    let Ok(d) = self.cur() else {
+                        return Err(Error::Incomplete);
+                    };
+                    self.bump();
+                    if d == '?' {
+                        out.push('\x7f');
+                    } else {
+                        out.push(char::from_u32((d as u32) & 0x1f).unwrap_or('\u{fffd}'));
+                    }
+                }
+                other => {
+                    self.bump();
+                    out.push(other);
+                }
             }
         }
     }
@@ -852,6 +981,41 @@ mod tests {
         assert_eq!(word(5).parts, vec![Part::Arith("1+2".into())]);
         assert_eq!(word(6).parts, vec![Part::Param("?".into())]);
         assert_eq!(word(8).parts, vec![Part::Param("@".into())]);
+    }
+
+    #[test]
+    fn ansi_c_quoting() {
+        let w = match &kinds("echo $'a\\tb\\n'")[1] {
+            Tok::Word(w) => w.clone(),
+            _ => panic!(),
+        };
+        assert_eq!(w.parts, vec![Part::Single("a\tb\n".into())]);
+        let w = match &kinds("echo $'\\x41\\u0042\\0'")[1] {
+            Tok::Word(w) => w.clone(),
+            _ => panic!(),
+        };
+        assert_eq!(w.parts, vec![Part::Single("AB\0".into())]);
+        assert!(matches!(lex("echo $'abc"), Err(Error::Incomplete)));
+    }
+
+    #[test]
+    fn here_string_operator() {
+        let k = kinds("cat <<< hi");
+        let ops: Vec<Op> = k
+            .iter()
+            .filter_map(|t| match t {
+                Tok::Op(o) => Some(*o),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ops, vec![Op::DLessLess]);
+    }
+
+    #[test]
+    fn arith_command_token() {
+        let k = kinds("((x = 1 + 2)) && echo done");
+        assert!(matches!(&k[0], Tok::ArithCmd(c) if c == "x = 1 + 2"));
+        assert!(matches!(lex("((1 + 2"), Err(Error::Incomplete)));
     }
 
     #[test]

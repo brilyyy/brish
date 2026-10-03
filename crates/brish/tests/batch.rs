@@ -289,3 +289,52 @@ fn stopped_background_job_recovers_via_fg() {
     assert!(text.contains("Stopped"), "jobs must show Stopped: {text:?}");
     assert!(text.trim().ends_with('0'), "fg resumed job to 0: {text:?}");
 }
+
+#[test]
+fn arith_command_sets_status() {
+    let o = run(&["-c", "((0)); echo $((x)) $?"]);
+    assert_eq!(out(&o), "0 1\n");
+    let o = run(&["-c", "((1)); echo $?"]);
+    assert_eq!(out(&o), "0\n");
+    // nonzero value -> status 0; $((x > 0)) evaluates to 1
+    let o = run(&["-c", "((x = 41 + 1)); echo $x; ((x)); echo $((x > 0)) $?"]);
+    assert_eq!(out(&o), "42\n1 0\n");
+    // arithmetic error: status 1, diagnostic, shell keeps going
+    let o = run(&["-c", "((1/0)); echo $?"]);
+    assert_eq!(out(&o), "1\n");
+    assert!(err(&o).contains("division by zero"), "err={}", err(&o));
+}
+
+#[test]
+fn arith_command_in_pipeline_and_negation() {
+    let o = run(&["-c", "((2)) | cat; echo $((x = 7)) | cat; ! ((0)); echo $?"]);
+    assert_eq!(out(&o), "7\n0\n");
+}
+
+#[test]
+fn ansi_c_quoting() {
+    let o = run(&["-c", "printf '<%s>' $'a\\tb'; echo"]);
+    assert_eq!(out(&o), "<a\tb>\n");
+    let o = run(&["-c", "printf '<%s>' $'x\\ny'; echo"]);
+    assert_eq!(out(&o), "<x\ny>\n");
+    let o = run(&["-c", "printf '<%s>' $'A\\x41\\u0042'; echo"]);
+    assert_eq!(out(&o), "<AAB>\n");
+    // unquoted result is still one field (literal, like single quotes)
+    let o = run(&["-c", "printf '<%s>' $'a b'; echo"]);
+    assert_eq!(out(&o), "<a b>\n");
+}
+
+#[test]
+fn here_string_feeds_stdin() {
+    let o = run(&["-c", "cat <<< hello"]);
+    assert_eq!(out(&o), "hello\n");
+    let o = run(&["-c", "cat <<< $'a\\nb'"]);
+    assert_eq!(out(&o), "a\nb\n");
+    let o = run(&[
+        "-c",
+        "while read -r line; do echo \"[$line]\"; done <<< 'x y'",
+    ]);
+    assert_eq!(out(&o), "[x y]\n");
+    let o = run(&["-c", "cat 3<<< x 2>&1 3>&-"]);
+    assert_eq!(out(&o), "");
+}
