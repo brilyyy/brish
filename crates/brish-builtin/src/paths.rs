@@ -23,6 +23,11 @@ pub fn history_path() -> PathBuf {
     config_dir().join(".brish_history")
 }
 
+/// `~/.config/brish/z` — frecency database for `z` builtin.
+pub fn z_path() -> PathBuf {
+    config_dir().join("z")
+}
+
 /// `~/.config/brish/plugins` — one directory per installed store plugin.
 pub fn plugins_dir() -> PathBuf {
     config_dir().join("plugins")

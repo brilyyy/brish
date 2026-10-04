@@ -49,14 +49,88 @@ pub fn run(b: BuiltIn, args: &[String], env: &mut Env) -> Result<Flow, Error> {
         BuiltIn::Colon => Ok(Flow::Status(0)),
         BuiltIn::Break => Ok(loop_control(args, Flow::Break)),
         BuiltIn::Continue => Ok(loop_control(args, Flow::Continue)),
-        BuiltIn::Alias | BuiltIn::History | BuiltIn::Source | BuiltIn::Trap => {
+        BuiltIn::Z => Ok(z_cmd(args, env)),
+        BuiltIn::History => Ok(history_cmd(args)),
+        BuiltIn::Alias | BuiltIn::Source | BuiltIn::Trap => {
             Err(Error::Exec(format!("{}: not yet implemented", b.name())))
         }
     }
 }
 
-/// `break`/`continue` argument handling: count from `$1`, default 1,
-/// non-numeric → status 2 (bash).
+/// Dispatch `history` builtin.
+/// Without args, lists the history file. `history -c` clears it.
+fn history_cmd(args: &[String]) -> Flow {
+    let path = crate::paths::history_path();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => {
+            // No history file yet — nothing to list.
+            if args.is_empty() || args[0] != "-c" {
+                return Flow::Status(0);
+            }
+            let _ = std::fs::write(&path, "");
+            return Flow::Status(0);
+        }
+    };
+
+    if args.is_empty() || args[0] != "-c" {
+        for line in text.lines() {
+            let s = line.trim();
+            if !s.is_empty() {
+                println!("{s}");
+            }
+        }
+    } else {
+        let _ = std::fs::write(&path, "");
+    }
+    Flow::Status(0)
+}
+
+/// `z` frecency builtin: jump to a frecent directory (substring match).
+/// `z` alone lists the top `limit` (default 10, `-N` overrides);
+/// `z -c` clears the db. Visits are recorded by `cd`.
+///
+/// ponytail: plain `<visits>\t<epoch>\t<path>` file, no concurrent-writer
+/// merge and no age-window config. Add when two shells visibly clobber.
+fn z_cmd(args: &[String], env: &mut Env) -> Flow {
+    let db = crate::paths::z_path();
+    if args.get(1).map(String::as_str) == Some("-c") {
+        let _ = std::fs::write(&db, b"");
+        return Flow::Status(0);
+    }
+
+    let mut limit = 10usize;
+    let mut query: Option<&str> = None;
+    for a in &args[1..] {
+        if let Some(n) = a.strip_prefix('-').and_then(|s| s.parse::<usize>().ok()) {
+            limit = n.max(1);
+        } else if query.is_none() {
+            query = Some(a);
+        }
+    }
+
+    let rows = crate::z::load(&db);
+    let Some(q) = query else {
+        for r in crate::z::rank(&rows, None).into_iter().take(limit) {
+            println!("{}", r.path);
+        }
+        return Flow::Status(0);
+    };
+
+    let hits = crate::z::rank(&rows, Some(q));
+    let Some(best) = hits.into_iter().next() else {
+        return Flow::Status(1);
+    };
+    if std::env::set_current_dir(&best.path).is_err() {
+        return Flow::Status(1);
+    }
+    let old = env.get("PWD").unwrap_or_default().to_string();
+    env.set_unchecked("OLDPWD", &old);
+    env.set_unchecked("PWD", &best.path);
+    println!("{}", best.path);
+    Flow::Status(0)
+}
+
 fn loop_control(args: &[String], mk: fn(usize) -> Flow) -> Flow {
     let Some(a) = args.get(1) else {
         return mk(1);
@@ -165,6 +239,11 @@ fn cd(args: &[String], env: &mut Env) -> Flow {
     if (args.len() > 1 && args[1] == "-") || via_cdpath {
         println!("{new_pwd}");
     }
+    crate::z::record(
+        &crate::paths::z_path(),
+        &new_pwd,
+        crate::z::now_epoch(),
+    );
     Flow::Status(0)
 }
 
@@ -1054,7 +1133,6 @@ mod tests {
         let mut e = env();
         for b in [
             BuiltIn::Alias,
-            BuiltIn::History,
             BuiltIn::Source,
             BuiltIn::Trap,
         ] {

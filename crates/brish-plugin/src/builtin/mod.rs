@@ -5,8 +5,13 @@
 //! this catalog through `config.toml [plugins]`.
 
 pub mod announce;
+pub mod aws;
+pub mod docker;
 pub mod git;
+pub mod kubectx;
+pub mod venv;
 pub mod themes;
+pub mod segments;
 
 use crate::Plugin;
 
@@ -18,8 +23,12 @@ pub struct CatalogEntry {
 }
 
 use announce::AnnounceCd;
+use aws::AwsPrompt;
+use docker::DockerPrompt;
 use git::GitPrompt;
+use kubectx::KubeCtxPrompt;
 use themes::DefaultThemes;
+use venv::VenvPrompt;
 
 /// In-tree plugins, in registration order. Theme/plugin names come
 /// from `Plugin::name`, not duplicated here.
@@ -36,6 +45,22 @@ pub fn catalog() -> Vec<CatalogEntry> {
         CatalogEntry {
             default_enabled: false,
             plugin: Box::new(AnnounceCd),
+        },
+        CatalogEntry {
+            default_enabled: true,
+            plugin: Box::new(VenvPrompt::default()),
+        },
+        CatalogEntry {
+            default_enabled: true,
+            plugin: Box::new(AwsPrompt::default()),
+        },
+        CatalogEntry {
+            default_enabled: true,
+            plugin: Box::new(KubeCtxPrompt::default()),
+        },
+        CatalogEntry {
+            default_enabled: true,
+            plugin: Box::new(DockerPrompt::default()),
         },
     ]
 }

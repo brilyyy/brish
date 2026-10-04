@@ -49,6 +49,8 @@ pub enum BuiltIn {
     Break,
     /// `continue`
     Continue,
+    /// `z`
+    Z,
 }
 
 impl BuiltIn {
@@ -76,6 +78,7 @@ impl BuiltIn {
             ":" => BuiltIn::Colon,
             "break" => BuiltIn::Break,
             "continue" => BuiltIn::Continue,
+            "z" => BuiltIn::Z,
             _ => return None,
         })
     }
@@ -87,7 +90,7 @@ impl BuiltIn {
         &[
             "alias", "break", "cd", "command", "continue", "echo", "exit", "export", "history",
             "pwd", "read", "readonly", "return", "set", "shift", "source", "test", "trap", "type",
-            "unset", ".", ":", "[",
+            "unset", "z", ".", ":", "[",
         ]
     }
 
@@ -115,6 +118,7 @@ impl BuiltIn {
             BuiltIn::Colon => ":",
             BuiltIn::Break => "break",
             BuiltIn::Continue => "continue",
+            BuiltIn::Z => "z",
         }
     }
 }

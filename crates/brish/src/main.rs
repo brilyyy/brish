@@ -1,11 +1,13 @@
 use std::io::{BufRead, IsTerminal, Read, Write};
 
 use brish_builtin::exec::{Engine, Outcome};
+use brish_plugin::Plugin;
 mod completion;
 mod config;
 mod highlight;
 mod hinter;
 mod keymap;
+mod packs;
 mod prompt;
 
 use clap::Parser;
@@ -99,6 +101,17 @@ fn main() {
     // (everything stays config-gated).
     for name in ["syntax-highlight", "autosuggest", "history-search"] {
         registry.record(name, config.plugin_enabled(name, true));
+    }
+    // Completion packs: native Rust arrays, config-gated like everything
+    // else. Disabled packs are recorded (so `plugin list` shows them)
+    // but their provider is not installed.
+    for pack in packs::catalog() {
+        let name = pack.name().to_string();
+        if config.plugin_enabled(&name, true) {
+            registry.install(&pack);
+        } else {
+            registry.record(&name, false);
+        }
     }
     // Store plugins, config-gated like the catalog (installed =
     // enabled by default).
