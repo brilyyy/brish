@@ -13,6 +13,11 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
   `~/.brish_history`. Error prefix `brish:`.
 
 ### Added
+- Added `briiish` theme: `❯` arrow (green/red by status) + cyan cwd
+  basename + segments. New default interactive theme.
+- robbyrussell theme kept in catalog; selectable via `theme robbyrussell`,
+  `BRISH_THEME=robbyrussell`, `--theme robbyrussell`, or
+  `[theme] name = "robbyrussell"`.
 - robbyrussell-style default prompt: green/red `➜` + cyan cwd basename;
   `PS1`/`PS2` literal overrides, `NO_COLOR` support.
 - Tab completion: builtins + `$PATH` commands, `$VARS`, file paths

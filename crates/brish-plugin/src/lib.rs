@@ -9,7 +9,7 @@ pub mod builtin;
 use std::path::Path;
 
 /// Fallback theme name when nothing else resolves.
-pub const DEFAULT_THEME: &str = "robbyrussell";
+pub const DEFAULT_THEME: &str = "briiish";
 
 /// True when ANSI colors should be emitted (`NO_COLOR` unset or empty).
 pub fn color_enabled() -> bool {

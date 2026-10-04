@@ -129,22 +129,84 @@ warns and the last one wins.
 
 ## Themes
 
+A theme owns the whole left-prompt layout; registered
+[`PromptSegment`](crate::PromptSegment)s are appended wherever the
+theme decides (briiish/robbyrussell: after the cwd, minimal/plain:
+ignored).
+
+### The `Theme` trait
+
 ```rust
-impl Theme for Solarized {
-    fn name(&self) -> &str { "solarized" }
-    fn render(&self, status: i32, cwd: &Path, segments: &[&dyn PromptSegment]) -> String {
-        let segs = segments.iter().filter_map(|s| s.render(status, cwd))
-            .collect::<Vec<_>>().join(" ");
-        // respect NO_COLOR via brish_plugin::color_enabled()
-        format!("{} {}", /* ... */, cwd.display())
+pub trait Theme: Send + Sync {
+    fn name(&self) -> &str;
+    /// Full left-prompt text; segments are ordered by registration.
+    fn render(&self, status: i32, cwd: &Path, segments: &[&dyn PromptSegment]) -> String;
+}
+```
+
+Register it from `Plugin::install`:
+
+```rust
+impl Plugin for MyPlugin {
+    fn name(&self) -> &str { "my-plugin" }
+    fn install(&self, reg: &mut Registry) {
+        reg.themes.push(Box::new(MyTheme));
+        // also reg.prompt_segments.push(...), etc.
     }
 }
 ```
 
-Registering the `Theme` makes it selectable: `theme solarized`,
-`BRISH_THEME=solarized`, `brish --theme solarized`, or
-`[theme] name = "solarized"` in config. Unknown names warn and fall
-back to `robbyrussell`.
+### Built-in themes
+
+| Name | Visual | Source |
+|---|---|---|
+| **briiish** (default) | `❯` arrow (green on status 0, red otherwise) + cyan cwd basename + segments | `crates/brish-plugin/src/builtin/themes.rs` (`Briiish`) |
+| **robbyrussell** | `➜` arrow (green/red) + cyan cwd basename + segments | same file (`Robbyrussell`) |
+| **minimal** | `{basename} ` — directory only, no color | same file (`Minimal`) |
+| **plain** | `$ ` — POSIX-style | same file (`Plain`) |
+
+Helpers you can reuse: `basename(cwd)` (cwd basename with `.`
+fallback) and `seg_text(status, cwd, segments)` (non-empty
+segment texts, space-joined). Both are private to `themes.rs` —
+copy them into your plugin if you need the same layout.
+
+### Template themes (`[theme]` in `plugin.toml`)
+
+Store plugins can declare a prompt declaratively — no Rust
+needed:
+
+```toml
+[theme]
+name = "mytheme"
+prompt = "{fg:bright-magenta}{arrow} {fg:cyan}{cwd}{reset} {segments}"
+```
+
+Template tokens (expanded by `expand_template()` in
+`crates/brish-builtin/src/store.rs`):
+
+| Token | Expansion |
+|---|---|
+| `{arrow}` | `➜` — green on status 0, red otherwise (ANSI when colors on) |
+| `{cwd}` | cwd basename |
+| `{segments}` | space-joined rendered `PromptSegment`s |
+| `{reset}` | `\x1b[0m` when colors on, empty otherwise |
+| `{fg:SPEC}` / `{bg:SPEC}` | ANSI color: `black`/`red`/`green`/`yellow`/`blue`/`magenta`/`cyan`/`white`, optional `bright-` prefix, or `#rrggbb` |
+
+Unknown tokens and unmatched `{` pass through literally.
+`NO_COLOR` collapses every color token to empty.
+
+### Selecting a theme
+
+Precedence (highest first): `PS2` env while a continuation is
+pending, `PS1` env (literal string), else the active theme looked
+up by name in the registry. The name comes from `--theme NAME` >
+`BRISH_THEME` env > `[theme] name` in `config.toml` > `theme`
+builtin selection > `DEFAULT_THEME` (`"briiish"`). Unknown names
+warn and fall back to `briiish`.
+
+Registering a `Theme` makes it selectable: `theme mytheme`,
+`BRISH_THEME=mytheme`, `brish --theme mytheme`, or
+`[theme] name = "mytheme"` in config.
 
 ## Installing (store plugins)
 

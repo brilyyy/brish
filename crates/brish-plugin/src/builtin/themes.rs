@@ -1,8 +1,8 @@
-//! The three built-in prompt themes.
+//! The four built-in prompt themes.
 //!
 //! A theme owns the whole left-prompt layout; registered
 //! [`PromptSegment`](crate::PromptSegment)s are appended wherever the
-//! theme decides (robbyrussell: after the cwd, others: ignored).
+//! theme decides (briiish/robbyrussell: after the cwd, others: ignored).
 
 use crate::{PromptSegment, Theme, color_enabled};
 
@@ -74,6 +74,45 @@ impl Theme for Robbyrussell {
         out
     }
 }
+/// briiish-style: `❯ dir [segments] ` — arrow green/red by status,
+/// cwd cyan.
+pub struct Briiish;
+
+impl Theme for Briiish {
+    fn name(&self) -> &str {
+        "briiish"
+    }
+
+    fn render(
+        &self,
+        status: i32,
+        cwd: &std::path::Path,
+        segments: &[&dyn PromptSegment],
+    ) -> String {
+        let dir = basename(cwd);
+        let segs = seg_text(status, cwd, segments);
+        let mut out = String::from("❯ ");
+        if color_enabled() {
+            let arrow = if status == 0 { GREEN } else { RED };
+            out.clear();
+            out.push_str(arrow);
+            out.push_str("❯ ");
+            out.push_str(RESET);
+            out.push_str(CYAN);
+            out.push_str(dir);
+            out.push_str(RESET);
+        } else {
+            out.push_str(dir);
+        }
+        if !segs.is_empty() {
+            out.push(' ');
+            out.push_str(&segs);
+        }
+        out.push(' ');
+        out
+    }
+}
+
 
 /// `{basename} ` — directory only, no color.
 pub struct Minimal;
@@ -111,7 +150,7 @@ impl Theme for Plain {
     }
 }
 
-/// Registers all three (catalog plugin `default-themes`).
+/// Registers all themes (catalog plugin `default-themes`).
 pub struct DefaultThemes;
 
 impl crate::Plugin for DefaultThemes {
@@ -120,6 +159,7 @@ impl crate::Plugin for DefaultThemes {
     }
 
     fn install(&self, reg: &mut crate::Registry) {
+        reg.themes.push(Box::new(Briiish));
         reg.themes.push(Box::new(Robbyrussell));
         reg.themes.push(Box::new(Minimal));
         reg.themes.push(Box::new(Plain));
@@ -157,6 +197,25 @@ mod tests {
     }
 
     #[test]
+    fn briiish_shows_dir_and_segments() {
+        let cwd = std::path::Path::new("/home/u/brish");
+        let seg = Seg("git:(main)");
+        let out = Briiish.render(0, cwd, &[&seg]);
+        assert!(out.contains("brish"), "{out:?}");
+        assert!(out.contains("git:(main)"), "{out:?}");
+        assert!(out.ends_with(' '), "{out:?}");
+        if color_enabled() {
+            assert!(out.starts_with(GREEN), "status 0 arrow: {out:?}");
+            assert!(out.contains(CYAN), "cwd cyan: {out:?}");
+        }
+        let bad = Briiish.render(1, cwd, &[]);
+        if color_enabled() {
+            assert!(bad.starts_with(RED), "status 1 arrow: {bad:?}");
+        }
+        assert!(!bad.contains("git:(main)"), "no segments when none given");
+    }
+
+    #[test]
     fn minimal_and_plain_ignore_segments() {
         let cwd = std::path::Path::new("/x/y");
         let seg = Seg("ignored");
@@ -170,7 +229,7 @@ mod tests {
         let p = DefaultThemes;
         reg.install(&p);
         let names: Vec<&str> = reg.themes.iter().map(|t| t.name()).collect();
-        assert_eq!(names, vec!["robbyrussell", "minimal", "plain"]);
+        assert_eq!(names, vec!["briiish", "robbyrussell", "minimal", "plain"]);
         assert_eq!(reg.installed(), &[("default-themes".to_string(), true)]);
     }
 

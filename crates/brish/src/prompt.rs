@@ -6,7 +6,7 @@
 //! `theme` builtin decide the name). Unknown theme → core `$ ` fallback.
 //!
 //! ```text
-//! ➜  brish git:(main)     # robbyrussell + segments (registry)
+//! ❯  brish git:(main)     # briiish + segments (registry)
 //! y                       # minimal
 //! $                       # plain / fallback
 //! ```
@@ -54,7 +54,7 @@ fn left_text(
     theme_text(status, cwd, registry, theme)
 }
 
-/// robbyrussell-style prompt for one `read_line` call.
+/// Active-theme prompt for one `read_line` call.
 pub struct BrishPrompt {
     left: String,
 }

@@ -99,7 +99,7 @@ Three tiers, all recompile-to-change:
 |---|---|---|
 | `PreExecHook` / `PostExecHook` | `exec.rs::exec_words`, around dispatch | Covers builtins *and* externals; `Abort` short-circuits |
 | `ChdirHook` | `brish-builtin` `cd` builtin, after successful chdir | |
-| `PromptSegment` | `brish/src/prompt.rs`, appended to robbyrussell base | Ordered, joined with spaces |
+| `PromptSegment` | `brish/src/prompt.rs`, appended to the briiish base | Ordered, joined with spaces |
 | `CompletionProvider` | `brish/src/completion.rs`, after builtins/PATH/files | `is_command` mirrors the current position heuristic |
 | `KeymapProvider` | `brish/src/main.rs`, merged into `default_emacs_keybindings()` | Stringly-typed events keep the crate engine-free |
 
@@ -119,7 +119,7 @@ stages simply never see them v1).
   and sets `$? = 7`; disabled-in-config plugin never fires.
 
 ### P2 — prompt segments + completion providers
-- Move the robbyrussell git segment in as the flagship `PromptSegment`
+- Move the git segment in as the flagship `PromptSegment`
   (**deferred pending desire** — single `git status --porcelain=v1
   --branch` call, no cache; add a 1s cache if prompt latency bites).
 - Promote the lite completer's builtin/PATH/`$VAR`/file logic into

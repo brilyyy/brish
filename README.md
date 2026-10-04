@@ -29,7 +29,7 @@ brish --theme plain -c 'hi'  # pick a prompt theme for this run
 echo 'echo from stdin' | brish
 ```
 
-Interactive default theme is **robbyrussell**: `➜` arrow (green on
+Interactive default theme is **briiish**: `❯` arrow (green on
 success, red on failure) + cyan cwd basename + git segment. `theme`
 lists/switches themes, `plugin` lists installed plugins. `PS1`/`PS2`
 set in the environment override the theme as literal strings;
