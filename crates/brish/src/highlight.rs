@@ -48,6 +48,25 @@ impl Highlighter for BrishHighlighter {
     }
 }
 
+/// Plugin that installs the built-in syntax highlighter into the registry.
+pub struct SyntaxHighlightPlugin;
+
+impl brish_plugin::Plugin for SyntaxHighlightPlugin {
+    fn name(&self) -> &str {
+        "syntax-highlight"
+    }
+
+    fn install(&self, reg: &mut brish_plugin::Registry) {
+        struct F;
+        impl brish_plugin::HighlighterFactory for F {
+            fn create(&self) -> Box<dyn reedline::Highlighter> {
+                Box::new(BrishHighlighter)
+            }
+        }
+        reg.highlighter_factories.push(Box::new(F));
+    }
+}
+
 /// Lex `line`, falling back to the longest suffix-trimmed prefix when
 /// the input is incomplete (`Error::Incomplete`) or otherwise unlexable.
 fn lex_best(line: &str) -> (Vec<Token>, bool) {

@@ -1,9 +1,9 @@
 //! Static plugin system for briSH (`docs/PLUGIN-PLAN.md`, plan 6.6).
 //!
-//! Traits + registry only, zero dependencies. Registration lives in the
-//! binary; the engine walks the resulting registry read-only (no locks
-//! after startup — dispatch is a slice walk over borrowed contexts).
-
+//! Traits + registry only, minimal dependencies (reedline for the
+//! line-editing seams). Registration lives in the binary; the engine
+//! walks the resulting registry read-only (no locks after startup —
+//! dispatch is a slice walk over borrowed contexts).
 pub mod builtin;
 
 use std::path::Path;
@@ -87,6 +87,44 @@ pub trait KeymapProvider: Send + Sync {
     fn bindings(&self) -> Vec<(String, String)>;
 }
 
+/// Creates a reedline edit mode from a merged keybinding set. The
+/// factory pattern (rather than `Box<dyn EditMode>`) keeps the
+/// registry cloneless: `Keybindings` is the only stateful input and
+/// is cloned into each mode at `edit_repl` time.
+pub trait EditModeFactory: Send + Sync {
+    fn create(&self, keybindings: reedline::Keybindings) -> Box<dyn reedline::EditMode>;
+}
+
+/// Creates a reedline highlighter. Factories (not `Box<dyn Highlighter>`)
+/// avoid the `Clone` requirement — reedline consumes the box once at
+/// `Reedline::with_highlighter`.
+pub trait HighlighterFactory: Send + Sync {
+    fn create(&self) -> Box<dyn reedline::Highlighter>;
+}
+
+/// Creates a reedline hinter. Same factory rationale as
+/// [`HighlighterFactory`]; hinters hold per-line state internally.
+pub trait HinterFactory: Send + Sync {
+    fn create(&self) -> Box<dyn reedline::Hinter>;
+}
+
+/// Creates a reedline menu. Menus are wrapped in [`ReedlineMenu`] by
+/// the caller (EngineCompleter/HistoryMenu/WithCompleter), so the
+/// factory returns the bare menu.
+pub trait MenuFactory: Send + Sync {
+    fn create(&self) -> Box<dyn reedline::Menu>;
+}
+
+/// Creates a reedline validator.
+pub trait ValidatorFactory: Send + Sync {
+    fn create(&self) -> Box<dyn reedline::Validator>;
+}
+
+/// Creates a reedline history backend.
+pub trait HistoryFactory: Send + Sync {
+    fn create(&self) -> Box<dyn reedline::History>;
+}
+
 /// A named bundle of objects contributed to one or more seams.
 pub trait Plugin: Send + Sync {
     fn name(&self) -> &str;
@@ -103,6 +141,12 @@ pub struct Registry {
     pub themes: Vec<Box<dyn Theme>>,
     pub completion_providers: Vec<Box<dyn CompletionProvider>>,
     pub keymaps: Vec<Box<dyn KeymapProvider>>,
+    pub edit_mode_factories: Vec<Box<dyn EditModeFactory>>,
+    pub highlighter_factories: Vec<Box<dyn HighlighterFactory>>,
+    pub hinter_factories: Vec<Box<dyn HinterFactory>>,
+    pub menu_factories: Vec<Box<dyn MenuFactory>>,
+    pub validator_factories: Vec<Box<dyn ValidatorFactory>>,
+    pub history_factories: Vec<Box<dyn HistoryFactory>>,
     /// Every catalog entry `(name, installed)` for the `plugin` builtin.
     installed: Vec<(String, bool)>,
 }
@@ -141,11 +185,39 @@ impl Registry {
             h.after(ctx, status);
         }
     }
-
     pub fn run_chdir(&self, old: &Path, new: &Path) {
         for h in &self.on_chdir {
             h.on_cd(old, new);
         }
+    }
+
+    /// First-registered edit mode factory wins; `None` = the engine
+    /// default (Emacs).
+    pub fn edit_mode_factory(&self) -> Option<&dyn EditModeFactory> {
+        self.edit_mode_factories.first().map(|b| b.as_ref())
+    }
+
+    pub fn highlighter_factory(&self) -> Option<&dyn HighlighterFactory> {
+        self.highlighter_factories.first().map(|b| b.as_ref())
+    }
+
+    pub fn hinter_factory(&self) -> Option<&dyn HinterFactory> {
+        self.hinter_factories.first().map(|b| b.as_ref())
+    }
+    pub fn menu_factory(&self) -> Option<&dyn MenuFactory> {
+        self.menu_factories.first().map(|b| b.as_ref())
+    }
+
+    pub fn validator_factory(&self) -> Option<&dyn ValidatorFactory> {
+        self.validator_factories.first().map(|b| b.as_ref())
+    }
+
+    pub fn history_factory(&self) -> Option<&dyn HistoryFactory> {
+        self.history_factories.first().map(|b| b.as_ref())
+    }
+
+    pub fn menu_factories_len(&self) -> usize {
+        self.menu_factories.len()
     }
 }
 

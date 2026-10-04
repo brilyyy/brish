@@ -4,6 +4,7 @@ use brish_builtin::exec::{Engine, Outcome};
 use brish_plugin::Plugin;
 mod completion;
 mod config;
+mod edit_mode;
 mod highlight;
 mod hinter;
 mod keymap;
@@ -96,11 +97,28 @@ fn main() {
     } else {
         registry.record(completion::DEFAULT_COMPLETION, false);
     }
-    // Interactive trio: capability plugins recorded like catalog
-    // entries; the REPL wires each seam when the name is installed
-    // (everything stays config-gated).
-    for name in ["syntax-highlight", "autosuggest", "history-search"] {
-        registry.record(name, config.plugin_enabled(name, true));
+    for (name, plugin) in [
+        ("syntax-highlight", &highlight::SyntaxHighlightPlugin as &dyn Plugin),
+        ("autosuggest", &hinter::AutosuggestPlugin as &dyn Plugin),
+        ("emacs-mode", &edit_mode::EmacsModePlugin as &dyn Plugin),
+        ("default-menus", &edit_mode::DefaultMenusPlugin as &dyn Plugin),
+        ("history-search", &edit_mode::HistorySearchPlugin as &dyn Plugin),
+        ("history", &edit_mode::HistoryPlugin as &dyn Plugin),
+        ("validator", &edit_mode::ValidatorPlugin as &dyn Plugin),
+    ] {
+        if config.plugin_enabled(name, true) {
+            registry.install(plugin);
+        } else {
+            registry.record(name, false);
+        }
+    }
+    // Warn on duplicate seam registrations (first wins in edit_repl),
+    // same as the theme check below.
+    if registry.highlighter_factories.len() > 1 {
+        eprintln!("brish: duplicate highlighter");
+    }
+    if registry.hinter_factories.len() > 1 {
+        eprintln!("brish: duplicate hinter");
     }
     // Completion packs: native Rust arrays, config-gated like everything
     // else. Disabled packs are recorded (so `plugin list` shows them)
@@ -287,25 +305,43 @@ fn edit_repl(engine: &mut Engine, var_names: Arc<Mutex<Vec<String>>>) -> i32 {
     for warning in keymap::merge(&mut keybindings, &registry.keymaps) {
         eprintln!("brish: {warning}");
     }
+    // Edit mode: registry factory first, fall back to Emacs.
+    let edit_mode: Box<dyn reedline::EditMode> = if let Some(f) = registry.edit_mode_factory() {
+        f.create(keybindings.clone())
+    } else {
+        Box::new(Emacs::new(keybindings))
+    };
     let mut rl = Reedline::create()
         .with_completer(Box::new(BrishCompleter::new(Arc::clone(&registry))))
-        .with_menu(ReedlineMenu::EngineCompleter(Box::new(
-            ColumnarMenu::default().with_name("completion_menu"),
-        )))
-        .with_edit_mode(Box::new(Emacs::new(keybindings)));
-    if let Ok(hist) = FileBackedHistory::with_file(1000, config::history_path()) {
+        .with_edit_mode(edit_mode);
+    // Menus: each registered menu factory becomes one ReedlineMenu
+    // (`EngineCompleter` for completion menus, `HistoryMenu` for the
+    // one bound to `HISTORY_MENU`). Empty → hard-coded default menu.
+    for factory in &registry.menu_factories {
+        let menu = factory.create();
+        if menu.name() == crate::keymap::HISTORY_MENU {
+            rl = rl.with_menu(ReedlineMenu::HistoryMenu(menu));
+        } else {
+            rl = rl.with_menu(ReedlineMenu::EngineCompleter(menu));
+        }
+    }
+    if registry.menu_factories.is_empty() {
+        rl = rl.with_menu(ReedlineMenu::EngineCompleter(Box::new(
+            ColumnarMenu::default().with_name(keymap::MENU_NAME),
+        )));
+    }
+    // History: registry factory first; fallback to FileBackedHistory.
+    if let Some(hist) = registry.history_factory().map(|f| f.create()) {
+        rl = rl.with_history(hist);
+    } else if let Ok(hist) = FileBackedHistory::with_file(1000, config::history_path()) {
         rl = rl.with_history(Box::new(hist));
     }
-    if installed("syntax-highlight") {
-        rl = rl.with_highlighter(Box::new(highlight::BrishHighlighter));
+    if let Some(h) = registry.highlighter_factory().map(|f| f.create()) {
+        rl = rl.with_highlighter(h);
     }
-    if installed("autosuggest") {
-        rl = rl.with_hinter(Box::new(hinter::BrishHinter::default()));
-    }
-    if installed("history-search") {
-        rl = rl.with_menu(ReedlineMenu::HistoryMenu(Box::new(
-            reedline::ListMenu::default().with_name(keymap::HISTORY_MENU),
-        )));
+    // Hinter: registry factory first.
+    if let Some(h) = registry.hinter_factory().map(|f| f.create()) {
+        rl = rl.with_hinter(h);
     }
     let mut buf = String::new();
     loop {
