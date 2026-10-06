@@ -725,7 +725,9 @@ fn ls_cmd(args: &[String], env: &Env) -> Result<Flow, Error> {
     if want_eza {
         let mut argv = vec!["eza".to_string()];
         if cfg.ls_icons {
-            argv.push("--icons".into());
+            // `--icons=always`: bare `--icons` would eat the next arg
+            // (clap optional value: `eza --icons NOTES.md` breaks).
+            argv.push("--icons=always".into());
         }
         argv.extend(args[1..].iter().cloned());
         return Ok(Flow::Exec(argv));
