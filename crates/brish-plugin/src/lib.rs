@@ -131,6 +131,13 @@ pub trait Plugin: Send + Sync {
     fn install(&self, registry: &mut Registry);
 }
 
+/// One catalog entry: installed when enabled (catalog default or the
+/// config file's `enabled`/`disabled` lists).
+pub struct CatalogEntry {
+    pub default_enabled: bool,
+    pub plugin: Box<dyn Plugin>,
+}
+
 /// Everything a user build can register into. Immutable after startup.
 #[derive(Default)]
 pub struct Registry {

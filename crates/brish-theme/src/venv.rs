@@ -1,11 +1,11 @@
-//! `venv-prompt` — [`PromptSegment`](crate::PromptSegment) showing the
+//! `venv-prompt` — [`PromptSegment`](brish_plugin::PromptSegment) showing the
 //! active Python virtual environment.
 //!
 //! Pure: reads `$VIRTUAL_ENV` (set by virtualenv/venv/hatch) and renders
 //! the basename. No subprocess. 1s TTL cache via [`segments::Ttl`].
 
-use crate::builtin::segments::{Ttl, paint};
-use crate::{Plugin, PromptSegment};
+use crate::segments::{Ttl, paint};
+use brish_plugin::{Plugin, PromptSegment};
 use std::path::Path;
 
 pub struct VenvPrompt {
@@ -41,7 +41,7 @@ impl Plugin for VenvPrompt {
         "venv-prompt"
     }
 
-    fn install(&self, reg: &mut crate::Registry) {
+    fn install(&self, reg: &mut brish_plugin::Registry) {
         reg.prompt_segments.push(Box::new(Self::default()));
     }
 }

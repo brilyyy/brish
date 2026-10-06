@@ -1,10 +1,10 @@
 //! The four built-in prompt themes.
 //!
 //! A theme owns the whole left-prompt layout; registered
-//! [`PromptSegment`](crate::PromptSegment)s are appended wherever the
+//! [`PromptSegment`](brish_plugin::PromptSegment)s are appended wherever the
 //! theme decides (briiish/robbyrussell: after the cwd, others: ignored).
 
-use crate::{PromptSegment, Theme, color_enabled};
+use brish_plugin::{PromptSegment, Theme, color_enabled};
 
 const GREEN: &str = "\x1b[32m";
 const RED: &str = "\x1b[31m";
@@ -152,12 +152,12 @@ impl Theme for Plain {
 /// Registers all themes (catalog plugin `default-themes`).
 pub struct DefaultThemes;
 
-impl crate::Plugin for DefaultThemes {
+impl brish_plugin::Plugin for DefaultThemes {
     fn name(&self) -> &str {
         "default-themes"
     }
 
-    fn install(&self, reg: &mut crate::Registry) {
+    fn install(&self, reg: &mut brish_plugin::Registry) {
         reg.themes.push(Box::new(Briiish));
         reg.themes.push(Box::new(Robbyrussell));
         reg.themes.push(Box::new(Minimal));
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn default_themes_plugin_registers_in_order() {
-        let mut reg = crate::Registry::default();
+        let mut reg = brish_plugin::Registry::default();
         let p = DefaultThemes;
         reg.install(&p);
         let names: Vec<&str> = reg.themes.iter().map(|t| t.name()).collect();

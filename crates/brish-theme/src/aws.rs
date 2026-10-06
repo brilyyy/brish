@@ -1,11 +1,11 @@
-//! `aws-prompt` — [`PromptSegment`](crate::PromptSegment) showing the
+//! `aws-prompt` — [`PromptSegment`](brish_plugin::PromptSegment) showing the
 //! active AWS profile/region.
 //!
 //! Pure: reads `$AWS_PROFILE` / `$AWS_DEFAULT_PROFILE` and `$AWS_REGION` /
 //! `$AWS_DEFAULT_REGION`, no subprocess. 1s TTL cache via [`segments::Ttl`].
 
-use crate::builtin::segments::{Ttl, env_first, paint};
-use crate::{Plugin, PromptSegment};
+use crate::segments::{Ttl, env_first, paint};
+use brish_plugin::{Plugin, PromptSegment};
 use std::path::Path;
 
 pub struct AwsPrompt {
@@ -43,7 +43,7 @@ impl Plugin for AwsPrompt {
         "aws-prompt"
     }
 
-    fn install(&self, reg: &mut crate::Registry) {
+    fn install(&self, reg: &mut brish_plugin::Registry) {
         reg.prompt_segments.push(Box::new(Self::default()));
     }
 }

@@ -96,7 +96,12 @@ fn main() {
     let store_names: Vec<&str> = stored.iter().map(|p| p.manifest.name.as_str()).collect();
     let config = config::load_with_known(&store_names);
     let mut registry = brish_plugin::Registry::default();
-    for entry in brish_plugin::builtin::catalog() {
+    // Prompt catalog first (themes + segments; order = segment order),
+    // then behavioral plugins (announce, ...).
+    for entry in brish_theme::catalog()
+        .into_iter()
+        .chain(brish_plugin::builtin::catalog())
+    {
         let plugin = entry.plugin;
         let name = plugin.name().to_string();
         if config.plugin_enabled(&name, entry.default_enabled) {

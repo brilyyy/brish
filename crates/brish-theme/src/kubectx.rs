@@ -1,11 +1,11 @@
-//! `kubectx-prompt` — [`PromptSegment`](crate::PromptSegment) showing
+//! `kubectx-prompt` — [`PromptSegment`](brish_plugin::PromptSegment) showing
 //! the active Kubernetes context.
 //!
 //! Pure: reads `$KUBECONFIG` (or default `$HOME/.kube/config`), parses
 //! the current-context via INI-style top-level line, no subprocess. 1s TTL cache via [`segments::Ttl`].
 
-use crate::builtin::segments::{Ttl, paint};
-use crate::{Plugin, PromptSegment};
+use crate::segments::{Ttl, paint};
+use brish_plugin::{Plugin, PromptSegment};
 use std::path::{Path, PathBuf};
 
 pub struct KubeCtxPrompt {
@@ -68,7 +68,7 @@ impl Plugin for KubeCtxPrompt {
         "kubectx-prompt"
     }
 
-    fn install(&self, reg: &mut crate::Registry) {
+    fn install(&self, reg: &mut brish_plugin::Registry) {
         reg.prompt_segments.push(Box::new(Self::default()));
     }
 }

@@ -1,12 +1,12 @@
-//! `docker-prompt` — [`PromptSegment`](crate::PromptSegment) showing
+//! `docker-prompt` — [`PromptSegment`](brish_plugin::PromptSegment) showing
 //! the active Docker context.
 //!
 //! Pure: reads `$DOCKER_CONTEXT` (set by `docker context use`), no
 //! subprocess. 1s TTL cache via [`segments::Ttl`]. Defaults to `default`
 //! implicitly (nothing printed) when the var is unset.
 
-use crate::builtin::segments::{Ttl, env_first, paint};
-use crate::{Plugin, PromptSegment};
+use crate::segments::{Ttl, env_first, paint};
+use brish_plugin::{Plugin, PromptSegment};
 use std::path::Path;
 
 pub struct DockerPrompt {
@@ -37,7 +37,7 @@ impl Plugin for DockerPrompt {
         "docker-prompt"
     }
 
-    fn install(&self, reg: &mut crate::Registry) {
+    fn install(&self, reg: &mut brish_plugin::Registry) {
         reg.prompt_segments.push(Box::new(Self::default()));
     }
 }

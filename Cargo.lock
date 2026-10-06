@@ -99,6 +99,7 @@ dependencies = [
  "brish-core",
  "brish-platform",
  "brish-plugin",
+ "brish-theme",
  "clap",
  "dirs",
  "nu-ansi-term",
@@ -149,6 +150,14 @@ name = "brish-plugin"
 version = "0.1.0"
 dependencies = [
  "reedline",
+ "tempfile",
+]
+
+[[package]]
+name = "brish-theme"
+version = "0.1.0"
+dependencies = [
+ "brish-plugin",
  "tempfile",
 ]
 

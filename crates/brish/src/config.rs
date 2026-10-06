@@ -78,8 +78,10 @@ impl Config {
 /// known plugin names (`extra` = store plugins found on disk) so
 /// disabling an installed plugin does not warn as unknown.
 pub fn load_with_known(extra: &[&str]) -> Config {
-    let catalog = builtin::catalog();
-    let mut known: Vec<&str> = catalog.iter().map(|e| e.plugin.name()).collect();
+    let theme_cat = brish_theme::catalog();
+    let plugin_cat = builtin::catalog();
+    let mut known: Vec<&str> = theme_cat.iter().map(|e| e.plugin.name()).collect();
+    known.extend(plugin_cat.iter().map(|e| e.plugin.name()));
     known.extend_from_slice(extra);
     known.push(crate::completion::DEFAULT_COMPLETION);
     known.extend(crate::engine_plugins().map(|(n, _, _)| n));

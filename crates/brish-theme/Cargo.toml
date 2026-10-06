@@ -1,0 +1,15 @@
+[package]
+name = "brish-theme"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+brish-plugin = { path = "../brish-plugin" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

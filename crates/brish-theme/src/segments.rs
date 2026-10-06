@@ -59,7 +59,7 @@ pub(crate) fn env_first(names: &[&str]) -> Option<String> {
 
 /// Wrap `text` in an SGR color, or leave it bare when color is off.
 pub(crate) fn paint(sgr: &str, text: impl AsRef<str>) -> String {
-    if crate::color_enabled() {
+    if brish_plugin::color_enabled() {
         format!("\x1b[{sgr}m{}\x1b[0m", text.as_ref())
     } else {
         text.as_ref().to_string()
@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn paint_honors_color_setting() {
-        let expected = if crate::color_enabled() {
+        let expected = if brish_plugin::color_enabled() {
             "\x1b[35mmag\x1b[0m".to_string()
         } else {
             "mag".to_string()
