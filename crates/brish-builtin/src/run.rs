@@ -826,7 +826,7 @@ fn getopts_cmd(args: &[String], env: &mut Env) -> Flow {
             env.getopts_ind = ind + 1;
             return Flow::Status(0);
         }
-        if ind + 1 <= operands.len() {
+        if ind < operands.len() {
             env.set_unchecked("OPTARG", operands[ind].clone());
             env.set_unchecked(name, c.to_string());
             env.set_unchecked("OPTIND", (ind + 2).to_string());
