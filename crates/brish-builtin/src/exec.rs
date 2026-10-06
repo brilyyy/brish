@@ -28,7 +28,7 @@ use crate::{BuiltIn, Flow, run as run_builtin};
 use brish_platform::proc::{
     ChildState, FdOp, FdSetup, SIGCONT, fork_run, fork_spawn, kill_group, open_tty, poll_pid,
     preexec_fd_ops, send_signal, set_group_leader, shell_pgrp, signal_by_name, tcsetpgrp_fd,
-    wait_pid, wait_untraced, with_fds,
+    wait_pid, with_fds,
 };
 
 use brish_platform::RawFd;
@@ -285,16 +285,6 @@ fn plan_clone(plan: &Plan) -> R<Plan> {
     Ok(out)
 }
 
-fn decode_status(st: std::process::ExitStatus) -> i32 {
-    {
-        use std::os::unix::process::ExitStatusExt;
-        if let Some(sig) = st.signal() {
-            return 128 + sig;
-        }
-    }
-    st.code().unwrap_or(1)
-}
-
 // Pipe ends convert to File through each platform's owned-handle type.
 fn pipe_reader_file(r: std::io::PipeReader) -> File {
     File::from(std::os::fd::OwnedFd::from(r))
@@ -375,7 +365,16 @@ fn run_subst(src: &str, env: &Env, funcs: &HashMap<String, Cmd>) -> Result<(Stri
     // parent against a child blocked on a full pipe.
     let mut out = String::new();
     rd.read_to_string(&mut out)?;
-    let code = wait_pid(pid).map_err(|e| Error::Exec(e.to_string()))?;
+    // Trap-pending EINTR: retry; flags are drained by the caller's
+    // xexpand once the borrow on Engine is free (cmd-subst runs inside
+    // an expansion closure — cannot drain reentrantly here).
+    let code = loop {
+        match wait_pid(pid) {
+            Ok(c) => break c,
+            Err(brish_platform::PlatformError::Interrupted) => continue,
+            Err(e) => return Err(Error::Exec(e.to_string())),
+        }
+    };
     Ok((out, code))
 }
 
@@ -575,6 +574,33 @@ impl Engine {
         }
     }
 
+    /// Blocking wait that honors pending signal traps *mid-wait*:
+    /// EINTR + flags → drain (run trap bodies) → retry. `Exit` from a
+    /// trap propagates. This closes the "traps only fire at command
+    /// boundaries" ceiling for foreground waits.
+    fn wait_captured(&mut self, pid: i32) -> R<i32> {
+        use brish_platform::PlatformError;
+        loop {
+            match brish_platform::wait_pid(pid) {
+                Ok(c) => return Ok(c),
+                Err(PlatformError::Interrupted) => self.drain_traps()?,
+                Err(e) => return Err(platform_err(e)),
+            }
+        }
+    }
+
+    /// Same as [`Self::wait_captured`] but reports stops (`WUNTRACED`).
+    fn wait_untraced_captured(&mut self, pid: i32) -> R<ChildState> {
+        use brish_platform::PlatformError;
+        loop {
+            match brish_platform::wait_untraced(pid) {
+                Ok(s) => return Ok(s),
+                Err(PlatformError::Interrupted) => self.drain_traps()?,
+                Err(e) => return Err(platform_err(e)),
+            }
+        }
+    }
+
     // ---- lists ----
 
     fn program(&mut self, prog: &Program, errexit_ctx: bool) -> R<()> {
@@ -637,37 +663,47 @@ impl Engine {
     /// Blocking wait for the job at `i` (a stopped job blocks until
     /// it is continued); caches and returns its status, or `None` if a
     /// pid is not a child of this shell.
-    fn wait_job_blocking(&mut self, i: usize) -> Option<i32> {
+    /// `R<Option<i32>>`: `None` = not our child (POSIX wait semantics);
+    /// `Err` = a trap body asked to exit while we waited.
+    fn wait_job_blocking(&mut self, i: usize) -> R<Option<i32>> {
+        use brish_platform::PlatformError;
         if self.bg[i].done() {
-            return Some(self.bg[i].status());
+            return Ok(Some(self.bg[i].status()));
         }
         for k in 0..self.bg[i].pids.len() {
             if self.bg[i].st[k].is_none() {
-                match wait_pid(self.bg[i].pids[k]) {
-                    Ok(c) => self.bg[i].st[k] = Some(c),
-                    Err(_) => return None,
+                let pid = self.bg[i].pids[k];
+                loop {
+                    match wait_pid(pid) {
+                        Ok(c) => {
+                            self.bg[i].st[k] = Some(c);
+                            break;
+                        }
+                        Err(PlatformError::Interrupted) => self.drain_traps()?,
+                        Err(_) => return Ok(None),
+                    }
                 }
             }
         }
-        Some(self.bg[i].status())
+        Ok(Some(self.bg[i].status()))
     }
 
-    fn wait_cmd(&mut self, argv: &[String]) {
+    fn wait_cmd(&mut self, argv: &[String]) -> R<()> {
         if argv.len() == 1 {
             // POSIX: no operands waits for every known job. bash returns 0
             // even when a waited job failed (`false & wait` → 0).
             for i in 0..self.bg.len() {
-                let _ = self.wait_job_blocking(i);
+                let _ = self.wait_job_blocking(i)?;
             }
             self.env.status = 0;
-            return;
+            return Ok(());
         }
         let mut status = 0;
         for arg in &argv[1..] {
             if let Some(n) = arg.strip_prefix('%') {
                 let idx = n.parse::<usize>().ok().and_then(|n| n.checked_sub(1));
                 status = match idx {
-                    Some(i) if i < self.bg.len() => self.wait_job_blocking(i).unwrap_or(127),
+                    Some(i) if i < self.bg.len() => self.wait_job_blocking(i)?.unwrap_or(127),
                     _ => {
                         eprintln!("brish: wait: {arg}: no such job");
                         127
@@ -679,7 +715,7 @@ impl Engine {
                     .ok()
                     .and_then(|pid| self.bg.iter().position(|j| j.pids.contains(&pid)));
                 status = match idx {
-                    Some(i) => self.wait_job_blocking(i).unwrap_or(127),
+                    Some(i) => self.wait_job_blocking(i)?.unwrap_or(127),
                     _ => {
                         eprintln!("brish: wait: {arg}: not a child of this shell");
                         127
@@ -688,9 +724,10 @@ impl Engine {
             }
         }
         self.env.status = status;
+        Ok(())
     }
 
-    fn jobs_cmd(&mut self) {
+    fn jobs_cmd(&mut self) -> R<()> {
         self.reap_bg();
         let mut rows: Vec<Vec<String>> = Vec::new();
         for (n, j) in self.bg.iter_mut().enumerate() {
@@ -709,9 +746,10 @@ impl Engine {
             j.notified = true;
         }
         println!("{}", crate::table::render(&rows));
+        Ok(())
     }
 
-    fn kill_cmd(&mut self, argv: &[String]) {
+    fn kill_cmd(&mut self, argv: &[String]) -> R<()> {
         let mut sig: i32 = 15; // SIGTERM, POSIX default
         let mut targets: Vec<&String> = Vec::new();
         for a in &argv[1..] {
@@ -721,7 +759,7 @@ impl Engine {
                     None => {
                         eprintln!("brish: kill: {a}: invalid signal spec");
                         self.env.status = 1;
-                        return;
+                        return Ok(());
                     }
                 }
             } else {
@@ -731,7 +769,7 @@ impl Engine {
         if targets.is_empty() {
             eprintln!("brish: kill: usage: kill [-SIGNAME | -N] pid | %job ...");
             self.env.status = 1;
-            return;
+            return Ok(());
         }
         let mut status = 0;
         for t in targets {
@@ -777,6 +815,7 @@ impl Engine {
             }
         }
         self.env.status = status;
+        Ok(())
     }
 
     /// Current job index: the newest one that is not done.
@@ -857,11 +896,11 @@ impl Engine {
     }
 
     /// `fg [%job]`: bring a job to the foreground and wait for it.
-    fn fg_cmd(&mut self, argv: &[String]) {
+    fn fg_cmd(&mut self, argv: &[String]) -> R<()> {
         self.reap_bg();
         let Some(i) = self.job_arg(argv, "fg") else {
             self.env.status = 1;
-            return;
+            return Ok(());
         };
         println!("{}", self.bg[i].cmd);
         let held = self.hold_terminal(i);
@@ -871,17 +910,19 @@ impl Engine {
         let mut stopped_now = false;
         for k in 0..self.bg[i].pids.len() {
             if self.bg[i].st[k].is_none() {
-                match wait_untraced(self.bg[i].pids[k]) {
+                let pid = self.bg[i].pids[k];
+                match self.wait_untraced_captured(pid) {
                     Ok(ChildState::Exited(c)) => self.bg[i].st[k] = Some(c),
                     Ok(ChildState::Stopped) => {
                         self.bg[i].stopped = true;
                         stopped_now = true;
                         break;
                     }
-                    Err(e) => {
+                    Err(Stop::Fail(e)) => {
                         eprintln!("brish: fg: {e}");
                         break;
                     }
+                    Err(other) => return Err(other), // trap `exit` propagates
                 }
             }
         }
@@ -899,14 +940,15 @@ impl Engine {
         } else {
             self.env.status = self.bg[i].status();
         }
+        Ok(())
     }
 
     /// `bg [%job]`: continue a stopped job in the background.
-    fn bg_cmd(&mut self, argv: &[String]) {
+    fn bg_cmd(&mut self, argv: &[String]) -> R<()> {
         self.reap_bg();
         let Some(i) = self.job_arg(argv, "bg") else {
             self.env.status = 1;
-            return;
+            return Ok(());
         };
         self.release_terminal(i);
         if self.bg[i].stopped {
@@ -914,6 +956,7 @@ impl Engine {
         }
         println!("[{}] + {} &", i + 1, self.bg[i].cmd);
         self.env.status = 0;
+        Ok(())
     }
 
     fn and_or(&mut self, ao: &ast::AndOr, errexit_ctx: bool) -> R<()> {
@@ -1022,14 +1065,14 @@ impl Engine {
         let mut sts: Vec<i32> = Vec::with_capacity(pids.len());
         for (k, pid) in pids.iter().enumerate() {
             if !self.job_control {
-                sts.push(wait_pid(*pid).map_err(platform_err)?);
+                sts.push(self.wait_captured(*pid)?);
                 continue;
             }
             // Interactive: Ctrl-Z stops the stage group; hand the
             // remaining stages to the job table and return to prompt.
-            match wait_untraced(*pid) {
-                Ok(ChildState::Exited(c)) => sts.push(c),
-                Ok(ChildState::Stopped) => {
+            match self.wait_untraced_captured(*pid)? {
+                ChildState::Exited(c) => sts.push(c),
+                ChildState::Stopped => {
                     let rest = pids[k..].to_vec();
                     self.bg.push(Job {
                         st: vec![None; rest.len()],
@@ -1043,7 +1086,6 @@ impl Engine {
                     self.env.status = STOPPED_STATUS;
                     return Ok(());
                 }
-                Err(e) => return Err(platform_err(e)),
             }
         }
         // pipefail: rightmost non-zero stage status, else zero.
@@ -1375,13 +1417,15 @@ impl Engine {
         // Job-control builtins need the engine's job table (plan 4.10);
         // `theme`/`plugin` need the plugin registry (plan 6.6).
         if name == "wait" || name == "jobs" || name == "kill" || name == "fg" || name == "bg" {
+            // All five return R<()>; apply_plan wraps → flatten.
             return apply_plan(plan, || match name.as_str() {
                 "wait" => self.wait_cmd(argv),
                 "jobs" => self.jobs_cmd(),
                 "kill" => self.kill_cmd(argv),
                 "fg" => self.fg_cmd(argv),
                 _ => self.bg_cmd(argv),
-            });
+            })
+            .and_then(|r| r);
         }
         if name == "theme" {
             return apply_plan(plan, || self.theme_cmd(argv));
@@ -1648,7 +1692,7 @@ impl Engine {
                     // prompt instead of hanging in waitpid.
                     let pid = child.id() as i32;
                     drop(child); // waitpid below owns the reaping
-                    return match wait_untraced(pid) {
+                    return match self.wait_untraced_captured(pid) {
                         Ok(ChildState::Exited(c)) => {
                             self.env.status = c;
                             Ok(())
@@ -1666,14 +1710,12 @@ impl Engine {
                             self.env.status = STOPPED_STATUS;
                             Ok(())
                         }
-                        Err(e) => Err(Stop::Fail(Error::Exec(format!("{name}: wait: {e}")))),
+                        Err(x) => Err(x), // trap Exit/Fail propagates
                     };
                 }
-                let mut child = child;
-                let st = child
-                    .wait()
-                    .map_err(|e| Stop::Fail(Error::Exec(format!("{name}: wait: {e}"))))?;
-                self.env.status = decode_status(st);
+                let pid = child.id() as i32;
+                drop(child);
+                self.env.status = self.wait_captured(pid)?;
                 Ok(())
             }
             Err(e) => {
@@ -1798,6 +1840,11 @@ impl Engine {
             };
             f(&mut self.env, &mut cs)
         };
+        // Traps signaled while expansion waits (cmd-subst) run now
+        // that the Engine borrow is free — then expansion status wins.
+        if brish_platform::peek_pending_traps() != 0 {
+            self.drain_traps()?;
+        }
         if let Some(c) = st {
             self.env.status = c;
             self.cs_seen = true;
@@ -2495,6 +2542,51 @@ mod tests {
     }
 
     #[test]
+    fn trap_int_fires_during_foreground_wait() {
+        let _trap_g = crate::test_util::TRAP_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Proof of mid-wait delivery: SIGINT lands while `sleep` is
+        // blocked in waitpid; the marker must vanish BEFORE the sleep
+        // finishes (a boundary-only drain would remove it ≥600ms).
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let marker = dir.path().join("trapped");
+        std::fs::write(&marker, "x").expect("write");
+        let mut e = Engine::new();
+        let src = format!("trap 'rm -f {}' INT", marker.display());
+        assert_eq!(run_src(&mut e, &src), 0);
+
+        let t = std::thread::spawn(move || {
+            run_src(&mut e, "sleep 0.6");
+            e
+        });
+        // Resend SIGINT while polling: a signal that lands before
+        // waitpid is entered sets the flag but cannot EINTR it, so one
+        // send is racy against thread scheduling. Any send that hits
+        // during the blocking wait interrupts + drains.
+        let start = std::time::Instant::now();
+        for _ in 0..20 {
+            brish_platform::send_signal(
+                std::process::id() as i32,
+                brish_platform::signal_by_name("INT").unwrap_or(2),
+            )
+            .expect("kill self");
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            if !marker.exists() {
+                break;
+            }
+        }
+        assert!(
+            !marker.exists(),
+            "trap must run mid-wait, elapsed {:?}",
+            start.elapsed()
+        );
+        let mut e = t.join().expect("sleep thread");
+        // restore SIG_DFL for the rest of the suite
+        run_src(&mut e, "trap - INT");
+    }
+
+    #[test]
     fn relconf_swaps_registry_and_theme() {
         let mut e = Engine::new();
         e.theme = "briiish".into();
@@ -2613,6 +2705,9 @@ mod tests {
 
     #[test]
     fn exit_trap_runs_at_process_exit() {
+        let _trap_g = crate::test_util::TRAP_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut e = Engine::new();
         run_src(&mut e, "trap 'echo bye > /nonexistent-xyz' EXIT");
         // EXIT body runs via run_exit_trap; parse/garbage never panics
@@ -2624,6 +2719,9 @@ mod tests {
 
     #[test]
     fn trap_builtin_stores_and_lists() {
+        let _trap_g = crate::test_util::TRAP_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut e = Engine::new();
         assert_eq!(run_src(&mut e, "trap 'echo hi' INT"), 0);
         assert_eq!(e.env.traps.get("INT").map(String::as_str), Some("echo hi"));
@@ -2648,6 +2746,9 @@ mod tests {
 
     #[test]
     fn trap_signal_fires_drain() {
+        let _trap_g = crate::test_util::TRAP_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut e = Engine::new();
         // marker file the trap will remove
         let dir = tempfile::tempdir().expect("tmpdir");

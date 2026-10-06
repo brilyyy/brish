@@ -148,6 +148,12 @@ pub fn take_pending_traps() -> u32 {
     PENDING_TRAPS.swap(0, Ordering::Relaxed)
 }
 
+/// Observe pending trap flags without consuming them (wait loops use
+/// this on EINTR to decide "drain + retry" vs "retry silently").
+pub fn peek_pending_traps() -> u32 {
+    PENDING_TRAPS.load(Ordering::Relaxed)
+}
+
 /// Test hook: mark a trap bit pending without a real signal delivery
 /// (real kills race with parallel tests restoring `SIG_DFL`).
 pub fn inject_pending_trap(bit: u32) {
@@ -366,7 +372,14 @@ pub fn wait_pid(pid: i32) -> Result<i32, PlatformError> {
             Ok(nix::sys::wait::WaitStatus::Exited(_, code)) => return Ok(code),
             Ok(nix::sys::wait::WaitStatus::Signaled(_, sig, _)) => return Ok(128 + sig as i32),
             Ok(_) => continue,
-            Err(nix::errno::Errno::EINTR) => continue,
+            Err(nix::errno::Errno::EINTR) => {
+                if peek_pending_traps() != 0 {
+                    // Trap handlers fire (no SA_RESTART): let the engine
+                    // drain mid-wait instead of silently retrying.
+                    return Err(PlatformError::Interrupted);
+                }
+                continue;
+            }
             Err(e) => {
                 return Err(io_err(
                     "waitpid",
@@ -462,7 +475,12 @@ pub fn wait_untraced(pid: i32) -> Result<ChildState, PlatformError> {
             }
             Ok(nix::sys::wait::WaitStatus::Stopped(_, _)) => return Ok(ChildState::Stopped),
             Ok(_) => continue, // Continued/StillAlive: keep waiting
-            Err(nix::errno::Errno::EINTR) => continue,
+            Err(nix::errno::Errno::EINTR) => {
+                if peek_pending_traps() != 0 {
+                    return Err(PlatformError::Interrupted);
+                }
+                continue;
+            }
             Err(nix::errno::Errno::ECHILD) => return Ok(ChildState::Exited(0)),
             Err(e) => {
                 return Err(io_err(

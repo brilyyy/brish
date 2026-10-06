@@ -26,4 +26,8 @@ mod z;
 pub(crate) mod test_util {
     use std::sync::Mutex;
     pub(crate) static CWD_LOCK: Mutex<()> = Mutex::new(());
+    /// Serializes tests that install/reset process-global signal
+    /// handlers (`trap` tests): one test's `trap - SIG` restoring
+    /// SIG_DFL would turn another's real signal into a suite-killer.
+    pub(crate) static TRAP_LOCK: Mutex<()> = Mutex::new(());
 }
