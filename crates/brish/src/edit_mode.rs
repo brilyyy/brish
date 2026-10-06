@@ -56,7 +56,15 @@ impl brish_plugin::Plugin for DefaultMenusPlugin {
         struct F;
         impl brish_plugin::MenuFactory for F {
             fn create(&self) -> Box<dyn reedline::Menu> {
-                Box::new(ColumnarMenu::default().with_name(crate::keymap::MENU_NAME))
+                // Muted descriptions by default (NOTES.md 8); config
+                // `[prompt] completion_description` overrides (off = plain).
+                let style = crate::config::completion_desc_style()
+                    .unwrap_or_else(|| nu_ansi_term::Color::DarkGray.normal());
+                Box::new(
+                    ColumnarMenu::default()
+                        .with_name(crate::keymap::MENU_NAME)
+                        .with_description_text_style(style),
+                )
             }
         }
         reg.menu_factories.push(Box::new(F));

@@ -196,7 +196,7 @@ fn main() {
             }
         }
     } else if cli.interactive || std::io::stdin().is_terminal() {
-        repl(&mut engine, &cli, var_names)
+        repl(&mut engine, &cli, var_names, &config)
     } else {
         let mut src = String::new();
         match std::io::stdin().read_to_string(&mut src) {
@@ -246,10 +246,38 @@ fn fatal(engine: &mut Engine, e: brish_core::error::Error) -> Run {
     }
 }
 
-/// Startup files: default `~/.config/brish/.brishrc`, `--rcfile`
-/// overrides, `--norc` skips. Missing default is fine; a missing
-/// explicit `--rcfile` is an error (kept from before).
-fn repl(engine: &mut Engine, cli: &Cli, var_names: Arc<Mutex<Vec<String>>>) -> i32 {
+/// Startup files: explicit `--rcfile` wins; else
+/// `~/.config/brish/.brishrc`; else `~/.brishrc` (NOTES.md 5).
+/// A missing default is fine; a missing explicit `--rcfile` is an
+/// error (kept from before).
+fn resolve_rc_from(
+    explicit: Option<std::path::PathBuf>,
+    cfg_rc: &std::path::Path,
+    home_rc: &std::path::Path,
+) -> std::path::PathBuf {
+    if let Some(p) = explicit {
+        return p;
+    }
+    if cfg_rc.exists() {
+        return cfg_rc.to_path_buf();
+    }
+    home_rc.to_path_buf()
+}
+
+fn resolve_rc(cli_rcfile: Option<std::path::PathBuf>) -> std::path::PathBuf {
+    let cfg_rc = config::rc_path();
+    let home_rc = dirs::home_dir()
+        .map(|h| h.join(".brishrc"))
+        .unwrap_or_else(|| cfg_rc.clone());
+    resolve_rc_from(cli_rcfile, &cfg_rc, &home_rc)
+}
+
+fn repl(
+    engine: &mut Engine,
+    cli: &Cli,
+    var_names: Arc<Mutex<Vec<String>>>,
+    cfg: &config::Config,
+) -> i32 {
     // Set `$-`'s `i` before rc loads: aliases defined in `.brishrc`
     // expand for later lines in the same rc and the REPL.
     let interactive = cli.interactive || std::io::stdin().is_terminal();
@@ -257,7 +285,7 @@ fn repl(engine: &mut Engine, cli: &Cli, var_names: Arc<Mutex<Vec<String>>>) -> i
         engine.env.flags.push('i');
     }
     if !cli.norc {
-        let rc = cli.rcfile.clone().unwrap_or_else(config::rc_path);
+        let rc = resolve_rc(cli.rcfile.clone());
         match std::fs::read_to_string(&rc) {
             Ok(src) => {
                 let run = run_src(engine, &src);
@@ -274,14 +302,19 @@ fn repl(engine: &mut Engine, cli: &Cli, var_names: Arc<Mutex<Vec<String>>>) -> i
     }
 
     if interactive && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-        return edit_repl(engine, var_names);
+        return edit_repl(engine, var_names, &cfg.prompt, cfg.theme_prompt.as_deref());
     }
     plain_repl(engine, interactive)
 }
 
 /// Interactive reedline REPL (plan phase 5): line editing, history,
 /// PS1/PS2 continuation, Ctrl-C clears the pending line, Ctrl-D exits.
-fn edit_repl(engine: &mut Engine, var_names: Arc<Mutex<Vec<String>>>) -> i32 {
+fn edit_repl(
+    engine: &mut Engine,
+    var_names: Arc<Mutex<Vec<String>>>,
+    chrome: &config::PromptChrome,
+    template: Option<&str>,
+) -> i32 {
     let _ = brish_builtin::paths::ensure_config_dir();
     // reedline creates the history file with the process umask; tighten
     // it so commands (which may contain secrets) stay 0600.
@@ -398,6 +431,8 @@ fn edit_repl(engine: &mut Engine, var_names: Arc<Mutex<Vec<String>>>) -> i32 {
             !buf.is_empty(),
             engine.hooks(),
             &engine.theme,
+            chrome,
+            template,
         );
         match rl.read_line(&prompt) {
             Ok(Signal::Success(line)) => {
@@ -466,5 +501,29 @@ fn plain_repl(engine: &mut Engine, interactive: bool) -> i32 {
             }
         }
         buf.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_rc_prefers_explicit_then_config_then_home() {
+        let d = tempfile::tempdir().expect("tmpdir");
+        let explicit = d.path().join("explicit.rc");
+        let cfg_rc = d.path().join("cfg.rc");
+        let home_rc = d.path().join("home.rc");
+        // explicit wins regardless of existence (caller errors on missing)
+        assert_eq!(
+            resolve_rc_from(Some(explicit.clone()), &cfg_rc, &home_rc),
+            explicit
+        );
+        // config-dir exists → config wins
+        std::fs::write(&cfg_rc, "").expect("w");
+        assert_eq!(resolve_rc_from(None, &cfg_rc, &home_rc), cfg_rc);
+        // config missing → home fallback
+        std::fs::remove_file(&cfg_rc).expect("rm");
+        assert_eq!(resolve_rc_from(None, &cfg_rc, &home_rc), home_rc);
     }
 }

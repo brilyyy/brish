@@ -17,6 +17,7 @@ pub mod paths;
 mod run;
 pub mod store;
 pub mod store_cmd;
+pub mod ucfg;
 mod z;
 
 /// Shared test locks (process-wide state like cwd must not race).
