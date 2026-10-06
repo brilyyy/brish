@@ -2085,10 +2085,14 @@ mod tests {
         // unknown pid → POSIX 127.
         let prog = brish_core::parser::parse("wait 99999999").unwrap();
         assert_eq!(e.run(&prog).unwrap(), Outcome::Status(127));
-        // kill a running background job, then wait → 128+SIGTERM.
+        // Kill a running background job, then wait → 128+SIGKILL.
+        // KILL (not TERM): untrappable, so leftover SIGTERM handlers
+        // from earlier tests can't absorb the signal — bash shows the
+        // same "trap in parent + killpg spares the job" quirk, and the
+        // job-kill semantics under test don't care which signal.
         let mut e = Engine::new();
-        let prog = brish_core::parser::parse("sleep 5 & kill %1; wait %1").unwrap();
-        assert_eq!(e.run(&prog).unwrap(), Outcome::Status(143));
+        let prog = brish_core::parser::parse("sleep 5 & kill -KILL %1; wait %1").unwrap();
+        assert_eq!(e.run(&prog).unwrap(), Outcome::Status(137));
         // no-operand wait is always 0 (bash/POSIX).
         let prog = brish_core::parser::parse("true & wait").unwrap();
         assert_eq!(e.run(&prog).unwrap(), Outcome::Status(0));
@@ -2541,6 +2545,35 @@ mod tests {
         );
     }
 
+    /// FD-leak smoke: pipelines/redirs/substs must not grow the
+    /// shell's descriptor table (plan 4.11; /proc/self/fd on Linux —
+    /// macOS has no equivalent cheap check, so gate on Linux).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn no_fd_leak_across_pipelines_and_redirs() {
+        fn count_fds() -> usize {
+            std::fs::read_dir("/proc/self/fd")
+                .map(|rd| rd.count())
+                .unwrap_or(0)
+        }
+        let mut e = Engine::new();
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let out = dir.path().join("o");
+        // Warm any once-init fds (PATH scan, etc.) first.
+        run_src(&mut e, "echo x | cat > /dev/null");
+        let before = count_fds();
+        for i in 0..25 {
+            run_src(&mut e, "echo x | cat | cat > /dev/null");
+            run_src(&mut e, &format!("echo {i} >> {}", out.display()));
+            run_src(&mut e, "x=$(echo inner) ; true");
+        }
+        let after = count_fds();
+        assert!(
+            after <= before + 2,
+            "fd leak: {before} -> {after} descriptors"
+        );
+    }
+
     #[test]
     fn trap_int_fires_during_foreground_wait() {
         let _trap_g = crate::test_util::TRAP_LOCK
@@ -2582,8 +2615,10 @@ mod tests {
             start.elapsed()
         );
         let mut e = t.join().expect("sleep thread");
-        // restore SIG_DFL for the rest of the suite
-        run_src(&mut e, "trap - INT");
+        // Drop the entry but KEEP the handler: restoring SIG_DFL while
+        // a self-directed SIGINT may still be pending lets it kill the
+        // suite (delivery can lag past kill() on other threads).
+        e.env.traps.remove("INT");
     }
 
     #[test]
@@ -2739,8 +2774,9 @@ mod tests {
         assert!(!e.env.traps.contains_key("INT"));
         // bad body parses later — storing is fine, drain swallows errors
         assert_eq!(run_src(&mut e, "trap 'if' INT"), 0);
-        // restore SIG_DFL for every signal this test installed
-        run_src(&mut e, "trap - INT TERM HUP QUIT EXIT");
+        // Clear entries but keep handlers installed (restoring DFL
+        // races a pending self-signal — see trap_int test).
+        e.env.traps.clear();
         assert!(e.env.traps.is_empty());
     }
 
@@ -2770,8 +2806,9 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert!(!marker.exists(), "trap body must have run (marker removed)");
-        // cleanup handler for other tests
-        run_src(&mut e, "trap - INT");
+        // Drop entry, keep handler (DFL-restore is unsafe with a
+        // possibly-pending self-signal — see trap_int test).
+        e.env.traps.remove("INT");
         // pending flags without a matching trap entry run nothing
         brish_platform::inject_pending_trap(brish_platform::TRAP_BIT_INT);
         std::fs::write(&marker, "x").expect("write");

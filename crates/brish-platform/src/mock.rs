@@ -32,6 +32,8 @@ pub struct MockState {
     pub next_pid: Mutex<Pid>,
     pub tty_fds: Mutex<Vec<RawFd>>,
     pub foreground: Mutex<Pgid>,
+    /// Terminal::restore call count (RawModeGuard drop assertions).
+    pub term_restores: Mutex<usize>,
 }
 
 impl MockState {
@@ -182,6 +184,11 @@ impl Terminal for MockPlatform {
     }
 
     fn restore(&self, _fd: RawFd, _state: &TermiosState) -> Result<(), PlatformError> {
+        *self
+            .state
+            .term_restores
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) += 1;
         Ok(())
     }
 

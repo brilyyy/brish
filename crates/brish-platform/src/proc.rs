@@ -346,6 +346,11 @@ pub fn fork_spawn(
                     nix::unistd::Pid::from_raw(0),
                 );
             }
+            // POSIX: subshells reset caught traps to their default
+            // actions (only SIG_IGN survives). Without this a forked
+            // background subshell keeps the parent's TERM/INT handlers
+            // and *survives* `kill %n`, racing whatever it spawns next.
+            reset_trappable_dispositions();
             let code = match apply_bare(setups) {
                 Ok(()) => f(),
                 Err(_) => 125,
@@ -397,6 +402,26 @@ pub fn fork_run(
 ) -> Result<i32, PlatformError> {
     let pid = fork_spawn(setups, false, f)?;
     wait_pid(pid)
+}
+
+/// Restore SIG_DFL for the trappable shell signals — called in fork
+/// children (POSIX subshell trap reset).
+fn reset_trappable_dispositions() {
+    use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, sigaction};
+    for sig in [
+        nix::libc::SIGINT,
+        nix::libc::SIGTERM,
+        nix::libc::SIGHUP,
+        nix::libc::SIGQUIT,
+    ] {
+        let Ok(s) = nix::sys::signal::Signal::try_from(sig) else {
+            continue;
+        };
+        let action = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+        // SAFETY: child right after fork, single-threaded; restoring
+        // default dispositions is async-signal-safe.
+        let _ = unsafe { sigaction(s, &action) };
+    }
 }
 
 /// Job-control signal numbers, platform-correct (macOS: TSTP=18,

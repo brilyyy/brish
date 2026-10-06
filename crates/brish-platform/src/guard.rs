@@ -66,3 +66,26 @@ impl<P: Terminal> Drop for RawModeGuard<'_, P> {
         let _ = self.platform.restore(self.fd, &self.saved);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MockPlatform;
+
+    /// A dropped guard must restore terminal state even when nobody
+    //  unwinds through it (SIGINT mid-REPL path — plan §7 crash resistance).
+    #[test]
+    fn raw_mode_guard_restores_on_drop() {
+        let p = MockPlatform::new();
+        {
+            let g = RawModeGuard::new(&p, 9).expect("raw");
+            drop(g);
+        }
+        assert_eq!(*p.state.term_restores.lock().unwrap(), 1);
+        // drop without explicit end-of-scope also restores
+        let p2 = MockPlatform::new();
+        let g = RawModeGuard::new(&p2, 9).expect("raw");
+        drop(g);
+        assert_eq!(*p2.state.term_restores.lock().unwrap(), 1);
+    }
+}
