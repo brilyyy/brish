@@ -4,8 +4,8 @@
 //! Pure: reads `$KUBECONFIG` (or default `$HOME/.kube/config`), parses
 //! the current-context via INI-style top-level line, no subprocess. 1s TTL cache via [`segments::Ttl`].
 
+use crate::builtin::segments::{Ttl, paint};
 use crate::{Plugin, PromptSegment};
-use crate::builtin::segments::{paint, Ttl};
 use std::path::{Path, PathBuf};
 
 pub struct KubeCtxPrompt {

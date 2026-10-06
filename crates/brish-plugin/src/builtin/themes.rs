@@ -113,7 +113,6 @@ impl Theme for Briiish {
     }
 }
 
-
 /// `{basename} ` — directory only, no color.
 pub struct Minimal;
 

@@ -36,6 +36,10 @@ enabled = ["default-themes"]  # exact list; replaces defaults
 - Unknown plugin names: warning, never a crash.
 - Bad TOML: warning, defaults used.
 - `plugin` builtin lists every catalog entry and its on/off state.
+- Engine plugins (`main.rs::engine_plugins()`, installed at startup) use
+  the same keys: `syntax-highlight`, `autosuggest`, `emacs-mode`,
+  `vi-mode` (off by default), `default-menus`, `history-search`,
+  `history`, `validator`. `plugin` lists them with their on/off state.
 
 ```toml
 # ~/.config/brish/config.toml — optional store settings

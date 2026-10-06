@@ -30,7 +30,11 @@ impl Ttl {
     }
 
     /// Cached value for `cwd`, else `compute()`'s result (also cached).
-    pub(crate) fn get(&self, cwd: &Path, compute: impl FnOnce() -> Option<String>) -> Option<String> {
+    pub(crate) fn get(
+        &self,
+        cwd: &Path,
+        compute: impl FnOnce() -> Option<String>,
+    ) -> Option<String> {
         let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((c, at, v)) = slot.as_ref()
             && c == cwd
@@ -48,7 +52,7 @@ impl Ttl {
 pub(crate) fn env_first(names: &[&str]) -> Option<String> {
     names
         .iter()
-        .filter_map(|n| std::env::var_os(n))
+        .filter_map(std::env::var_os)
         .map(|v| v.to_string_lossy().into_owned())
         .find(|v| !v.trim().is_empty())
 }
@@ -77,9 +81,17 @@ mod tests {
             Some(format!("v{}", calls.get()))
         };
         assert_eq!(t.get(&a, compute).as_deref(), Some("v1"));
-        assert_eq!(t.get(&a, compute).as_deref(), Some("v1"), "second hit cached");
+        assert_eq!(
+            t.get(&a, compute).as_deref(),
+            Some("v1"),
+            "second hit cached"
+        );
         assert_eq!(calls.get(), 1, "compute ran once");
-        assert_eq!(t.get(&b, compute).as_deref(), Some("v2"), "other cwd recomputes");
+        assert_eq!(
+            t.get(&b, compute).as_deref(),
+            Some("v2"),
+            "other cwd recomputes"
+        );
         assert_eq!(calls.get(), 2);
     }
 
@@ -104,10 +116,7 @@ mod tests {
             std::env::remove_var("BRISH_TTL_PROBE_A");
             std::env::remove_var("BRISH_TTL_PROBE_B");
         }
-        assert_eq!(
-            env_first(&["BRISH_TTL_PROBE_A", "BRISH_TTL_PROBE_B"]),
-            None
-        );
+        assert_eq!(env_first(&["BRISH_TTL_PROBE_A", "BRISH_TTL_PROBE_B"]), None);
         // SAFETY: as above.
         unsafe { std::env::set_var("BRISH_TTL_PROBE_A", "   ") };
         // SAFETY: as above.

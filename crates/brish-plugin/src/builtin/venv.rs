@@ -4,8 +4,8 @@
 //! Pure: reads `$VIRTUAL_ENV` (set by virtualenv/venv/hatch) and renders
 //! the basename. No subprocess. 1s TTL cache via [`segments::Ttl`].
 
+use crate::builtin::segments::{Ttl, paint};
 use crate::{Plugin, PromptSegment};
-use crate::builtin::segments::{paint, Ttl};
 use std::path::Path;
 
 pub struct VenvPrompt {
@@ -71,7 +71,10 @@ mod tests {
         let prev = std::env::var_os("VIRTUAL_ENV");
         unsafe { std::env::remove_var("VIRTUAL_ENV") };
         let p = VenvPrompt::default();
-        assert_eq!(p.render(0, std::env::current_dir().unwrap().as_path()), None);
+        assert_eq!(
+            p.render(0, std::env::current_dir().unwrap().as_path()),
+            None
+        );
         restore(prev);
     }
 

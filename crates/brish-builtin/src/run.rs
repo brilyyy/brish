@@ -239,11 +239,7 @@ fn cd(args: &[String], env: &mut Env) -> Flow {
     if (args.len() > 1 && args[1] == "-") || via_cdpath {
         println!("{new_pwd}");
     }
-    crate::z::record(
-        &crate::paths::z_path(),
-        &new_pwd,
-        crate::z::now_epoch(),
-    );
+    crate::z::record(&crate::paths::z_path(), &new_pwd, crate::z::now_epoch());
     Flow::Status(0)
 }
 
@@ -1131,11 +1127,7 @@ mod tests {
     #[test]
     fn not_yet_implemented() {
         let mut e = env();
-        for b in [
-            BuiltIn::Alias,
-            BuiltIn::Source,
-            BuiltIn::Trap,
-        ] {
+        for b in [BuiltIn::Alias, BuiltIn::Source, BuiltIn::Trap] {
             assert!(run(b, &[b.name().to_string()], &mut e).is_err());
         }
     }

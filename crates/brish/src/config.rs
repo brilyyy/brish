@@ -82,6 +82,7 @@ pub fn load_with_known(extra: &[&str]) -> Config {
     let mut known: Vec<&str> = catalog.iter().map(|e| e.plugin.name()).collect();
     known.extend_from_slice(extra);
     known.push(crate::completion::DEFAULT_COMPLETION);
+    known.extend(crate::engine_plugins().map(|(n, _, _)| n));
     load_from(&config_path(), &known)
 }
 

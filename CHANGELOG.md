@@ -56,6 +56,17 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
   technical plan 6.6 marked implemented; README refreshed (themes,
   config paths, extending).
 
+- Engine plugin registration table `engine_plugins()` in `main.rs`,
+  shared by startup and config validation. `vi-mode` is now wired as an
+  opt-in engine plugin (off by default): `[plugins] enabled = ["vi-mode"]`
+  activates vi editing, `plugin` lists it, no dead-code lint.
+
+### Fixed
+- `[plugins] enabled` no longer warns `brish: unknown plugin: <name>` for
+  engine plugin names (`syntax-highlight`, `autosuggest`, `emacs-mode`,
+  `vi-mode`, `default-menus`, `history-search`, `history`, `validator`);
+  the known-name list is derived from the same registration table.
+
 ## 0.1.0 — plugin store (unreleased)
 
 - Store plugin manifests: `~/.config/brish/plugins/<name>/plugin.toml`

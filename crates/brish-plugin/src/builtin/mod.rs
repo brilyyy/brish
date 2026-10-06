@@ -9,9 +9,9 @@ pub mod aws;
 pub mod docker;
 pub mod git;
 pub mod kubectx;
-pub mod venv;
-pub mod themes;
 pub mod segments;
+pub mod themes;
+pub mod venv;
 
 use crate::Plugin;
 

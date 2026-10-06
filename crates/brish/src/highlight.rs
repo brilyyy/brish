@@ -226,6 +226,14 @@ mod tests {
     fn style_of<'a>(st: &'a StyledText, text: &str) -> Option<&'a Style> {
         st.buffer.iter().find(|(_, s)| s == text).map(|(s, _)| s)
     }
+    /// Expected style: colored when colors are on, plain under `NO_COLOR`.
+    fn want(fg: Color, bold: bool) -> Style {
+        if !brish_plugin::color_enabled() {
+            return Style::new();
+        }
+        let s = Style::new().fg(fg);
+        if bold { s.bold() } else { s }
+    }
 
     #[test]
     fn reconstruction_is_lossless() {
@@ -251,9 +259,9 @@ mod tests {
     #[test]
     fn keywords_and_strings_get_distinct_styles() {
         let st = render("if true; then echo \"s\"; fi");
-        let keyword = Style::new().fg(Color::Blue).bold();
-        let builtin = Style::new().fg(Color::Cyan).bold();
-        let string = Style::new().fg(Color::Green);
+        let keyword = want(Color::Blue, true);
+        let builtin = want(Color::Cyan, true);
+        let string = want(Color::Green, false);
         assert_eq!(style_of(&st, "if"), Some(&keyword));
         assert_eq!(style_of(&st, "echo"), Some(&builtin));
         assert_eq!(style_of(&st, "\"s\""), Some(&string));
@@ -264,13 +272,13 @@ mod tests {
     #[test]
     fn comments_and_vars() {
         let st = render("echo $HOME # where");
-        let comment = Style::new().fg(Color::DarkGray);
+        let comment = want(Color::DarkGray, false);
         assert_eq!(style_of(&st, "# where"), Some(&comment));
         // unquoted param word is a var; a quoted one is a string
         let st = render("echo $HOME");
-        assert_eq!(style_of(&st, "$HOME"), Some(&Style::new().fg(Color::Cyan)));
+        assert_eq!(style_of(&st, "$HOME"), Some(&want(Color::Cyan, false)));
         let st = render("printf '%s' \"$USER\"");
-        let string = Style::new().fg(Color::Green);
+        let string = want(Color::Green, false);
         assert_eq!(style_of(&st, "'%s'"), Some(&string));
         assert_eq!(style_of(&st, "\"$USER\""), Some(&string));
         // `#` mid-word is not a comment (stays a plain word)
@@ -282,16 +290,19 @@ mod tests {
     #[test]
     fn incomplete_quote_marks_unclosed_tail() {
         let st = render("echo \"abc");
-        let unclosed = Style::new().fg(Color::Red).bold();
-        assert_eq!(style_of(&st, "\"abc"), Some(&unclosed));
+        // With colors on the dangling tail is its own red chunk; with
+        // `NO_COLOR` it rides along with the preceding space, plain.
+        let (style, text) = st.buffer.last().unwrap();
+        assert!(text.trim_start().ends_with("\"abc"), "{text:?}");
+        assert_eq!(*style, want(Color::Red, true));
         assert_eq!(joined(&st), "echo \"abc");
     }
 
     #[test]
     fn operators_and_redirections() {
         let st = render("a | b > c 2>&1");
-        let op = Style::new().fg(Color::Purple);
-        let redir = Style::new().fg(Color::Purple).bold();
+        let op = want(Color::Purple, false);
+        let redir = want(Color::Purple, true);
         assert_eq!(style_of(&st, "|"), Some(&op));
         assert_eq!(style_of(&st, ">"), Some(&redir));
         // `2>&1` lexes as IoNumber + op + word, all redir-colored

@@ -3,10 +3,7 @@
 //! These wrap the hardcoded reedline integrations that used to live
 //! directly in `edit_repl` so they can be replaced by user plugins.
 
-use reedline::{
-    ColumnarMenu, DefaultValidator, FileBackedHistory, History, ListMenu, Menu, MenuBuilder,
-    ReedlineMenu, Validator,
-};
+use reedline::{ColumnarMenu, DefaultValidator, FileBackedHistory, ListMenu, MenuBuilder};
 
 /// Plugin that installs the default Emacs edit mode.
 pub struct EmacsModePlugin;

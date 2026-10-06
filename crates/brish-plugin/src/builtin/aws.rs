@@ -4,7 +4,7 @@
 //! Pure: reads `$AWS_PROFILE` / `$AWS_DEFAULT_PROFILE` and `$AWS_REGION` /
 //! `$AWS_DEFAULT_REGION`, no subprocess. 1s TTL cache via [`segments::Ttl`].
 
-use crate::builtin::segments::{env_first, paint, Ttl};
+use crate::builtin::segments::{Ttl, env_first, paint};
 use crate::{Plugin, PromptSegment};
 use std::path::Path;
 
@@ -60,7 +60,12 @@ mod tests {
 
     fn clear_env() -> Vec<(String, Option<std::ffi::OsString>)> {
         // SAFETY: test-scoped; caller restores via restore_env.
-        let names = ["AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION"];
+        let names = [
+            "AWS_PROFILE",
+            "AWS_DEFAULT_PROFILE",
+            "AWS_REGION",
+            "AWS_DEFAULT_REGION",
+        ];
         let saved: Vec<(String, Option<std::ffi::OsString>)> = names
             .iter()
             .map(|n| (n.to_string(), std::env::var_os(n)))
@@ -86,7 +91,10 @@ mod tests {
         let _g = lock();
         let saved = clear_env();
         let p = AwsPrompt::default();
-        assert_eq!(p.render(0, std::env::current_dir().unwrap().as_path()), None);
+        assert_eq!(
+            p.render(0, std::env::current_dir().unwrap().as_path()),
+            None
+        );
         restore_env(saved);
     }
 

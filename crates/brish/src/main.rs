@@ -62,6 +62,22 @@ struct Run {
     exited: bool,
 }
 
+/// Engine plugins wired into the REPL: (name, plugin, default enabled).
+/// `vi-mode` is opt-in — `enabled = ["vi-mode"]` (or `disabled`-minus
+/// emacs) selects it; `Registry::edit_mode_factory` takes the first.
+pub(crate) fn engine_plugins() -> [(&'static str, &'static dyn Plugin, bool); 8] {
+    [
+        ("syntax-highlight", &highlight::SyntaxHighlightPlugin, true),
+        ("autosuggest", &hinter::AutosuggestPlugin, true),
+        ("emacs-mode", &edit_mode::EmacsModePlugin, true),
+        ("vi-mode", &edit_mode::ViModePlugin, false),
+        ("default-menus", &edit_mode::DefaultMenusPlugin, true),
+        ("history-search", &edit_mode::HistorySearchPlugin, true),
+        ("history", &edit_mode::HistoryPlugin, true),
+        ("validator", &edit_mode::ValidatorPlugin, true),
+    ]
+}
+
 fn main() {
     brish_platform::reset_sigpipe();
     let cli = Cli::parse();
@@ -97,16 +113,8 @@ fn main() {
     } else {
         registry.record(completion::DEFAULT_COMPLETION, false);
     }
-    for (name, plugin) in [
-        ("syntax-highlight", &highlight::SyntaxHighlightPlugin as &dyn Plugin),
-        ("autosuggest", &hinter::AutosuggestPlugin as &dyn Plugin),
-        ("emacs-mode", &edit_mode::EmacsModePlugin as &dyn Plugin),
-        ("default-menus", &edit_mode::DefaultMenusPlugin as &dyn Plugin),
-        ("history-search", &edit_mode::HistorySearchPlugin as &dyn Plugin),
-        ("history", &edit_mode::HistoryPlugin as &dyn Plugin),
-        ("validator", &edit_mode::ValidatorPlugin as &dyn Plugin),
-    ] {
-        if config.plugin_enabled(name, true) {
+    for (name, plugin, default_enabled) in engine_plugins() {
+        if config.plugin_enabled(name, default_enabled) {
             registry.install(plugin);
         } else {
             registry.record(name, false);

@@ -5,7 +5,7 @@
 //! subprocess. 1s TTL cache via [`segments::Ttl`]. Defaults to `default`
 //! implicitly (nothing printed) when the var is unset.
 
-use crate::builtin::segments::{env_first, paint, Ttl};
+use crate::builtin::segments::{Ttl, env_first, paint};
 use crate::{Plugin, PromptSegment};
 use std::path::Path;
 
@@ -67,7 +67,10 @@ mod tests {
         let prev = std::env::var_os("DOCKER_CONTEXT");
         unsafe { std::env::remove_var("DOCKER_CONTEXT") };
         let p = DockerPrompt::default();
-        assert_eq!(p.render(0, std::env::current_dir().unwrap().as_path()), None);
+        assert_eq!(
+            p.render(0, std::env::current_dir().unwrap().as_path()),
+            None
+        );
         restore(prev);
     }
 

@@ -7,7 +7,7 @@
 //! ponytail: no locking beyond atomic replace; last concurrent writer wins.
 //! Add a lockfile when two interactive shells visibly clobber the db.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// One directory's visit count and last-visit epoch seconds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,7 +51,8 @@ fn save(db: &Path, rows: &[Row]) {
         let _ = std::fs::create_dir_all(parent);
     }
     let mut rows: Vec<&Row> = rows.iter().collect();
-    rows.sort_by(|a, b| score(b, now_epoch()).cmp(&score(a, now_epoch())));
+    let now = now_epoch();
+    rows.sort_by_key(|r| std::cmp::Reverse(score(r, now)));
     let text: String = rows
         .iter()
         .map(|r| format!("{}\t{}\t{}\n", r.visits, r.epoch, r.path))
@@ -106,7 +107,7 @@ pub fn rank(rows: &[Row], query: Option<&str>) -> Vec<Row> {
                 .collect()
         }
     };
-    out.sort_by(|a, b| score(b, now).cmp(&score(a, now)));
+    out.sort_by_key(|r| std::cmp::Reverse(score(r, now)));
     out
 }
 
@@ -114,13 +115,9 @@ pub fn rank(rows: &[Row], query: Option<&str>) -> Vec<Row> {
 mod tests {
     use super::*;
     use crate::test_util::CWD_LOCK;
-
+    use std::path::PathBuf;
     fn tmp_db(tag: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "brish-z-test-{}-{}",
-            std::process::id(),
-            tag
-        ))
+        std::env::temp_dir().join(format!("brish-z-test-{}-{}", std::process::id(), tag))
     }
 
     #[test]
