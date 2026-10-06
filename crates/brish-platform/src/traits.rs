@@ -172,7 +172,6 @@ pub trait Platform: Send + Sync {
 /// is a no-op.
 pub enum TermiosState {
     /// Unix captured termios.
-    #[cfg(unix)]
     Unix(nix::sys::termios::Termios),
     /// No captured state; restore is a no-op.
     Empty,

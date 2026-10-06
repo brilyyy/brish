@@ -8,11 +8,9 @@
 
 use crate::RawFd;
 use crate::error::PlatformError;
-#[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
 /// EBADF, without dragging nix into portable code paths.
-#[cfg(unix)]
 const EBADF: i32 = 9;
 
 /// What to install on a `target` fd (in-process scope or forked child).
@@ -35,7 +33,6 @@ fn io_err(op: &str, e: std::io::Error) -> PlatformError {
     PlatformError::Process(format!("{op}: {e}"))
 }
 
-#[cfg(unix)]
 fn sys_dup2(from: RawFd, to: RawFd) -> std::io::Result<()> {
     // SAFETY: both are plain ints; the kernel validates liveness.
     let rc = unsafe { nix::libc::dup2(from, to) };
@@ -46,7 +43,6 @@ fn sys_dup2(from: RawFd, to: RawFd) -> std::io::Result<()> {
     }
 }
 
-#[cfg(unix)]
 fn sys_close(fd: RawFd) -> std::io::Result<()> {
     // SAFETY: kernel validates; EBADF is tolerated by callers that treat
     // "already closed" as success.
@@ -59,7 +55,6 @@ fn sys_close(fd: RawFd) -> std::io::Result<()> {
 }
 
 /// Duplicate `fd` (save a copy); `Ok(None)` when `fd` is not open.
-#[cfg(unix)]
 fn sys_dup(fd: RawFd) -> std::io::Result<Option<OwnedFd>> {
     // SAFETY: kernel validates `fd`; a fresh fd number is returned.
     let rc = unsafe { nix::libc::dup(fd) };
@@ -76,7 +71,6 @@ fn sys_dup(fd: RawFd) -> std::io::Result<Option<OwnedFd>> {
     }
 }
 
-#[cfg(unix)]
 fn apply_one(target: RawFd, setup: FdSetup) -> std::io::Result<()> {
     match setup {
         FdSetup::Dup(from) => sys_dup2(from, target),
@@ -92,7 +86,6 @@ fn apply_one(target: RawFd, setup: FdSetup) -> std::io::Result<()> {
 }
 
 /// Deliver `sig` (POSIX signal number) to `pid` (plan 4.10 `kill`).
-#[cfg(unix)]
 pub fn send_signal(pid: i32, sig: i32) -> Result<(), PlatformError> {
     // SAFETY: kill(2) is async-signal-safe; args validated by caller.
     let r = unsafe { nix::libc::kill(pid, sig) };
@@ -103,29 +96,17 @@ pub fn send_signal(pid: i32, sig: i32) -> Result<(), PlatformError> {
     }
 }
 
-#[cfg(not(unix))]
-pub fn send_signal(_pid: i32, _sig: i32) -> Result<(), PlatformError> {
-    Err(PlatformError::Process(
-        "signals unsupported on this platform".into(),
-    ))
-}
-
 /// POSIX: children must see SIGPIPE at disposition default. Rust's std
 /// flips it to SIG_IGN process-wide at startup, and ignored dispositions
 /// survive exec — restore it once, before any spawn (plan 4.9).
-#[cfg(unix)]
 pub fn reset_sigpipe() {
     // SAFETY: one-time process-global call before threads exist.
     unsafe { nix::libc::signal(nix::libc::SIGPIPE, nix::libc::SIG_DFL) };
 }
 
-#[cfg(not(unix))]
-pub fn reset_sigpipe() {}
-
 /// Write to fd 1 by raw syscall — bypasses `std::io::stdout` (libtest
 /// capture, buffering) so FdScope redirects and command-substitution
 /// pipes always receive the bytes. Interrupted writes retry.
-#[cfg(unix)]
 pub fn write_stdout(bytes: &[u8]) {
     let mut off = 0usize;
     while off < bytes.len() {
@@ -146,12 +127,6 @@ pub fn write_stdout(bytes: &[u8]) {
         }
         off += n as usize;
     }
-}
-
-#[cfg(not(unix))]
-pub fn write_stdout(bytes: &[u8]) {
-    use std::io::Write;
-    let _ = std::io::stdout().write_all(bytes);
 }
 
 // ---- trap signal flags ----
@@ -180,7 +155,6 @@ pub fn inject_pending_trap(bit: u32) {
 }
 
 fn trap_bit(sig: i32) -> u32 {
-    #[cfg(unix)]
     {
         match sig {
             nix::libc::SIGINT => TRAP_BIT_INT,
@@ -190,19 +164,8 @@ fn trap_bit(sig: i32) -> u32 {
             _ => 0,
         }
     }
-    #[cfg(not(unix))]
-    {
-        match sig {
-            2 => TRAP_BIT_INT,
-            15 => TRAP_BIT_TERM,
-            1 => TRAP_BIT_HUP,
-            3 => TRAP_BIT_QUIT,
-            _ => 0,
-        }
-    }
 }
 
-#[cfg(unix)]
 extern "C" fn trap_handler(sig: i32) {
     let bit = trap_bit(sig);
     if bit != 0 {
@@ -212,7 +175,6 @@ extern "C" fn trap_handler(sig: i32) {
 }
 
 /// Install the flag-setting handler for `sig` (`trap 'cmd' SIG`).
-#[cfg(unix)]
 pub fn trap_on(sig: i32) -> Result<(), PlatformError> {
     use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, sigaction};
     if trap_bit(sig) == 0 {
@@ -239,7 +201,6 @@ pub fn trap_on(sig: i32) -> Result<(), PlatformError> {
 }
 
 /// Restore default disposition (`trap - SIG`).
-#[cfg(unix)]
 pub fn trap_off(sig: i32) -> Result<(), PlatformError> {
     use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, sigaction};
     let action = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
@@ -255,19 +216,8 @@ pub fn trap_off(sig: i32) -> Result<(), PlatformError> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn trap_on(_sig: i32) -> Result<(), PlatformError> {
-    Err(PlatformError::Process("signals unsupported".into()))
-}
-
-#[cfg(not(unix))]
-pub fn trap_off(_sig: i32) -> Result<(), PlatformError> {
-    Ok(())
-}
-
 /// `umask`: `None` = query (get-and-restore), `Some(m)` = set.
 /// Returns the previous mask either way.
-#[cfg(unix)]
 pub fn umask(mode: Option<u16>) -> u16 {
     use nix::sys::stat::Mode;
     let prev = nix::sys::stat::umask(Mode::from_bits_truncate(mode.unwrap_or(0o777)));
@@ -279,13 +229,7 @@ pub fn umask(mode: Option<u16>) -> u16 {
     prev.bits()
 }
 
-#[cfg(not(unix))]
-pub fn umask(_mode: Option<u16>) -> u16 {
-    0o022
-}
-
 /// `times(3)`: seconds `[shell_user, shell_sys, child_user, child_sys]`.
-#[cfg(unix)]
 pub fn times_secs() -> [f64; 4] {
     // SAFETY: tms is a plain struct; times() only writes into it.
     let mut t: nix::libc::tms = unsafe { std::mem::zeroed() };
@@ -305,13 +249,7 @@ pub fn times_secs() -> [f64; 4] {
     ]
 }
 
-#[cfg(not(unix))]
-pub fn times_secs() -> [f64; 4] {
-    [0.0; 4]
-}
-
 /// Fresh `dup` copy of `fd` (for `>&N` stdio wiring in the engine).
-#[cfg(unix)]
 pub fn dup_fd(fd: RawFd) -> std::io::Result<std::fs::File> {
     match sys_dup(fd)? {
         Some(f) => Ok(std::fs::File::from(f)),
@@ -319,23 +257,13 @@ pub fn dup_fd(fd: RawFd) -> std::io::Result<std::fs::File> {
     }
 }
 
-#[cfg(not(unix))]
-pub fn dup_fd(_fd: RawFd) -> std::io::Result<std::fs::File> {
-    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
-}
-
 /// RAII fd redirection: originals saved on apply, restored on drop
 /// (including during unwind — a panicking builtin still gets its shell
 /// stdio back).
-#[cfg(unix)]
 pub struct FdScope {
     saved: Vec<(RawFd, Option<OwnedFd>)>,
 }
 
-#[cfg(not(unix))]
-pub struct FdScope;
-
-#[cfg(unix)]
 impl FdScope {
     pub fn apply(setups: Vec<(RawFd, FdSetup)>) -> Result<Self, PlatformError> {
         let mut saved: Vec<(RawFd, Option<OwnedFd>)> = Vec::new();
@@ -356,25 +284,9 @@ impl FdScope {
     }
 }
 
-/// Non-Unix: only the empty plan (no redirections) can run; everything
-/// else needs dup2, which the Windows stub doesn't have yet.
-#[cfg(not(unix))]
-impl FdScope {
-    pub fn apply(setups: Vec<(RawFd, FdSetup)>) -> Result<Self, PlatformError> {
-        if setups.is_empty() {
-            Ok(Self)
-        } else {
-            Err(PlatformError::Process(
-                "fd redirection unsupported on this platform".into(),
-            ))
-        }
-    }
-}
-
 /// Apply setups with no save/restore bookkeeping — for forked children
 /// that are about to `_exit`, where restoring "closed" fds would defeat
 /// the close (and the save-dups would scribble over low fd numbers).
-#[cfg(unix)]
 pub fn apply_bare(setups: Vec<(RawFd, FdSetup)>) -> Result<(), PlatformError> {
     for (target, setup) in setups {
         if let Err(e) = apply_one(target, setup) {
@@ -384,18 +296,6 @@ pub fn apply_bare(setups: Vec<(RawFd, FdSetup)>) -> Result<(), PlatformError> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn apply_bare(setups: Vec<(RawFd, FdSetup)>) -> Result<(), PlatformError> {
-    if setups.is_empty() {
-        Ok(())
-    } else {
-        Err(PlatformError::Process(
-            "fd redirection unsupported on this platform".into(),
-        ))
-    }
-}
-
-#[cfg(unix)]
 fn restore(saved: &mut Vec<(RawFd, Option<OwnedFd>)>) {
     while let Some((target, old)) = saved.pop() {
         let _ = match old {
@@ -405,7 +305,6 @@ fn restore(saved: &mut Vec<(RawFd, Option<OwnedFd>)>) {
     }
 }
 
-#[cfg(unix)]
 impl Drop for FdScope {
     fn drop(&mut self) {
         restore(&mut self.saved);
@@ -426,7 +325,6 @@ pub fn with_fds<T>(
 /// Fork a child that applies `setups`, runs `f`, and `_exit`s with its
 /// status. Returns the child pid; call [`wait_pid`]. `new_pgroup` puts
 /// the child in its own process group (background jobs, plan 4.10).
-#[cfg(unix)]
 pub fn fork_spawn(
     setups: Vec<(RawFd, FdSetup)>,
     new_pgroup: bool,
@@ -462,7 +360,6 @@ pub fn fork_spawn(
 }
 
 /// Wait for one child; exit code, or 128+signal for signal deaths.
-#[cfg(unix)]
 pub fn wait_pid(pid: i32) -> Result<i32, PlatformError> {
     loop {
         match nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(pid), None) {
@@ -481,7 +378,6 @@ pub fn wait_pid(pid: i32) -> Result<i32, PlatformError> {
 }
 
 /// Fork + wait in one call.
-#[cfg(unix)]
 pub fn fork_run(
     setups: Vec<(RawFd, FdSetup)>,
     f: impl FnOnce() -> i32,
@@ -492,22 +388,12 @@ pub fn fork_run(
 
 /// Job-control signal numbers, platform-correct (macOS: TSTP=18,
 /// CONT=19; Linux: TSTP=20, CONT=18 — never hardcode these).
-#[cfg(unix)]
 pub const SIGCONT: i32 = nix::sys::signal::Signal::SIGCONT as i32;
-#[cfg(unix)]
 pub const SIGTSTP: i32 = nix::sys::signal::Signal::SIGTSTP as i32;
-#[cfg(unix)]
 pub const SIGSTOP: i32 = nix::sys::signal::Signal::SIGSTOP as i32;
-#[cfg(not(unix))]
-pub const SIGCONT: i32 = 18;
-#[cfg(not(unix))]
-pub const SIGTSTP: i32 = 20;
-#[cfg(not(unix))]
-pub const SIGSTOP: i32 = 19;
 
 /// Signal number by common POSIX name (platform-correct), for
 /// `kill -SIGNAME`. Unknown name → `None`.
-#[cfg(unix)]
 pub fn signal_by_name(name: &str) -> Option<i32> {
     use nix::sys::signal::Signal;
     let s = match name {
@@ -531,23 +417,6 @@ pub fn signal_by_name(name: &str) -> Option<i32> {
     Some(s as i32)
 }
 
-#[cfg(not(unix))]
-pub fn signal_by_name(name: &str) -> Option<i32> {
-    Some(match name {
-        "HUP" => 1,
-        "INT" => 2,
-        "QUIT" => 3,
-        "KILL" => 9,
-        "USR1" => 10,
-        "USR2" => 12,
-        "TERM" => 15,
-        "CONT" => 18,
-        "TSTP" => 20,
-        "STOP" => 19,
-        _ => return None,
-    })
-}
-
 /// Child state seen by job-control waits: exited (status or
 /// 128+signal) or stopped by a job-control signal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -558,7 +427,6 @@ pub enum ChildState {
 
 /// Non-blocking wait that also reports stops (`WNOHANG | WUNTRACED`);
 /// `None` = still running (or stopped-but-already-reported).
-#[cfg(unix)]
 pub fn poll_pid(pid: i32) -> Result<Option<ChildState>, PlatformError> {
     use nix::sys::wait::WaitPidFlag;
     let flags = WaitPidFlag::WNOHANG | WaitPidFlag::WUNTRACED;
@@ -581,7 +449,6 @@ pub fn poll_pid(pid: i32) -> Result<Option<ChildState>, PlatformError> {
 
 /// Blocking wait that reports stops (`WUNTRACED`): returns when `pid`
 /// exits or is stopped. Never returns `Running`.
-#[cfg(unix)]
 pub fn wait_untraced(pid: i32) -> Result<ChildState, PlatformError> {
     loop {
         // SAFETY: waitpid with a valid pid and safe flag bits.
@@ -611,7 +478,6 @@ pub fn wait_untraced(pid: i32) -> Result<ChildState, PlatformError> {
 /// leaders from the parent too, so a `kill %1` immediately after the
 /// `&` never sees a not-yet-created group. (The child also calls
 /// setpgid before exec; whichever lands first wins.)
-#[cfg(unix)]
 pub fn set_group_leader(pid: i32) {
     // SAFETY: setpgid on our own just-forked child; no-op if the
     // child already led the group.
@@ -622,7 +488,6 @@ pub fn set_group_leader(pid: i32) {
 }
 
 /// Signal a whole process group (bg jobs lead their own group).
-#[cfg(unix)]
 pub fn kill_group(pgid: i32, sig: i32) -> Result<(), PlatformError> {
     // SAFETY: killpg semantics — positive pid selects the group; sig
     // validated by the caller (parse_signal) or is a fixed job-control
@@ -636,13 +501,11 @@ pub fn kill_group(pgid: i32, sig: i32) -> Result<(), PlatformError> {
 }
 
 /// The shell's own process group id.
-#[cfg(unix)]
 pub fn shell_pgrp() -> i32 {
     nix::unistd::getpgrp().as_raw()
 }
 
 /// The controlling terminal (`/dev/tty`); drop to close.
-#[cfg(unix)]
 pub fn open_tty() -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new()
@@ -653,7 +516,6 @@ pub fn open_tty() -> std::io::Result<std::fs::File> {
 }
 
 /// Give the terminal to `pgid` (job control handoff).
-#[cfg(unix)]
 pub fn tcsetpgrp_fd(fd: std::os::fd::RawFd, pgid: i32) -> Result<(), PlatformError> {
     use std::os::fd::BorrowedFd;
     // SAFETY: caller passes an open tty fd for the duration of this
@@ -665,7 +527,6 @@ pub fn tcsetpgrp_fd(fd: std::os::fd::RawFd, pgid: i32) -> Result<(), PlatformErr
 
 /// Interactive startup: stop letting line-discipline signals stop the
 /// shell itself (children still honor them) — bash does the same.
-#[cfg(unix)]
 pub fn ignore_jobctl_signals() {
     use nix::sys::signal::{self, SigHandler, Signal};
     for sig in [Signal::SIGTSTP, Signal::SIGTTIN, Signal::SIGTTOU] {
@@ -680,7 +541,6 @@ pub fn ignore_jobctl_signals() {
 /// Take over the terminal: lead our own process group (when we are
 /// not one already), become the foreground group, ignore job-control
 /// signals. Call only when stdin is a tty.
-#[cfg(unix)]
 pub fn claim_terminal() -> Result<(), PlatformError> {
     let pid = nix::unistd::getpid();
     if nix::unistd::getpgrp() != pid {
@@ -698,7 +558,6 @@ pub fn claim_terminal() -> Result<(), PlatformError> {
 /// Suspend the shell (Ctrl-Z at the prompt): briefly restore the
 /// default disposition, raise SIGTSTP on ourselves, re-ignore on
 /// resume (SIGCONT). Only for interactive shells that ignored it.
-#[cfg(unix)]
 pub fn suspend_self() {
     use nix::sys::signal::{self, SigHandler, Signal};
     // SAFETY: flip our own SIGTSTP disposition, stop, restore —
@@ -711,7 +570,6 @@ pub fn suspend_self() {
 }
 
 /// Reap `pid` if it already exited (background jobs); `None` = still running.
-#[cfg(unix)]
 pub fn try_wait(pid: i32) -> Result<Option<i32>, PlatformError> {
     use nix::sys::wait::WaitPidFlag;
     match nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(pid), Some(WaitPidFlag::WNOHANG)) {
@@ -729,7 +587,6 @@ pub fn try_wait(pid: i32) -> Result<Option<i32>, PlatformError> {
 
 /// Queue fd surgery for a spawned external: std sets up stdio first, then
 /// these run between `fork` and `exec`.
-#[cfg(unix)]
 pub fn preexec_fd_ops(cmd: &mut std::process::Command, ops: Vec<FdOp>) {
     if ops.is_empty() {
         return;
@@ -759,90 +616,6 @@ pub fn preexec_fd_ops(cmd: &mut std::process::Command, ops: Vec<FdOp>) {
 }
 
 // ---- non-unix stubs (Phase 4.13 hardens these) ----
-
-#[cfg(not(unix))]
-pub fn fork_spawn(
-    _setups: Vec<(RawFd, FdSetup)>,
-    _new_pgroup: bool,
-    _f: impl FnOnce() -> i32,
-) -> Result<i32, PlatformError> {
-    Err(PlatformError::Process(
-        "fork unsupported on this platform".into(),
-    ))
-}
-
-#[cfg(not(unix))]
-pub fn wait_pid(_pid: i32) -> Result<i32, PlatformError> {
-    Err(PlatformError::Process(
-        "wait unsupported on this platform".into(),
-    ))
-}
-
-#[cfg(not(unix))]
-pub fn fork_run(
-    setups: Vec<(RawFd, FdSetup)>,
-    _f: impl FnOnce() -> i32,
-) -> Result<i32, PlatformError> {
-    let _ = setups;
-    Err(PlatformError::Process(
-        "fork unsupported on this platform".into(),
-    ))
-}
-
-#[cfg(not(unix))]
-pub fn try_wait(_pid: i32) -> Result<Option<i32>, PlatformError> {
-    Ok(None)
-}
-
-#[cfg(not(unix))]
-pub fn poll_pid(pid: i32) -> Result<Option<ChildState>, PlatformError> {
-    Ok(try_wait(pid)?.map(ChildState::Exited))
-}
-
-#[cfg(not(unix))]
-pub fn wait_untraced(pid: i32) -> Result<ChildState, PlatformError> {
-    Ok(ChildState::Exited(wait_pid(pid)?))
-}
-
-#[cfg(not(unix))]
-pub fn set_group_leader(_pid: i32) {}
-
-#[cfg(not(unix))]
-pub fn kill_group(_pgid: i32, _sig: i32) -> Result<(), PlatformError> {
-    Err(PlatformError::Job("job control unsupported".into()))
-}
-
-#[cfg(not(unix))]
-pub fn shell_pgrp() -> i32 {
-    0
-}
-
-#[cfg(not(unix))]
-pub fn open_tty() -> std::io::Result<std::fs::File> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "no controlling terminal",
-    ))
-}
-
-#[cfg(not(unix))]
-pub fn tcsetpgrp_fd(_fd: i32, _pgid: i32) -> Result<(), PlatformError> {
-    Err(PlatformError::Job("job control unsupported".into()))
-}
-
-#[cfg(not(unix))]
-pub fn ignore_jobctl_signals() {}
-
-#[cfg(not(unix))]
-pub fn claim_terminal() -> Result<(), PlatformError> {
-    Err(PlatformError::Job("job control unsupported".into()))
-}
-
-#[cfg(not(unix))]
-pub fn suspend_self() {}
-
-#[cfg(not(unix))]
-pub fn preexec_fd_ops(_cmd: &mut std::process::Command, _ops: Vec<FdOp>) {}
 
 #[cfg(all(test, unix))]
 mod tests {

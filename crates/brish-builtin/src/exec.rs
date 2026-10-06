@@ -35,7 +35,6 @@ use brish_platform::RawFd;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-#[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command as Proc, Stdio};
@@ -284,7 +283,6 @@ fn plan_clone(plan: &Plan) -> R<Plan> {
 }
 
 fn decode_status(st: std::process::ExitStatus) -> i32 {
-    #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
         if let Some(sig) = st.signal() {
@@ -295,24 +293,12 @@ fn decode_status(st: std::process::ExitStatus) -> i32 {
 }
 
 // Pipe ends convert to File through each platform's owned-handle type.
-#[cfg(unix)]
 fn pipe_reader_file(r: std::io::PipeReader) -> File {
     File::from(std::os::fd::OwnedFd::from(r))
 }
 
-#[cfg(not(unix))]
-fn pipe_reader_file(r: std::io::PipeReader) -> File {
-    File::from(std::os::windows::io::OwnedHandle::from(r))
-}
-
-#[cfg(unix)]
 fn pipe_writer_file(w: std::io::PipeWriter) -> File {
     File::from(std::os::fd::OwnedFd::from(w))
-}
-
-#[cfg(not(unix))]
-fn pipe_writer_file(w: std::io::PipeWriter) -> File {
-    File::from(std::os::windows::io::OwnedHandle::from(w))
 }
 
 /// Open `path` for `>`/`>>`/`>|` honoring `noclobber` (`>|` forces).
@@ -991,7 +977,6 @@ impl Engine {
             // raws after the 0/1 dups (FdSetup applies in order).
             // ponytail: on non-Unix, fork_spawn below fails first, so
             // the raw-close pass (AsRawFd) only needs to exist on Unix.
-            #[cfg(unix)]
             for (r, w) in &pipes {
                 for raw in [r.as_raw_fd(), w.as_raw_fd()] {
                     if raw > 1 && !setups.iter().any(|(t, _)| *t == raw) {
@@ -999,8 +984,6 @@ impl Engine {
                     }
                 }
             }
-            #[cfg(not(unix))]
-            let _ = &pipes;
             let stage = stage.clone();
             let pid = fork_spawn(setups, false, || {
                 self.in_child = true;
@@ -1557,7 +1540,6 @@ impl Engine {
 
         let mut ops: Vec<FdOp> = Vec::new();
         // Extra-fd sources must stay open until spawn: pre_exec dups them.
-        #[cfg(unix)]
         let mut keep: Vec<File> = Vec::new();
         for fd in 0..3usize {
             let src = match plan.get(&fd) {
@@ -1591,7 +1573,6 @@ impl Engine {
         }
         // Extra fds ride in via pre_exec (Unix only; the non-unix
         // preexec stub is a no-op, so those redirections must error).
-        #[cfg(unix)]
         for (&fd, src) in &plan {
             if fd < 3 {
                 continue;
@@ -1613,12 +1594,6 @@ impl Engine {
                     to: fd as RawFd,
                 }),
             }
-        }
-        #[cfg(not(unix))]
-        if plan.keys().any(|&fd| fd >= 3) {
-            return Err(Stop::Fail(Error::Exec(
-                "redirection to fd >= 3 unsupported on this platform".into(),
-            )));
         }
         preexec_fd_ops(&mut cmd, ops);
 
@@ -2345,7 +2320,6 @@ mod tests {
         assert_eq!(e.run(&prog).unwrap(), Outcome::Status(1));
     }
 
-    #[cfg(unix)]
     #[test]
     fn stopped_job_recovers_via_fg() {
         let mut e = Engine::new();
@@ -2367,7 +2341,6 @@ mod tests {
         assert!(e.bg[0].done());
     }
 
-    #[cfg(unix)]
     #[test]
     fn bg_continues_stopped_job() {
         let mut e = Engine::new();
@@ -2396,7 +2369,6 @@ mod tests {
         assert_eq!(e.bg[0].status(), 0);
     }
 
-    #[cfg(unix)]
     #[test]
     fn interactive_fg_stop_returns_148_and_job() {
         let mut e = Engine::new();
@@ -2413,7 +2385,6 @@ mod tests {
         assert!(e.bg[0].done());
     }
 
-    #[cfg(unix)]
     #[test]
     fn fg_waits_multi_pid_job_last_status_wins() {
         // Pipeline-shaped job (two members), `fg` waits every member

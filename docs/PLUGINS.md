@@ -2,7 +2,8 @@
 
 Everything non-core is a plugin: themes, the git prompt segment, cd
 announcements, completion providers, keymaps. This guide is the
-authoritative API reference; `docs/PLUGIN-PLAN.md` is the design record.
+authoritative API reference; `docs/archive/PLUGIN-PLAN.md` is the
+design record.
 
 ## Where plugins live
 

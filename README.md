@@ -1,8 +1,7 @@
 # briSH
 
 **briSH** (brily SHell) — a memory-safe, crash-resistant POSIX shell
-written in Rust. Unix-first (Linux/macOS), Windows compiles and runs
-basic `-c` scripts.
+written in Rust. Unix-only (Linux/macOS).
 
 Zero-panic policy: `clippy::unwrap_used`/`expect_used` are denied across
 the workspace (tests exempt). Only `brish-platform` contains `unsafe`,
@@ -16,7 +15,6 @@ cargo build --workspace          # debug binary at target/debug/brish
 cargo test --workspace           # 350+ tests, includes a dash-checked POSIX subset
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
-cargo check --workspace --target x86_64-pc-windows-msvc   # Windows gate
 ```
 
 ## Usage
@@ -117,7 +115,8 @@ never panic on arbitrary input.
 
 Write a plugin: [`docs/PLUGINS.md`](docs/PLUGINS.md) — traits, config
 gate, worked examples (hooks, themes, completion, keymaps). The design
-record is [`docs/PLUGIN-PLAN.md`](docs/PLUGIN-PLAN.md); the engineering
+record is [`docs/archive/PLUGIN-PLAN.md`](docs/archive/PLUGIN-PLAN.md);
+the engineering
 roadmap is [`docs/bsh-technical-plan.md`](docs/bsh-technical-plan.md)
 (original project name; still the source of truth for phases).
 Trust boundaries and file-permission policy:

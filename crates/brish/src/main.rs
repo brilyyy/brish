@@ -285,7 +285,6 @@ fn edit_repl(engine: &mut Engine, var_names: Arc<Mutex<Vec<String>>>) -> i32 {
     let _ = brish_builtin::paths::ensure_config_dir();
     // reedline creates the history file with the process umask; tighten
     // it so commands (which may contain secrets) stay 0600.
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let h = config::history_path();

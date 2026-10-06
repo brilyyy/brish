@@ -278,7 +278,6 @@ fn fg_waits_for_background_job() {
     assert_eq!(out(&o), "sleep 0.1\n0\n", "stderr: {}", err(&o));
 }
 
-#[cfg(unix)]
 #[test]
 fn stopped_background_job_recovers_via_fg() {
     let o = run(&[

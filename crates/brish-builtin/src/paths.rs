@@ -43,7 +43,6 @@ pub fn index_cache_dir() -> PathBuf {
 pub fn ensure_config_dir() -> std::io::Result<PathBuf> {
     let dir = config_dir();
     std::fs::create_dir_all(&dir)?;
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&dir)?.permissions().mode();
@@ -57,7 +56,6 @@ pub fn ensure_config_dir() -> std::io::Result<PathBuf> {
 /// Create/overwrite `path` with mode `0600`; tighten pre-existing
 /// files that are group/world-accessible. Used for history, config,
 /// and the `z` database (commands and paths may hold secrets).
-#[cfg(unix)]
 pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -71,23 +69,15 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     f.write_all(bytes)
 }
 
-#[cfg(not(unix))]
-pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    std::fs::write(path, bytes)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
-    #[cfg(unix)]
     fn mode(p: &Path) -> u32 {
         std::fs::metadata(p).unwrap().permissions().mode() & 0o777
     }
 
-    #[cfg(unix)]
     #[test]
     fn write_private_is_0600_and_tightens() {
         let dir = tempfile::tempdir().unwrap();

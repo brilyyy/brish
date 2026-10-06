@@ -1,9 +1,6 @@
 //! RAII guards for file descriptors and terminal state.
 
-#[cfg(unix)]
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
-#[cfg(not(unix))]
-use std::os::windows::io::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
 use crate::{PlatformError, Terminal, TermiosState};
 

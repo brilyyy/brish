@@ -33,14 +33,9 @@ fn is_exec(p: &Path) -> bool {
     if !meta.is_file() {
         return false;
     }
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         meta.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        true
     }
 }
 

@@ -239,34 +239,18 @@ fn is_integer_literal(s: &str) -> bool {
 
 /// POSIX mode-bit test (`0o444` readable, `0o222` writable, `0o111`
 /// executable; set/sticky bits pass their own masks).
-#[cfg(unix)]
 fn mode_has(m: &std::fs::Metadata, mask: u32) -> bool {
     use std::os::unix::fs::MetadataExt;
     m.mode() & mask != 0
 }
 
-#[cfg(not(unix))]
-fn mode_has(_m: &std::fs::Metadata, _mask: u32) -> bool {
-    // ponytail: no POSIX mode bits on Windows; assume not set. Give
-    // Windows real ACL checks if -r/-w/-x matter there.
-    false
-}
-
 /// `-ef`: same file (device + inode on Unix).
-#[cfg(unix)]
 fn same_file(l: &std::fs::Metadata, r: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
     l.dev() == r.dev() && l.ino() == r.ino()
 }
 
-#[cfg(not(unix))]
-fn same_file(_l: &std::fs::Metadata, _r: &std::fs::Metadata) -> bool {
-    // ponytail: no file-index compare on Windows yet.
-    false
-}
-
 /// Device/special-file + set/sticky-bit tests behind the final `_` arm.
-#[cfg(unix)]
 fn file_type_test(op: &str, m: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::FileTypeExt;
     let ft = m.file_type();
@@ -280,12 +264,6 @@ fn file_type_test(op: &str, m: &std::fs::Metadata) -> bool {
         "-k" => mode_has(m, 0o1000),
         _ => false,
     }
-}
-
-#[cfg(not(unix))]
-fn file_type_test(_op: &str, _m: &std::fs::Metadata) -> bool {
-    // ponytail: special files and set/sticky bits don't exist here.
-    false
 }
 
 fn fs_meta(p: &str) -> Result<Option<std::fs::Metadata>, TestError> {
@@ -446,9 +424,7 @@ mod tests {
         assert_eq!(v(&["a", "--bogus"]).unwrap_err(), TestError::BadOperator);
     }
 
-    // ponytail: symlink half needs Unix; Windows gets file tests when
-    // someone ports these to std::os::windows.
-    #[cfg(unix)]
+    // ponytail: symlink half needs Unix (this crate is unix-only now).
     #[test]
     fn file_tests() {
         let t = Tmp::new("file");

@@ -17,5 +17,3 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: cargo fmt --all --check
-      - run: rustup target add x86_64-pc-windows-msvc
-      - run: cargo check --workspace --all-targets --target x86_64-pc-windows-msvc

@@ -388,7 +388,6 @@ pub fn keymap_pairs(cmd: &[String], dir: &Path, timeout_ms: u64) -> Vec<(String,
 }
 
 #[cfg(test)]
-#[cfg(unix)]
 mod tests {
     use super::*;
 
