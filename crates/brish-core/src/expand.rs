@@ -736,6 +736,8 @@ impl<'a> Ex<'a> {
         let mut cur = String::new();
         let mut cur_glob = false;
         let mut produced = false;
+        // A quoted segment (even empty `""`) must yield a field.
+        let mut quoted_seen = false;
 
         for seg in segs {
             match seg {
@@ -743,10 +745,22 @@ impl<'a> Ex<'a> {
                     if quoted {
                         cur.push_str(&text);
                         produced = true;
+                        quoted_seen = true;
                     } else if !text.is_empty() {
                         produced = true;
                         if glob {
                             cur_glob = true;
+                        }
+                        // IFS whitespace at the expansion's edges is a
+                        // field delimiter even against adjacent literals
+                        // (POSIX 2.6): `[$x]` with x='  a  ' →
+                        // fields `[`, `a`, `]` — echo joins them
+                        // `[ a ]`. Without this, `[`+split+`]` glues.
+                        let ifs_ws = |c: char| matches!(c, ' ' | '\t' | '\n') && ifs.contains(c);
+                        let lead = text.starts_with(ifs_ws);
+                        let trail = text.ends_with(ifs_ws);
+                        if lead && !cur.is_empty() {
+                            self.flush_field(&mut fields, &mut cur, &mut cur_glob, do_glob)?;
                         }
                         let chunks = split_fields(&text, &ifs);
                         let mut it = chunks.into_iter();
@@ -756,6 +770,9 @@ impl<'a> Ex<'a> {
                         for c in it {
                             self.flush_field(&mut fields, &mut cur, &mut cur_glob, do_glob)?;
                             cur.push_str(&c);
+                        }
+                        if trail && !cur.is_empty() {
+                            self.flush_field(&mut fields, &mut cur, &mut cur_glob, do_glob)?;
                         }
                     }
                 }
@@ -778,7 +795,10 @@ impl<'a> Ex<'a> {
                 }
             }
         }
-        if produced {
+        // Skip the empty tail left by a trail-delimiter flush (`$x`
+        // with trailing IFS ws already pushed its field); quoted
+        // segments still force their field (`set -- ""` → $# = 1).
+        if produced && (!cur.is_empty() || quoted_seen) {
             self.flush_field(&mut fields, &mut cur, &mut cur_glob, do_glob)?;
         }
         Ok(fields)

@@ -94,6 +94,124 @@ const CASES: &[(&str, &str, i32)] = &[
         0,
     ),
     ("command cat <<EOF\nvia-command\nEOF", "via-command\n", 0),
+    // --- parameter expansion (plan 3.2) ---
+    ("x=abc; echo ${#x}", "3\n", 0),
+    ("x=abcdef; echo ${x#abc}", "def\n", 0),
+    ("x=abcdef; echo ${x##a*c}", "def\n", 0),
+    ("x=abcabc; echo ${x%abc}", "abc\n", 0),
+    ("x=abcabc; echo ${x%%a*c}", "\n", 0),
+    ("x=val; echo ${x:+set}", "set\n", 0),
+    ("x=; echo ${x:+set}", "\n", 0),
+    ("x=base; echo ${x-base}", "base\n", 0),
+    ("x=file.txt; echo ${x%.txt}", "file\n", 0),
+    ("x=dir/file; echo ${x##*/}", "file\n", 0),
+    ("x=a; y=${x:?missing}; echo $y", "a\n", 0),
+    (
+        "unset x; echo ${x=assigned}; echo $x",
+        "assigned\nassigned\n",
+        0,
+    ),
+    // positional after shift
+    ("set -- a b c; shift; echo $1 $2", "b c\n", 0),
+    ("set -- a b c; shift 2; echo $# $1", "1 c\n", 0),
+    ("set -- a b; echo ${#1} ${#2}", "1 1\n", 0),
+    // --- arithmetic extras ---
+    ("echo $((2 + 3 * 4))", "14\n", 0),
+    ("echo $((10 / 3 * 3))", "9\n", 0),
+    ("echo $((1 << 4))", "16\n", 0),
+    ("echo $((7 & 3)) $((7 | 1)) $((7 ^ 3))", "3 7 4\n", 0),
+    ("echo $((-5 + 3))", "-2\n", 0),
+    ("echo $((1 == 1)) $((2 < 1))", "1 0\n", 0),
+    // --- quoting / expansion order ---
+    ("echo \"$(echo nested)\"", "nested\n", 0),
+    ("echo \"$(echo a)$(echo b)\"", "ab\n", 0),
+    ("echo `echo tick`", "tick\n", 0),
+    ("x='  spaced  '; echo [$x]", "[ spaced ]\n", 0),
+    // `echo` backslash handling is undefined (dash XSI echo vs bash/brish
+    // plain) — use printf for escape cases.
+    ("printf '%s\n' 'back\\slash'", "back\\slash\n", 0),
+    ("printf '%b\n' 'tab\\there'", "tab\there\n", 0),
+    // --- redirections ---
+    ("echo out 2>&1", "out\n", 0),
+    ("sh -c 'echo err 1>&2' 2>/dev/null", "", 0),
+    ("sh -c 'echo e 1>&2' 2>&1 | cat", "e\n", 0),
+    ("cat < /dev/null; echo empty-ok", "empty-ok\n", 0),
+    (
+        "printf 'x\n' >| /tmp/bsh_force_$$.txt; cat /tmp/bsh_force_$$.txt; rm /tmp/bsh_force_$$.txt",
+        "x\n",
+        0,
+    ),
+    ("cat <<-EOT\n\tstripped\nEOT", "stripped\n", 0),
+    ("cat <<'E'\n$literal\nE", "$literal\n", 0),
+    ("X=val; cat <<EOT\n$X-set\nEOT", "val-set\n", 0),
+    // --- subshells / functions ---
+    ("f() { return 4; }; f; echo $?", "4\n", 0),
+    ("f() { echo before; return; echo after; }; f", "before\n", 0),
+    ("(exit 2); echo $?", "2\n", 0),
+    ("(echo sub; exit 0) | cat", "sub\n", 0),
+    ("f() { g; }; g() { echo gg; }; f", "gg\n", 0),
+    // --- test/[ operators ---
+    ("[ -n abc ] && echo n", "n\n", 0),
+    ("[ 5 -ge 5 ] && echo ge", "ge\n", 0),
+    ("[ 2 -ne 2 ]; echo $?", "1\n", 0),
+    ("[ a != b ] && echo ne", "ne\n", 0),
+    ("[ -z \"$unsetvar\" ] && echo z", "z\n", 0),
+    ("test 1 -eq 1 -a 2 -eq 2 && echo conj", "conj\n", 0),
+    // --- pipelines & lists ---
+    ("echo one two | wc -w", "       2\n", 0),
+    ("false || false || echo third", "third\n", 0),
+    ("true && true && echo chain", "chain\n", 0),
+    (
+        "ls /definitely/not/here 2>/dev/null; echo survived",
+        "survived\n",
+        0,
+    ),
+    ("echo a; echo b; echo c", "a\nb\nc\n", 0),
+    // --- set / unset / export ---
+    ("set -e; true; echo errexit-ok", "errexit-ok\n", 0),
+    ("x=1; unset x; echo [${x-unset}]", "[unset]\n", 0),
+    ("set -- ; echo $#", "0\n", 0),
+    // readonly reassign is fatal in dash programs per POSIX; skip it.
+    ("readonly r=1; echo $r", "1\n", 0),
+    // --- command substitution edge ---
+    ("out=$(echo inner); echo $out", "inner\n", 0),
+    ("echo $(printf '%s-%s' a b)", "a-b\n", 0),
+    ("n=$(echo 1; echo 2 | tail -1); echo $n", "1 2\n", 0),
+    // --- trap EXIT (dash supports) ---
+    ("trap 'echo bye' EXIT; echo hi", "hi\nbye\n", 0),
+    // --- getopts (dash builtin) ---
+    (
+        "OPTIND=1; while getopts ab opt; do case $opt in a) echo A;; b) echo B;; esac; done; echo done",
+        "done\n",
+        0,
+    ),
+    (
+        "OPTIND=1; while getopts ab opt; do case $opt in a) echo A;; b) echo B;; esac; done; echo left=$OPTIND",
+        "left=1\n",
+        0,
+    ),
+    // --- alias NOT expanded in batch (POSIX default) ---
+    // not-found diagnostics go to stderr; stdout stays empty.
+    ("alias e=echo; e hi", "", 127),
+    // --- globbing ---
+    ("echo /no/such/glob_*.txt", "/no/such/glob_*.txt\n", 0),
+    // --- read builtin ---
+    (
+        "echo line1 | while read x; do echo got:$x; done",
+        "got:line1\n",
+        0,
+    ),
+    // --- here-string is bash-only: skip ---
+    // --- nested quotes / words ---
+    ("echo \"'single' in double\"", "'single' in double\n", 0),
+    ("echo 'don'\\''t' ", "don't\n", 0),
+    ("printf '%5s|' ab; echo", "   ab|\n", 0),
+    ("printf '%-5s|' ab; echo", "ab   |\n", 0),
+    ("printf '%.3s' abcdef", "abc", 0),
+    ("printf '%x %X %o' 255 255 8", "ff FF 10", 0),
+    // Format not reused once args run out; no trailing newline.
+    ("printf '%s %s' only-one", "only-one ", 0),
+    ("printf 'no-args %d\n'", "no-args 0\n", 0),
 ];
 
 fn run(prog: &str, args: &[&str], cwd: &Path) -> (String, i32) {
