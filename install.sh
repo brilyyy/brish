@@ -2,12 +2,12 @@
 # briSH installer: prebuilt binary from GitHub Releases into
 # ${PREFIX:-/usr/local/bin}. Verifies sha256; fail-closed on mismatch.
 #
-#   curl -fsSL https://raw.githubusercontent.com/brilyyy/bsh/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/brilyyy/brish/main/install.sh | sh
 #   VERSION=v0.1.0 ./install.sh        # pin a tag
 #   PREFIX=$HOME/.local/bin ./install.sh
 set -eu
 
-REPO="${BSH_REPO:-brilyyy/bsh}"
+REPO="${BRISH_REPO:-brilyyy/brish}"
 BIN=brish
 PREFIX="${PREFIX:-/usr/local/bin}"
 VERSION="${1:-${VERSION:-latest}}"

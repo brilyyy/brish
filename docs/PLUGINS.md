@@ -45,7 +45,7 @@ enabled = ["brish-themes"]  # exact list; replaces defaults
 ```toml
 # ~/.config/brish/config.toml — optional store settings
 [store]
-index = "https://github.com/brilyyy/bsh"   # git repo of index/*.toml
+index = "https://github.com/brilyyy/brish"   # git repo of index/*.toml
 ```
 
 ## The seams

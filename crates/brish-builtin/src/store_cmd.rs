@@ -16,7 +16,7 @@ use toml_edit::Item;
 
 /// Default index repository (override: `[store] index` in config.toml
 /// or `$BRISH_INDEX`).
-const DEFAULT_INDEX: &str = "https://github.com/brilyyy/bsh";
+const DEFAULT_INDEX: &str = "https://github.com/brilyyy/brish";
 
 /// Engine entry point: `argv[0] == "plugin"`.
 pub fn dispatch(argv: &[String], installed: &[(String, bool)], shell_cwd: &Path) -> i32 {

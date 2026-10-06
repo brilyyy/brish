@@ -1,5 +1,5 @@
 name = "sentinel"
 description = "Example helper plugin: guard hook, prompt segment, completion/keymap helper"
-source = "https://github.com/brilyyy/bsh"
+source = "https://github.com/brilyyy/brish"
 path = "examples/plugins/sentinel"
 tags = ["helper", "example"]

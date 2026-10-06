@@ -23,7 +23,7 @@ Prebuilt releases (linux x86_64/aarch64, macOS aarch64/x86_64; sha256
 verified, installs to `/usr/local/bin` — override with `PREFIX`):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/brilyyy/bsh/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/brilyyy/brish/main/install.sh | sh
 VERSION=v0.1.0 ./install.sh           # pin a tag (from a clone)
 PREFIX=$HOME/.local/bin ./install.sh   # no sudo
 ```
@@ -32,8 +32,8 @@ From source (works today, no release needed):
 
 ```sh
 cargo install --path crates/brish                                    # from a clone
-cargo install --git https://github.com/brilyyy/bsh brish             # straight from git
-cargo binstall --git https://github.com/brilyyy/bsh brish            # uses release assets when tagged
+cargo install --git https://github.com/brilyyy/brish brish             # straight from git
+cargo binstall --git https://github.com/brilyyy/brish brish            # uses release assets when tagged
 ```
 
 ## Usage
