@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.1.0 — NOTES.md batch (unreleased)
+
+Daily-driver customizability pass (`NOTES.md`).
+
+### Added
+- `[cd] zoxide`: `cd <rel>` falls back to `zoxide query` when the
+  operand is not a directory and zoxide is on PATH (link preferred).
+- `ls` builtin: `[ls] backend = auto|builtin|eza` — auto/eza exec
+  eza (with `--icons` when `[ls] icons`); builtin fallback covers
+  `-a`/`-l`/operands with fixed Nerd-Font glyphs.
+- `relconf`: reloads `config.toml`, rebuilds the registry, re-applies
+  the theme — prompt/hooks/segments update without restart (reedline
+  highlighter/menus/edit-mode still need one).
+- `[output] table = auto|always|off`: `plugin`/`theme`/`jobs` lists
+  render as aligned columns.
+- `[prompt]`: `indicator`/`vi_normal`/`vi_visual`/`multiline`
+  (empty = toggle off) + `completion_description` (named/`#rrggbb`/
+  `off`); menu descriptions default muted (`DarkGray`).
+- `[theme] prompt`: config-driven prompt template (`{arrow} {cwd}
+  {segments} {fg:…}`, `\n` for multiline) — full oneline/multiline
+  theming without Rust; `PS1` still wins.
+- rcfile fallback: `--rcfile` > `~/.config/brish/.brishrc` >
+  `~/.brishrc`.
+- Syntax highlighting was already default-on (NOTES 8 satisfied by
+  existing `syntax-highlight` plugin).
+
+### Changed
+- Windows support fully removed (NOTES 11): `cfg(not(unix))` stubs
+  dropped, CI target-gate removed, README scrubbed. Unix-only.
+- Design docs archived: `docs/archive/PLUGIN-PLAN.md`,
+  `docs/archive/BRISH-EXTENSIBILITY-PLAN.md` (NOTES 12);
+  `bsh-technical-plan.md`/`PLUGINS.md`/`SECURITY.md` remain current.
+
 ## 0.1.0 — beta prep (unreleased)
 
 Daily-driver close-out: missing POSIX builtins, plugin/theme crate

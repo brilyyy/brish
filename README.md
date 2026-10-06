@@ -38,11 +38,46 @@ Files (all optional, `~/.config/brish/`):
 
 | Path | Purpose |
 |---|---|
-| `config.toml` | `[theme] name`, `[plugins] enabled/disabled`, `[store] index` |
-| `.brishrc` | default rcfile (override with `--rcfile`) |
+| `config.toml` | see below |
+| `.brishrc` | default rcfile (`--rcfile` overrides; fallback `~/.brishrc`) |
 | `.brish_history` | interactive history, 1000 entries |
 | `plugins/` | store plugins, one dir per plugin (`plugin.toml`) |
 | `index/` | cached store index (git clone) |
+
+`config.toml` sections:
+
+```toml
+[theme]
+name = "briiish"                     # theme selector
+prompt = "{arrow} {cwd} {segments}\n❯ "   # optional template (\n = multiline)
+
+[prompt]
+indicator = "> "          # emacs prompt indicator ("" = off)
+vi_normal = ": "
+vi_visual = "+ "
+multiline = "::: "
+completion_description = "darkgray"  # or #rrggbb / off
+
+[plugins]
+enabled = ["vi-mode"]     # exact list; or disabled = [...]
+
+[cd]
+zoxide = "auto"           # cd falls back to `zoxide query` when present
+
+[ls]
+backend = "auto"          # auto | builtin | eza
+icons = true
+
+[output]
+table = "auto"            # aligned plugin/theme/jobs lists
+
+[store]
+index = "https://github.com/you/index"
+```
+
+`relconf` reloads `config.toml` and rebuilds the plugin registry
+(theme/segments/hooks live immediately; reedline-owned
+highlighter/menus/edit-mode need a restart).
 
 Environment knobs:
 
@@ -84,8 +119,12 @@ Examples live in `examples/plugins/`, authoring guide in
   `set -o pipefail`.
 - Builtins: `cd pwd echo printf test [ true false : exit return eval .
   source unset export readonly shift set type command break continue
-  alias unalias trap umask times history wait jobs kill fg bg` (+ PATH
-  externals).
+  alias unalias trap umask times history ls relconf wait jobs kill
+  fg bg` (+ PATH externals).
+- `cd` uses zoxide for frecent jumps when installed (`[cd] zoxide`);
+  `ls` uses eza when installed (`[ls] backend`), builtin fallback
+  with icons otherwise. Syntax highlighting and muted completion
+  descriptions are on by default (zero config).
 - `alias`/`unalias` expand interactively only (POSIX batch safe);
   `trap` covers `EXIT|INT|TERM|HUP|QUIT` with flag-based delivery at
   command/prompt boundaries; `printf` cycles the format over args
@@ -127,6 +166,8 @@ completion, keymaps), `brish-theme` for prompt themes/segments.
 
 ## Deliberately not yet implemented
 
-Runtime plugin toggling (config is read at startup), right prompt,
-quote-aware completion, process substitution, `trap ERR`, restricted
-mode (`-r`), mid-command signal traps (`sleep 100` is not cut short).
+Runtime plugin toggling (config is read at startup; `relconf` bridges
+the gap), right prompt, quote-aware completion, process substitution,
+`trap ERR`, restricted mode (`-r`), mid-command signal traps
+(`sleep 100` is not cut short), `ls`/`zoxide` depth (`-R`, `zi`
+picker).
