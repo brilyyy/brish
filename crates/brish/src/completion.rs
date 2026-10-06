@@ -2,7 +2,7 @@
 //! [`CompletionProvider`]s (plan 6.6).
 //!
 //! Context is heuristic (whitespace + `;`/`|`/`&`/`&&`/`||` segmentation)
-//! — quotes are not honoured yet. The three default providers
+//! — words are quote-aware (unclosed quotes keep spaces). The three default providers
 //! (`default-completion` plugin) reproduce the lite behaviour: command
 //! names at command position, `$VARS` after `$`, files elsewhere.
 //! Providers early-return when the context is not theirs, so the router
@@ -30,10 +30,33 @@ pub(crate) fn is_builtin(name: &str) -> bool {
 
 const MAX_SUGGESTIONS: usize = 100;
 
-/// Word under the cursor and its byte start.
+/// Word under the cursor and its byte start. Quote-aware: whitespace
+/// inside an unclosed `'…`/`"…` does not end the word, so
+/// `cat "foo b<Tab>` completes the path behind the quote.
 fn word_at(line: &str, pos: usize) -> (usize, &str) {
-    let start = line[..pos].rfind(char::is_whitespace).map_or(0, |i| i + 1);
+    let pos = pos.min(line.len());
+    let mut start = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    for (i, c) in line[..pos].char_indices() {
+        if c == '\'' && !in_double {
+            in_single = !in_single;
+        } else if c == '"' && !in_single {
+            in_double = !in_double;
+        } else if c.is_whitespace() && !in_single && !in_double {
+            start = i + c.len_utf8();
+        }
+    }
     (start, &line[start..pos])
+}
+
+/// Peel one leading `'`/`"` for matching (the span still covers it,
+/// and the suggestion value gets it back — see `suggestions_in`).
+fn strip_open_quote(word: &str) -> (Option<char>, &str) {
+    match word.chars().next() {
+        Some(q @ ('"' | '\'')) => (Some(q), &word[q.len_utf8()..]),
+        _ => (None, word),
+    }
 }
 
 /// True when the cursor sits at the start of a command (prefix contains
@@ -248,8 +271,11 @@ impl BrishCompleter {
     }
 
     fn suggestions_in(&self, line: &str, pos: usize, cwd: &Path) -> Vec<Suggestion> {
-        let (start, word) = word_at(line, pos);
+        let (start, raw_word) = word_at(line, pos);
         let span = Span { start, end: pos };
+        // Match without the opening quote; put it back on the way out
+        // so the span replacement keeps the line's quoting intact.
+        let (quote, word) = strip_open_quote(raw_word);
         let after_dollar = word.starts_with('$');
         let w = word.strip_prefix('$').unwrap_or(word);
         let is_command = !after_dollar && command_position(&line[..start]);
@@ -270,7 +296,13 @@ impl BrishCompleter {
             .into_iter()
             .filter(|c| seen.insert(c.value.clone()))
             .take(MAX_SUGGESTIONS)
-            .map(|c| sug(c.value, &span, c.description.as_deref(), c.keep_typing))
+            .map(|c| {
+                let value = match quote {
+                    Some(q) => format!("{q}{}", c.value),
+                    None => c.value,
+                };
+                sug(value, &span, c.description.as_deref(), c.keep_typing)
+            })
             .collect()
     }
 }
@@ -292,6 +324,43 @@ mod tests {
         assert_eq!(word_at("", 0), (0, ""));
         assert_eq!(word_at("cat ", 4), (4, ""));
         assert_eq!(word_at("a b c", 5), (4, "c"));
+    }
+
+    #[test]
+    fn word_at_is_quote_aware() {
+        // whitespace inside an open double quote keeps the word whole
+        assert_eq!(word_at("cat \"foo b", 10), (4, "\"foo b"));
+        // closed quote then space → boundary after the closing quote
+        assert_eq!(word_at("echo \"a b\" c", 13), (11, "c"));
+        // single quotes
+        assert_eq!(word_at("cat 'a b", 8), (4, "'a b"));
+        // quote-only word
+        assert_eq!(word_at("x \"", 3), (2, "\""));
+    }
+
+    #[test]
+    fn open_quote_is_stripped_for_match_and_restored_in_value() {
+        let (q, w) = strip_open_quote("\"./fi");
+        assert_eq!((q, w), (Some('"'), "./fi"));
+        let (q, w) = strip_open_quote("./fi");
+        assert_eq!((q, w), (None, "./fi"));
+        let (q, w) = strip_open_quote("'x");
+        assert_eq!((q, w), (Some('\''), "x"));
+
+        // end-to-end: file behind an open quote completes, quote kept
+        let dir = tempfile::tempdir().expect("tmpdir");
+        std::fs::write(dir.path().join("script.sh"), "#!/bin/sh\n").expect("w");
+        let line = "cat \"./scr";
+        let pos = line.len();
+        let (start, raw) = word_at(line, pos);
+        assert_eq!(raw, "\"./scr");
+        assert_eq!(&line[start..], "\"./scr");
+        let (quote, stripped) = strip_open_quote(raw);
+        assert_eq!(stripped, "./scr");
+        assert_eq!(quote, Some('"'));
+        // suggestion value restores the quote (splice covers the span)
+        let value = format!("{}{}", quote.unwrap(), "./script.sh");
+        assert_eq!(value, "\"./script.sh");
     }
 
     #[test]
