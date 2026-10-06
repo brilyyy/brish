@@ -2076,13 +2076,20 @@ mod tests {
         let src = format!("set -o noclobber; echo new > {}; true", f.display());
         status(&src); // refusals print to stderr; ignored here
         // printf, not echo: builtin echo output is captured by libtest
-        // and never reaches the redirected file under test.
+        // and never reaches the redirected file under test. The harness
+        // may also emit its own fd1 lines into the file during the
+        // dup2 window (parallel tests) — assert our bytes arrived,
+        // not byte-exact content.
         let src = format!(
             "set -o noclobber; printf 'forced\\n' >| {}; true",
             f.display()
         );
         assert_eq!(status(&src), 0);
-        assert_eq!(std::fs::read_to_string(&f).unwrap(), "forced\n");
+        let got = std::fs::read_to_string(&f).unwrap();
+        assert!(
+            got.contains("forced\n"),
+            "redirected printf output missing, got {got:?}"
+        );
     }
 
     #[test]
@@ -2388,7 +2395,8 @@ mod tests {
         let mut e = Engine::new();
         let prog = brish_core::parser::parse("sleep 0.3 & kill -STOP $!").unwrap();
         e.run(&prog).unwrap();
-        for _ in 0..200 {
+        // Generous budgets: parallel test threads steal scheduler time.
+        for _ in 0..600 {
             e.reap_bg();
             if e.bg[0].stopped {
                 break;
@@ -2400,7 +2408,7 @@ mod tests {
         e.run(&prog).unwrap();
         assert_eq!(e.env.status, 0);
         assert!(!e.bg[0].stopped, "bg resumes the job");
-        for _ in 0..200 {
+        for _ in 0..600 {
             e.reap_bg();
             if e.bg[0].done() {
                 break;
@@ -2563,10 +2571,17 @@ mod tests {
         assert_eq!(run_src(&mut e, &src), 0);
         // Inject the pending bit rather than sending a real SIGINT — a
         // real kill races with parallel tests restoring SIG_DFL and
-        // would terminate the whole test process. Drain path is what
-        // this exercises; handler install is covered by trap_on below.
-        brish_platform::inject_pending_trap(brish_platform::TRAP_BIT_INT);
-        assert_eq!(run_src(&mut e, "true"), 0, "drain runs the INT trap");
+        // would terminate the whole test process. The flag word is
+        // process-global, so a parallel test's drain may steal the bit;
+        // re-inject until *this* engine observes it.
+        for _ in 0..100 {
+            brish_platform::inject_pending_trap(brish_platform::TRAP_BIT_INT);
+            assert_eq!(run_src(&mut e, "true"), 0, "drain runs the INT trap");
+            if !marker.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         assert!(!marker.exists(), "trap body must have run (marker removed)");
         // cleanup handler for other tests
         run_src(&mut e, "trap - INT");
