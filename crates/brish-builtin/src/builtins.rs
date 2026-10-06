@@ -35,6 +35,12 @@ pub enum BuiltIn {
     Unset,
     /// `pwd`
     Pwd,
+    /// `printf`
+    Printf,
+    /// `umask`
+    Umask,
+    /// `times`
+    Times,
     /// `readonly`
     Readonly,
     /// `set`
@@ -73,6 +79,9 @@ impl BuiltIn {
             "trap" => BuiltIn::Trap,
             "unset" => BuiltIn::Unset,
             "pwd" => BuiltIn::Pwd,
+            "printf" => BuiltIn::Printf,
+            "umask" => BuiltIn::Umask,
+            "times" => BuiltIn::Times,
             "readonly" => BuiltIn::Readonly,
             "set" => BuiltIn::Set,
             "shift" => BuiltIn::Shift,
@@ -92,8 +101,8 @@ impl BuiltIn {
     pub fn names() -> &'static [&'static str] {
         &[
             "alias", "break", "cd", "command", "continue", "echo", "exit", "export", "history",
-            "pwd", "read", "readonly", "return", "set", "shift", "source", "test", "trap", "type",
-            "unalias", "unset", "z", ".", ":", "[",
+            "printf", "pwd", "read", "readonly", "return", "set", "shift", "source", "test",
+            "times", "trap", "type", "umask", "unalias", "unset", "z", ".", ":", "[",
         ]
     }
 
@@ -114,6 +123,9 @@ impl BuiltIn {
             BuiltIn::Trap => "trap",
             BuiltIn::Unset => "unset",
             BuiltIn::Pwd => "pwd",
+            BuiltIn::Printf => "printf",
+            BuiltIn::Umask => "umask",
+            BuiltIn::Times => "times",
             BuiltIn::Readonly => "readonly",
             BuiltIn::Set => "set",
             BuiltIn::Shift => "shift",
@@ -145,8 +157,8 @@ mod tests {
     fn round_trip() {
         for name in [
             "alias", "unalias", "cd", "echo", "exit", "export", "history", "read", "source", ".",
-            "test", "[", ":", "return", "trap", "unset", "pwd", "readonly", "set", "shift",
-            "command", "type", "break", "continue",
+            "test", "[", ":", "return", "trap", "unset", "pwd", "printf", "umask", "times",
+            "readonly", "set", "shift", "command", "type", "break", "continue",
         ] {
             let b = BuiltIn::from_name(name).unwrap();
             let _ = b.name();

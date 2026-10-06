@@ -28,7 +28,7 @@ pub use proc::{
     ChildState, FdOp, FdScope, FdSetup, SIGCONT, SIGSTOP, SIGTSTP, claim_terminal, fork_run,
     fork_spawn, ignore_jobctl_signals, kill_group, open_tty, poll_pid, preexec_fd_ops,
     reset_sigpipe, send_signal, set_group_leader, shell_pgrp, signal_by_name, suspend_self,
-    tcsetpgrp_fd, try_wait, wait_pid, wait_untraced, with_fds,
+    tcsetpgrp_fd, times_secs, try_wait, umask, wait_pid, wait_untraced, with_fds, write_stdout,
 };
 pub use traits::{
     ChildHandle, CommandSpec, EnvApi, Filesystem, JobControl, Pgid, Pid, Platform, Process, RawFd,

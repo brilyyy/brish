@@ -53,6 +53,9 @@ pub fn run(b: BuiltIn, args: &[String], env: &mut Env) -> Result<Flow, Error> {
         BuiltIn::History => Ok(history_cmd(args)),
         BuiltIn::Alias => Ok(alias_cmd(args, env)),
         BuiltIn::Unalias => Ok(unalias_cmd(args, env)),
+        BuiltIn::Printf => Ok(printf_cmd(args)),
+        BuiltIn::Umask => Ok(umask_cmd(args)),
+        BuiltIn::Times => Ok(times_cmd()),
         BuiltIn::Source | BuiltIn::Trap => {
             Err(Error::Exec(format!("{}: not yet implemented", b.name())))
         }
@@ -123,6 +126,444 @@ fn unalias_cmd(args: &[String], env: &mut Env) -> Flow {
         }
     }
     Flow::Status(status)
+}
+
+// ---- printf ----
+
+/// `printf format [args...]` — POSIX. The format is reused while
+/// unconsumed args remain; a final pass fills missing args with
+/// defaults. No-conversion formats apply once per arg (once total
+/// when there are none).
+///
+/// ponytail: float family is `%f` only (`%e`/`%g`/`%a` added when a
+/// script passes them); `%n` deliberately unsupported (write-to-memory).
+fn printf_cmd(args: &[String]) -> Flow {
+    if args.len() < 2 {
+        eprintln!("printf: usage: printf format [arguments...]");
+        return Flow::Status(2);
+    }
+    let fmt = args[1].as_str();
+    let rest = &args[2..];
+    let mut out = String::new();
+    let mut idx = 0usize;
+    loop {
+        let (text, _) = printf_pass(fmt, rest, &mut idx);
+        out.push_str(&text);
+        if idx >= rest.len() {
+            break;
+        }
+    }
+    brish_platform::write_stdout(out.as_bytes());
+    Flow::Status(0)
+}
+
+/// One format pass. Consumes args via `idx`; returns the rendered
+/// text and whether any arg was consumed.
+fn printf_pass(fmt: &str, rest: &[String], idx: &mut usize) -> (String, bool) {
+    let mut out = String::new();
+    let mut any = false;
+    let mut nconv = 0usize;
+    let chars: Vec<char> = fmt.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '\\' && i + 1 < chars.len() {
+            // POSIX: format escape sequences (\n \t \\ \a ... \cX)
+            let pair: String = chars[i..i + 2].iter().collect();
+            let (s, _) = brish_core::lexer::ansi_c_decode(&pair, true, true);
+            out.push_str(&s);
+            i += 2;
+            continue;
+        }
+        if chars[i] != '%' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i >= chars.len() {
+            out.push('%');
+            break;
+        }
+        if chars[i] == '%' {
+            out.push('%');
+            i += 1;
+            continue;
+        }
+        // flags
+        let mut flags = String::new();
+        while i < chars.len() && matches!(chars[i], '-' | '+' | ' ' | '0' | '#') {
+            flags.push(chars[i]);
+            i += 1;
+        }
+        // width
+        let mut width: Option<usize> = None;
+        if i < chars.len() && chars[i] == '*' {
+            i += 1;
+            width = Some(take_int(rest, idx, &mut any));
+        } else if let Some((w, ni)) = take_num(&chars, i) {
+            width = Some(w);
+            i = ni;
+        }
+        // precision
+        let mut prec: Option<usize> = None;
+        if i < chars.len() && chars[i] == '.' {
+            i += 1;
+            if i < chars.len() && chars[i] == '*' {
+                i += 1;
+                prec = Some(take_int(rest, idx, &mut any));
+            } else if let Some((p, ni)) = take_num(&chars, i) {
+                prec = Some(p);
+                i = ni;
+            } else {
+                prec = Some(0);
+            }
+        }
+        if i >= chars.len() {
+            out.push('%');
+            break;
+        }
+        let conv = chars[i];
+        i += 1;
+        nconv += 1;
+        let arg: Option<String> = if *idx < rest.len() {
+            any = true;
+            let s = rest[*idx].clone();
+            *idx += 1;
+            Some(s)
+        } else {
+            None
+        };
+        out.push_str(&render_conv(conv, arg.as_deref(), &flags, width, prec));
+    }
+    if nconv == 0 && *idx < rest.len() {
+        *idx += 1;
+        any = true;
+    }
+    (out, any)
+}
+
+/// Parse decimal digits at `i`; returns (value, next_index).
+fn take_num(chars: &[char], i: usize) -> Option<(usize, usize)> {
+    let mut j = i;
+    while j < chars.len() && chars[j].is_ascii_digit() {
+        j += 1;
+    }
+    if j == i {
+        return None;
+    }
+    let s: String = chars[i..j].iter().collect();
+    s.parse().ok().map(|n| (n, j))
+}
+
+/// `*` width/precision: consume next arg as integer (default 0).
+fn take_int(rest: &[String], idx: &mut usize, any: &mut bool) -> usize {
+    if *idx < rest.len() {
+        *any = true;
+        let v: i64 = rest[*idx].parse().unwrap_or(0);
+        *idx += 1;
+        v.max(0) as usize
+    } else {
+        0
+    }
+}
+
+fn render_conv(
+    conv: char,
+    arg: Option<&str>,
+    flags: &str,
+    width: Option<usize>,
+    prec: Option<usize>,
+) -> String {
+    let left = flags.contains('-');
+    let plus = flags.contains('+');
+    let space = flags.contains(' ');
+    let zero = flags.contains('0');
+    let sharp = flags.contains('#');
+    match conv {
+        'd' | 'i' => {
+            let n: i64 = arg.and_then(|a| a.trim().parse().ok()).unwrap_or(0);
+            let neg = n < 0;
+            let digits = n.unsigned_abs().to_string();
+            fmt_num(
+                &digits, neg, false, false, flags, width, prec, left, plus, space, zero,
+            )
+        }
+        'o' => {
+            let n: u64 = arg.and_then(parse_u).unwrap_or(0);
+            let digits = format!("{n:o}");
+            fmt_num(
+                &digits, false, false, sharp, flags, width, prec, left, plus, space, zero,
+            )
+        }
+        'u' => {
+            let n: u64 = arg.and_then(parse_u).unwrap_or(0);
+            let digits = n.to_string();
+            fmt_num(
+                &digits, false, false, false, flags, width, prec, left, plus, space, zero,
+            )
+        }
+        'x' | 'X' => {
+            let n: u64 = arg.and_then(parse_u).unwrap_or(0);
+            let digits = if conv == 'X' {
+                format!("{n:X}")
+            } else {
+                format!("{n:x}")
+            };
+            fmt_num(
+                &digits,
+                false,
+                conv == 'x',
+                sharp,
+                flags,
+                width,
+                prec,
+                left,
+                plus,
+                space,
+                zero,
+            )
+        }
+        'f' => {
+            let n: f64 = arg.and_then(|a| a.trim().parse().ok()).unwrap_or(0.0);
+            let p = prec.unwrap_or(6);
+            let s = format!("{n:.*}", p);
+            // from_prec=false: `%08.2f` must still zero-pad to width.
+            apply_width(s, width, left, zero && !left, false)
+        }
+        's' => {
+            let s = arg.unwrap_or("");
+            let s: String = match prec {
+                Some(p) => s.chars().take(p).collect(),
+                None => s.to_string(),
+            };
+            apply_width(s, width, left, false, prec.is_some())
+        }
+        'c' => {
+            let c = arg.and_then(|a| a.chars().next()).unwrap_or('\0');
+            apply_width(c.to_string(), width, left, false, false)
+        }
+        'b' => {
+            let decoded = brish_core::lexer::ansi_c_decode(arg.unwrap_or(""), true, true).0;
+            apply_width(decoded, width, left, false, false)
+        }
+        '%' => "%".to_string(),
+        _ => format!("%{conv}"),
+    }
+}
+
+fn parse_u(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if let Ok(n) = s.parse::<u64>() {
+        return Some(n);
+    }
+    // negative → wrap like C printf does for %u on two's complement
+    s.parse::<i64>().ok().map(|n| n as u64)
+}
+
+/// Shared integer tail: precision (min digits) → sign → zero/space pad → width.
+#[allow(clippy::too_many_arguments)]
+fn fmt_num(
+    digits: &str,
+    neg: bool,
+    is_hex: bool,
+    sharp: bool,
+    _flags: &str,
+    width: Option<usize>,
+    prec: Option<usize>,
+    left: bool,
+    plus: bool,
+    space: bool,
+    zero: bool,
+) -> String {
+    // precision: minimum digits, zero-padded
+    let mut d = digits.to_string();
+    if let Some(p) = prec
+        && d.len() < p
+    {
+        d = format!("{d:0>width$}", width = p);
+    }
+    // # prefix for hex/octal
+    if sharp && !d.starts_with('0') || (sharp && is_hex && !d.is_empty()) {
+        // only add 0x/0 prefix when value nonzero and not already present
+        if !d.starts_with('0') && !d.is_empty() && d != "0" {
+            if is_hex {
+                d = format!("0x{d}");
+            } else {
+                d = format!("0{d}");
+            }
+        }
+    }
+    let mut sign = "";
+    if neg {
+        sign = "-";
+    } else if plus {
+        sign = "+";
+    } else if space {
+        sign = " ";
+    }
+    let body = format!("{sign}{d}");
+    apply_width(body, width, left, zero && prec.is_none(), prec.is_some())
+}
+
+/// Pad to `width`; `zero` pads with `0` after sign (unless already
+/// precision-padded), `left` left-aligns with spaces.
+fn apply_width(s: String, width: Option<usize>, left: bool, zero: bool, from_prec: bool) -> String {
+    let Some(w) = width else {
+        return s;
+    };
+    let len = s.chars().count();
+    if len >= w {
+        return s;
+    }
+    let pad = w - len;
+    if left {
+        return format!("{s}{}", " ".repeat(pad));
+    }
+    if zero && !from_prec {
+        // keep sign in front of zeros
+        let (sign, rest) = split_sign(&s);
+        return format!("{sign}{}{rest}", "0".repeat(pad));
+    }
+    format!("{}{s}", " ".repeat(pad))
+}
+
+fn split_sign(s: &str) -> (&str, &str) {
+    if let Some(r) = s.strip_prefix('-') {
+        ("-", r)
+    } else if let Some(r) = s.strip_prefix('+') {
+        ("+", r)
+    } else if let Some(r) = s.strip_prefix(' ') {
+        (" ", r)
+    } else {
+        ("", s)
+    }
+}
+
+// ---- umask ----
+
+/// `umask` (print octal) / `umask MODE` (octal `022` or symbolic
+/// `u=rwx,g=rx,o=` / `go-w`).
+fn umask_cmd(args: &[String]) -> Flow {
+    if args.len() < 2 {
+        println!("{:04o}", brish_platform::umask(None));
+        return Flow::Status(0);
+    }
+    if args.len() > 2 {
+        eprintln!("umask: usage: umask [mode]");
+        return Flow::Status(2);
+    }
+    let current = brish_platform::umask(None);
+    match parse_umask(&args[1], current) {
+        Some(m) => {
+            brish_platform::umask(Some(m));
+            Flow::Status(0)
+        }
+        None => {
+            eprintln!("umask: {}: invalid mode", args[1]);
+            Flow::Status(2)
+        }
+    }
+}
+
+/// Parse octal (`022`, `22`) or symbolic (`u=rwx,g=rx,o=`, `go-w`,
+/// `a+r`) mask. Symbolic ops apply to `current` (bash semantics:
+/// `go-w` denies g/o write on top of the running mask).
+fn parse_umask(s: &str, current: u16) -> Option<u16> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if s.chars().all(|c| c.is_ascii_digit() && c < '8') {
+        // octal; accept 1–4 digits
+        if s.len() > 4 {
+            return None;
+        }
+        return u32::from_str_radix(s, 8).ok().map(|m| (m & 0o7777) as u16);
+    }
+    if !s.chars().all(|c| {
+        matches!(
+            c,
+            'u' | 'g' | 'o' | 'a' | '=' | '+' | '-' | 'r' | 'w' | 'x' | ','
+        )
+    }) {
+        return None;
+    }
+    // Symbolic ops mirror chmod's effect on the *allowed* set:
+    // mask bits = denied perms. `-` denies (sets mask), `+` allows
+    // (clears mask), `=` allows exactly the listed perms.
+    let mut mask = current & 0o777;
+    let mut i = 0;
+    let b: Vec<char> = s.chars().collect();
+    while i < b.len() {
+        if b[i] == ',' {
+            i += 1;
+            continue;
+        }
+        let mut who = 0u16;
+        while i < b.len() && matches!(b[i], 'u' | 'g' | 'o' | 'a') {
+            who |= match b[i] {
+                'u' => 0o700,
+                'g' => 0o070,
+                'o' => 0o007,
+                _ => 0o777,
+            };
+            i += 1;
+        }
+        if who == 0 || i >= b.len() {
+            return None;
+        }
+        let op = b[i];
+        i += 1;
+        if !matches!(op, '=' | '+' | '-') {
+            return None;
+        }
+        let mut perms = 0u16;
+        while i < b.len() && matches!(b[i], 'r' | 'w' | 'x') {
+            perms |= match b[i] {
+                'r' => 0o400,
+                'w' => 0o200,
+                _ => 0o100,
+            };
+            i += 1;
+        }
+        // Replicate u-slot perms into g/o slots covered by `who`.
+        let mut bits = 0u16;
+        if who & 0o700 != 0 {
+            bits |= perms;
+        }
+        if who & 0o070 != 0 {
+            bits |= perms >> 3;
+        }
+        if who & 0o007 != 0 {
+            bits |= perms >> 6;
+        }
+        match op {
+            '=' => mask = (mask & !who) | (who & !bits),
+            '+' => mask &= !bits,
+            '-' => mask |= bits,
+            _ => {}
+        }
+    }
+    Some(mask & 0o777)
+}
+
+// ---- times ----
+
+/// POSIX `times`: two lines, `UmSS.SS SmSS.SS` — shell, then waited
+/// children (user + sys each).
+fn times_cmd() -> Flow {
+    let [u, s, cu, cs] = brish_platform::times_secs();
+    println!("{} {}", fmt_t(u), fmt_t(s));
+    println!("{} {}", fmt_t(cu), fmt_t(cs));
+    Flow::Status(0)
+}
+
+fn fmt_t(secs: f64) -> String {
+    // whole centiseconds, floored — avoids 59.999 → "60.00" round-up
+    let cs = (secs.max(0.0) * 100.0).floor() as i64;
+    let m = cs / 6_000;
+    let rem = cs % 6_000;
+    format!("{m}m{:02}.{:02}s", rem / 100, rem % 100)
 }
 
 /// Dispatch `history` builtin.
@@ -1259,5 +1700,121 @@ mod tests {
             Flow::Status(0)
         );
         assert!(e.aliases.is_empty());
+    }
+
+    fn strs(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn printf_pass_cycles_and_defaults() {
+        // one arg per pass
+        let rest = strs(&["a", "b"]);
+        let mut idx = 0;
+        let (t, _) = printf_pass("%s-", &rest, &mut idx);
+        assert_eq!(t, "a-");
+        let (t, _) = printf_pass("%s-", &rest, &mut idx);
+        assert_eq!(t, "b-");
+        assert_eq!(idx, 2);
+        // exhausted → defaults fill the pass, then stop
+        let mut idx = 0;
+        let (t, _) = printf_pass("[%d][%s]", &strs(&["7"]), &mut idx);
+        assert_eq!(t, "[7][]");
+        assert_eq!(idx, 1);
+        // no-arg format with no rest: one pass, defaults
+        let mut idx = 0;
+        let (t, _) = printf_pass("%04d", &[], &mut idx);
+        assert_eq!(t, "0000");
+        // no conversion: one print per arg
+        let rest = strs(&["x", "y"]);
+        let mut idx = 0;
+        let (t, _) = printf_pass("p", &rest, &mut idx);
+        assert_eq!(t, "p");
+        let (t, _) = printf_pass("p", &rest, &mut idx);
+        assert_eq!(t, "p");
+        assert_eq!(idx, 2);
+        // literal %% and trailing %
+        let mut idx = 0;
+        let (t, _) = printf_pass("100%% %", &[], &mut idx);
+        assert_eq!(t, "100% %");
+    }
+
+    #[test]
+    fn printf_render_conversions() {
+        let r = |conv: char, arg: Option<&str>, flags: &str, w: Option<usize>, p: Option<usize>| {
+            render_conv(conv, arg, flags, w, p)
+        };
+        assert_eq!(r('d', Some("42"), "", None, None), "42");
+        assert_eq!(r('d', Some("-7"), "", None, None), "-7");
+        assert_eq!(r('d', Some("junk"), "", None, None), "0");
+        assert_eq!(r('d', Some("5"), "", Some(4), None), "   5");
+        assert_eq!(r('d', Some("5"), "0", Some(4), None), "0005");
+        assert_eq!(r('d', Some("5"), "-", Some(4), None), "5   ");
+        assert_eq!(r('d', Some("5"), "+", None, None), "+5");
+        assert_eq!(r('d', Some("5"), "", None, Some(3)), "005");
+        assert_eq!(r('x', Some("255"), "", None, None), "ff");
+        assert_eq!(r('X', Some("255"), "", None, None), "FF");
+        assert_eq!(r('o', Some("8"), "", None, None), "10");
+        assert_eq!(r('u', Some("9"), "", None, None), "9");
+        assert_eq!(r('s', Some("hello"), "", None, Some(3)), "hel");
+        assert_eq!(r('s', Some("ab"), "", Some(5), None), "   ab");
+        assert_eq!(r('c', Some("z"), "", None, None), "z");
+        assert_eq!(r('c', Some(""), "", None, None), "\0");
+        assert_eq!(r('b', Some("a\\nb"), "", None, None), "a\nb");
+        assert_eq!(r('f', Some("3.14159"), "", None, Some(2)), "3.14");
+        assert_eq!(r('f', Some("2"), "0", Some(7), Some(2)), "0002.00");
+        assert_eq!(r('%', None, "", None, None), "%");
+        // negative %x wraps like C (u64 cast)
+        assert_eq!(r('x', Some("-1"), "", None, None), "ffffffffffffffff");
+    }
+
+    #[test]
+    fn umask_parse_modes() {
+        assert_eq!(parse_umask("022", 0), Some(0o022));
+        assert_eq!(parse_umask("22", 0), Some(0o022));
+        assert_eq!(parse_umask("777", 0), Some(0o777));
+        assert_eq!(parse_umask("", 0), None);
+        assert_eq!(parse_umask("888", 0), None, "not octal digits");
+        assert_eq!(parse_umask("xyz", 0), None);
+        // symbolic applies to the running mask (deny g/o write)
+        assert_eq!(parse_umask("go-w", 0), Some(0o022));
+        assert_eq!(parse_umask("go-w", 0o022), Some(0o022));
+        // u=rwx allows all u, g=rx denies g write, o= denies all o
+        assert_eq!(parse_umask("u=rwx,g=rx,o=", 0), Some(0o027));
+        assert_eq!(parse_umask("a+rwx", 0o777), Some(0o000));
+        assert_eq!(parse_umask("u-x", 0), Some(0o100));
+        // roundtrip via the real syscall: save, set, query, restore
+        let old = brish_platform::umask(None);
+        assert_eq!(brish_platform::umask(Some(0o027)), old);
+        assert_eq!(brish_platform::umask(None), 0o027);
+        assert_eq!(brish_platform::umask(Some(old)), 0o027);
+    }
+
+    #[test]
+    fn umask_cmd_and_times() {
+        let mut e = env();
+        // set + restore around the query so the process mask is unchanged
+        let old = brish_platform::umask(None);
+        assert_eq!(
+            flow(BuiltIn::Umask, &args(&["umask", "077"]), &mut e),
+            Flow::Status(0)
+        );
+        assert_eq!(
+            flow(BuiltIn::Umask, &args(&["umask"]), &mut e),
+            Flow::Status(0)
+        );
+        assert_eq!(
+            flow(BuiltIn::Umask, &args(&["umask", "bogus"]), &mut e),
+            Flow::Status(2)
+        );
+        brish_platform::umask(Some(old));
+        // times: status 0, format checked in fmt_t
+        assert_eq!(
+            flow(BuiltIn::Times, &args(&["times"]), &mut e),
+            Flow::Status(0)
+        );
+        assert_eq!(fmt_t(0.0), "0m00.00s");
+        assert_eq!(fmt_t(61.5), "1m01.50s");
+        assert_eq!(fmt_t(59.999), "0m59.99s");
     }
 }

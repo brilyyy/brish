@@ -122,6 +122,83 @@ pub fn reset_sigpipe() {
 #[cfg(not(unix))]
 pub fn reset_sigpipe() {}
 
+/// Write to fd 1 by raw syscall — bypasses `std::io::stdout` (libtest
+/// capture, buffering) so FdScope redirects and command-substitution
+/// pipes always receive the bytes. Interrupted writes retry.
+#[cfg(unix)]
+pub fn write_stdout(bytes: &[u8]) {
+    let mut off = 0usize;
+    while off < bytes.len() {
+        // SAFETY: write(2) to fd 1; pointer is valid for len-off bytes.
+        let n = unsafe {
+            nix::libc::write(
+                1,
+                bytes[off..].as_ptr().cast::<nix::libc::c_void>(),
+                bytes.len() - off,
+            )
+        };
+        if n < 0 {
+            let e = std::io::Error::last_os_error();
+            if e.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return; // EPIPE etc: shell builtins die quietly like echo
+        }
+        off += n as usize;
+    }
+}
+
+#[cfg(not(unix))]
+pub fn write_stdout(bytes: &[u8]) {
+    use std::io::Write;
+    let _ = std::io::stdout().write_all(bytes);
+}
+
+/// `umask`: `None` = query (get-and-restore), `Some(m)` = set.
+/// Returns the previous mask either way.
+#[cfg(unix)]
+pub fn umask(mode: Option<u16>) -> u16 {
+    use nix::sys::stat::Mode;
+    let prev = nix::sys::stat::umask(Mode::from_bits_truncate(mode.unwrap_or(0o777)));
+    if mode.is_none() {
+        // Query only: put the old mask back (single-threaded at call
+        // site — engine builtins run before/after spawns, not during).
+        nix::sys::stat::umask(prev);
+    }
+    prev.bits()
+}
+
+#[cfg(not(unix))]
+pub fn umask(_mode: Option<u16>) -> u16 {
+    0o022
+}
+
+/// `times(3)`: seconds `[shell_user, shell_sys, child_user, child_sys]`.
+#[cfg(unix)]
+pub fn times_secs() -> [f64; 4] {
+    // SAFETY: tms is a plain struct; times() only writes into it.
+    let mut t: nix::libc::tms = unsafe { std::mem::zeroed() };
+    // SAFETY: POSIX times(&mut tms).
+    if unsafe { nix::libc::times(&mut t) } == (-1i64) as nix::libc::clock_t {
+        return [0.0; 4];
+    }
+    let tick = nix::unistd::sysconf(nix::unistd::SysconfVar::CLK_TCK)
+        .ok()
+        .flatten()
+        .unwrap_or(100) as f64;
+    [
+        t.tms_utime as f64 / tick,
+        t.tms_stime as f64 / tick,
+        t.tms_cutime as f64 / tick,
+        t.tms_cstime as f64 / tick,
+    ]
+}
+
+#[cfg(not(unix))]
+pub fn times_secs() -> [f64; 4] {
+    [0.0; 4]
+}
+
 /// Fresh `dup` copy of `fd` (for `>&N` stdio wiring in the engine).
 #[cfg(unix)]
 pub fn dup_fd(fd: RawFd) -> std::io::Result<std::fs::File> {
