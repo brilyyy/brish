@@ -131,6 +131,15 @@ pub struct Env {
     pub flags: String,
     /// `set -o` option state.
     pub opts: Opts,
+    /// Function-local frames (`local`): per call, name → snapshot of
+    /// the global (or prior) value taken at first `local` mention.
+    /// Popped/restored by the engine on function return.
+    pub local_frames: Vec<HashMap<String, Option<Var>>>,
+    /// `getopts` cursor: char offset inside the current `-abc` cluster.
+    /// Reset when the script changes `OPTIND` (detected via the mirror).
+    pub getopts_pos: usize,
+    /// Mirror of the last `OPTIND` this shell acted on.
+    pub getopts_ind: usize,
 }
 
 impl Default for Env {
@@ -153,6 +162,9 @@ impl Env {
             pid: std::process::id(),
             flags: "h".to_string(),
             opts: Opts::default(),
+            local_frames: Vec::new(),
+            getopts_pos: 0,
+            getopts_ind: 1,
         }
     }
 
@@ -279,6 +291,56 @@ impl Env {
 
     pub fn set_positional(&mut self, params: Vec<String>) {
         self.positional = params;
+    }
+
+    /// Enter a function frame for `local` bookkeeping.
+    pub fn push_fn_locals(&mut self) {
+        self.local_frames.push(HashMap::new());
+    }
+
+    /// Leave the innermost function frame, restoring every variable
+    /// that frame localized (unset when it did not exist before).
+    pub fn pop_fn_locals(&mut self) {
+        let Some(frame) = self.local_frames.pop() else {
+            return;
+        };
+        for (name, prev) in frame {
+            match prev {
+                Some(v) => {
+                    self.vars.insert(name, v);
+                }
+                None => {
+                    self.vars.remove(&name);
+                }
+            }
+        }
+    }
+
+    /// `local name[=value]` inside the innermost function frame.
+    /// Snapshots the current value on first mention, then assigns.
+    pub fn set_local(&mut self, name: &str, value: Option<&str>) -> Result<(), Error> {
+        if !is_name(name) {
+            return Err(Error::expand(format!("local: {name}: invalid name")));
+        }
+        let snapshot = self.vars.get(name).cloned();
+        let frame = match self.local_frames.last_mut() {
+            Some(f) => f,
+            None => {
+                return Err(Error::expand("local: can only be used in a function"));
+            }
+        };
+        frame.entry(name.to_string()).or_insert(snapshot);
+        match value {
+            Some(v) => {
+                self.set_unchecked(name, v);
+            }
+            None => {
+                self.vars
+                    .entry(name.to_string())
+                    .or_insert_with(|| Var::new(String::new()));
+            }
+        }
+        Ok(())
     }
 
     /// Exported variables as child-process environment pairs.

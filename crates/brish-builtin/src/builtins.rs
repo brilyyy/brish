@@ -61,6 +61,10 @@ pub enum BuiltIn {
     Z,
     /// `ls`
     Ls,
+    /// `local`
+    Local,
+    /// `getopts`
+    Getopts,
 }
 
 impl BuiltIn {
@@ -94,6 +98,8 @@ impl BuiltIn {
             "continue" => BuiltIn::Continue,
             "z" => BuiltIn::Z,
             "ls" => BuiltIn::Ls,
+            "local" => BuiltIn::Local,
+            "getopts" => BuiltIn::Getopts,
             _ => return None,
         })
     }
@@ -104,8 +110,9 @@ impl BuiltIn {
     pub fn names() -> &'static [&'static str] {
         &[
             "alias", "break", "cd", "command", "continue", "echo", "exit", "export", "history",
-            "ls", "printf", "pwd", "read", "readonly", "return", "set", "shift", "source", "test",
-            "times", "trap", "type", "umask", "unalias", "unset", "z", ".", ":", "[",
+            "getopts", "local", "ls", "printf", "pwd", "read", "readonly", "return", "set",
+            "shift", "source", "test", "times", "trap", "type", "umask", "unalias", "unset", "z",
+            ".", ":", "[",
         ]
     }
 
@@ -139,6 +146,8 @@ impl BuiltIn {
             BuiltIn::Continue => "continue",
             BuiltIn::Z => "z",
             BuiltIn::Ls => "ls",
+            BuiltIn::Local => "local",
+            BuiltIn::Getopts => "getopts",
         }
     }
 }
@@ -160,9 +169,10 @@ mod tests {
     #[test]
     fn round_trip() {
         for name in [
-            "alias", "unalias", "cd", "ls", "echo", "exit", "export", "history", "read", "source",
-            ".", "test", "[", ":", "return", "trap", "unset", "pwd", "printf", "umask", "times",
-            "readonly", "set", "shift", "command", "type", "break", "continue",
+            "alias", "unalias", "cd", "getopts", "local", "ls", "echo", "exit", "export",
+            "history", "read", "source", ".", "test", "[", ":", "return", "trap", "unset", "pwd",
+            "printf", "umask", "times", "readonly", "set", "shift", "command", "type", "break",
+            "continue",
         ] {
             let b = BuiltIn::from_name(name).unwrap();
             let _ = b.name();

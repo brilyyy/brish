@@ -51,6 +51,8 @@ pub fn run(b: BuiltIn, args: &[String], env: &mut Env) -> Result<Flow, Error> {
         BuiltIn::Continue => Ok(loop_control(args, Flow::Continue)),
         BuiltIn::Z => Ok(z_cmd(args, env)),
         BuiltIn::Ls => ls_cmd(args, env),
+        BuiltIn::Local => Ok(local_cmd(args, env)),
+        BuiltIn::Getopts => Ok(getopts_cmd(args, env)),
         BuiltIn::History => Ok(history_cmd(args)),
         BuiltIn::Alias => Ok(alias_cmd(args, env)),
         BuiltIn::Unalias => Ok(unalias_cmd(args, env)),
@@ -703,6 +705,156 @@ fn z_cmd(args: &[String], env: &mut Env) -> Flow {
     env.set_unchecked("OLDPWD", &old);
     env.set_unchecked("PWD", &best.path);
     println!("{}", best.path);
+    Flow::Status(0)
+}
+
+// ---- local / getopts ----
+
+/// `local name[=value] ...` — bash-style dynamic locals (saves/restores
+/// the outer value on function return). Errors outside a function.
+fn local_cmd(args: &[String], env: &mut Env) -> Flow {
+    let mut status = 0;
+    for a in &args[1..] {
+        let (name, val) = match a.split_once('=') {
+            Some((n, v)) => (n, Some(v)),
+            None => (a.as_str(), None),
+        };
+        if let Err(e) = env.set_local(name, val) {
+            eprintln!("brish: {e}");
+            status = 1;
+        }
+    }
+    Flow::Status(status)
+}
+
+/// `getopts optstring name [args...]` (POSIX; `args` default to the
+/// positional parameters). Sets `name`, `OPTIND`, `OPTARG`; returns
+/// 0 while options remain, 1 at end.
+///
+/// Supports clustered `-abc`, option-arguments (`f:`), silent mode
+/// (leading `:` in optstring), and `--`.
+fn getopts_cmd(args: &[String], env: &mut Env) -> Flow {
+    if args.len() < 3 {
+        eprintln!("getopts: usage: getopts optstring name [args...]");
+        return Flow::Status(2);
+    }
+    let spec = args[1].as_str();
+    let silent = spec.starts_with(':');
+    let spec = spec.trim_start_matches(':');
+    let name = args[2].as_str();
+
+    let operands: Vec<String> = if args.len() > 3 {
+        args[3..].to_vec()
+    } else {
+        env.positional().to_vec()
+    };
+    let mut ind: usize = env.get("OPTIND").and_then(|s| s.parse().ok()).unwrap_or(1);
+    if ind < 1 {
+        ind = 1;
+    }
+    // Reset the cluster cursor when the script moved OPTIND itself.
+    if ind != env.getopts_ind {
+        env.getopts_pos = 0;
+        env.getopts_ind = ind;
+    }
+
+    let end = |env: &mut Env, ind: usize| -> Flow {
+        env.set_unchecked("OPTIND", ind.to_string());
+        env.getopts_pos = 0;
+        env.getopts_ind = ind;
+        Flow::Status(1)
+    };
+
+    if ind > operands.len() {
+        let _ = env.unset("OPTARG");
+        return end(env, ind);
+    }
+    let op = operands[ind - 1].clone();
+    if op == "--" {
+        let _ = env.unset("OPTARG");
+        return end(env, ind + 1);
+    }
+    if env.getopts_pos == 0 {
+        if !op.starts_with('-') || op == "-" {
+            // First non-option: leave OPTIND pointing at it (POSIX).
+            env.set_unchecked("OPTIND", ind.to_string());
+            env.getopts_ind = ind;
+            let _ = env.unset("OPTARG");
+            return Flow::Status(1);
+        }
+        env.getopts_pos = 1; // skip '-'
+    }
+    let pos = env.getopts_pos;
+    let bytes: Vec<char> = op.chars().collect();
+    if pos >= bytes.len() {
+        // Cluster exhausted — advance to next operand and retry once.
+        env.getopts_pos = 0;
+        env.getopts_ind = ind + 1;
+        env.set_unchecked("OPTIND", (ind + 1).to_string());
+        return getopts_cmd(args, env);
+    }
+    let c = bytes[pos];
+    let takes_arg = spec.contains(&format!("{c}:"));
+    let known = spec.contains(c) || takes_arg;
+
+    if !known {
+        if silent {
+            env.set_unchecked(name, ":");
+        } else {
+            eprintln!("getopts: illegal option -{c}");
+            env.set_unchecked(name, "?");
+        }
+        // POSIX: OPTARG = the option character on error in silent mode;
+        // unset otherwise.
+        if silent {
+            env.set_unchecked("OPTARG", c.to_string());
+        } else {
+            let _ = env.unset("OPTARG");
+        }
+        env.getopts_pos = pos + 1;
+        return Flow::Status(0);
+    }
+
+    if takes_arg {
+        // Rest of the cluster is the argument, else the next operand.
+        let rest: String = bytes[pos + 1..].iter().collect();
+        if !rest.is_empty() {
+            env.set_unchecked("OPTARG", rest);
+            env.set_unchecked(name, c.to_string());
+            env.set_unchecked("OPTIND", (ind + 1).to_string());
+            env.getopts_pos = 0;
+            env.getopts_ind = ind + 1;
+            return Flow::Status(0);
+        }
+        if ind + 1 <= operands.len() {
+            env.set_unchecked("OPTARG", operands[ind].clone());
+            env.set_unchecked(name, c.to_string());
+            env.set_unchecked("OPTIND", (ind + 2).to_string());
+            env.getopts_pos = 0;
+            env.getopts_ind = ind + 2;
+            return Flow::Status(0);
+        }
+        // Missing argument at end.
+        if silent {
+            env.set_unchecked(name, ":");
+            env.set_unchecked("OPTARG", c.to_string());
+        } else {
+            eprintln!("getopts: option -{c} requires an argument");
+            env.set_unchecked(name, "?");
+            let _ = env.unset("OPTARG");
+        }
+        return end(env, ind + 1);
+    }
+
+    env.set_unchecked(name, c.to_string());
+    let _ = env.unset("OPTARG");
+    env.getopts_pos = pos + 1;
+    // OPTIND advances only when the cluster is done — checked next call.
+    if env.getopts_pos >= bytes.len() {
+        env.set_unchecked("OPTIND", (ind + 1).to_string());
+        env.getopts_ind = ind + 1;
+        env.getopts_pos = 0;
+    }
     Flow::Status(0)
 }
 

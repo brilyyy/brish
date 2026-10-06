@@ -1494,9 +1494,11 @@ impl Engine {
         }
         let saved_pos = self.env.positional().to_vec();
         self.env.set_positional(argv[1..].to_vec());
+        self.env.push_fn_locals();
         self.depth += 1;
         let res = apply_plan(plan, || self.cmd(&body));
         self.depth -= 1;
+        self.env.pop_fn_locals();
         self.env.set_positional(saved_pos);
         match res? {
             Err(Stop::Return(s)) => {
@@ -2523,6 +2525,90 @@ mod tests {
         // no hook → status 1, shell survives
         let mut plain = Engine::new();
         assert_eq!(run_src(&mut plain, "relconf"), 1);
+    }
+
+    #[test]
+    fn local_scopes_to_function() {
+        // global value restored after the function returns
+        assert_eq!(
+            status("x=0; f() { local x=1; [ \"$x\" -eq 1 ]; }; f; [ \"$x\" -eq 0 ]"),
+            0
+        );
+        // a local that did not exist before vanishes on return
+        assert_eq!(status("f() { local fresh=1; }; f; [ -z \"${fresh-}\" ]"), 0);
+        // nested frames: inner local does not clobber outer local
+        assert_eq!(
+            status(
+                "outer() { local v=1; inner; [ \"$v\" -eq 1 ]; }; \
+                 inner() { local v=2; [ \"$v\" -eq 2 ]; }; outer"
+            ),
+            0
+        );
+        // outside a function → error, shell survives
+        assert_eq!(status("local y=1"), 1);
+        assert_eq!(status("true"), 0);
+    }
+
+    #[test]
+    fn getopts_end_to_end() {
+        // clustered options, option-argument, silent mode
+        let src = "\
+            parse() { \
+                local opt; \
+                OPTIND=1; \
+                while getopts ':ab:c' opt; do \
+                    case \"$opt\" in \
+                        a) echo A ;; \
+                        b) echo \"B:$OPTARG\" ;; \
+                        c) echo C ;; \
+                        :) echo \"MISS:$OPTARG\" ;; \
+                        \\?) echo BAD ;; \
+                    esac; \
+                done; \
+                echo \"left:$OPTIND\"; \
+            }; \
+            parse -a -b val -c";
+        assert_eq!(status(src), 0);
+    }
+
+    #[test]
+    fn getopts_builtin_unit() {
+        let mut e = Env::new();
+        let g = |e: &mut Env, spec: &str, extra: &[&str]| -> i32 {
+            let mut argv = vec!["getopts".to_string(), spec.to_string(), "opt".to_string()];
+            argv.extend(extra.iter().map(|s| s.to_string()));
+            match run_builtin(BuiltIn::Getopts, &argv, e).expect("getopts") {
+                Flow::Status(s) => s,
+                other => panic!("unexpected flow {other:?}"),
+            }
+        };
+        // OPTIND persists across calls — reset between scenarios.
+        let reset = |e: &mut Env| e.set_unchecked("OPTIND", "1");
+        // cluster -ac: two chars across two calls, then end
+        assert_eq!(g(&mut e, ":ac", &["-ac"]), 0);
+        assert_eq!(e.get("opt"), Some("a"));
+        assert_eq!(g(&mut e, ":ac", &["-ac"]), 0);
+        assert_eq!(e.get("opt"), Some("c"));
+        assert_eq!(g(&mut e, ":ac", &["-ac"]), 1, "cluster done");
+        // option-argument from next operand
+        reset(&mut e);
+        assert_eq!(g(&mut e, ":f:", &["-f", "file"]), 0);
+        assert_eq!(e.get("opt"), Some("f"));
+        assert_eq!(e.get("OPTARG"), Some("file"));
+        assert_eq!(e.get("OPTIND"), Some("3"));
+        // silent missing-arg: ':' + OPTARG
+        reset(&mut e);
+        assert_eq!(g(&mut e, ":f:", &["-f"]), 1);
+        assert_eq!(e.get("opt"), Some(":"));
+        assert_eq!(e.get("OPTARG"), Some("f"));
+        // unknown option in silent mode
+        let mut e2 = Env::new();
+        assert_eq!(g(&mut e2, ":a", &["-z"]), 0);
+        assert_eq!(e2.get("opt"), Some(":"));
+        assert_eq!(e2.get("OPTARG"), Some("z"));
+        // end of operands
+        let mut e3 = Env::new();
+        assert_eq!(g(&mut e3, ":a", &["x"]), 1);
     }
 
     #[test]
