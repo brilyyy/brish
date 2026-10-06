@@ -17,13 +17,32 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
+## Install
+
+Prebuilt releases (linux x86_64/aarch64, macOS aarch64/x86_64; sha256
+verified, installs to `/usr/local/bin` — override with `PREFIX`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/brilyyy/bsh/main/install.sh | sh
+VERSION=v0.1.0 ./install.sh           # pin a tag (from a clone)
+PREFIX=$HOME/.local/bin ./install.sh   # no sudo
+```
+
+From source (works today, no release needed):
+
+```sh
+cargo install --path crates/brish                                    # from a clone
+cargo install --git https://github.com/brilyyy/bsh brish             # straight from git
+cargo binstall --git https://github.com/brilyyy/bsh brish            # uses release assets when tagged
+```
+
 ## Usage
 
 ```sh
 brish -c 'echo hi'           # run a command string
 brish script.sh arg1 arg2    # run a script ($0 = path, $1 = arg1)
 brish                        # interactive (reedline: editing, history, completion)
-brish --theme plain -c 'hi'  # pick a prompt theme for this run
+brish --theme briiish-plain -c 'hi'  # pick a prompt theme for this run
 echo 'echo from stdin' | brish
 ```
 

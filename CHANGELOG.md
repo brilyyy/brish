@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.0 — install + shift-tab (unreleased)
+
+### Added
+- `install.sh`: prebuilt GitHub Release install (sha256-verified) into
+  `/usr/local/bin` (`PREFIX` override; `VERSION`/arg pins a tag;
+  fallback hint to `cargo install --git` when no asset).
+- `.github/workflows/release.yml`: on `v*` tags builds
+  linux-{x86_64,aarch64} + macos-{aarch64,x86_64} tarballs + sha256,
+  attaches to the release.
+- README `## Install`: install.sh + `cargo install --path/--git` +
+  `cargo binstall --git`. Workspace gains `description`/`repository`.
+- crates.io deferred (name check + 7-crate publish chore).
+
+### Fixed
+- Shift-Tab now rolls the completion menu back: bound to `MenuPrevious`
+  (reedline ships no `BackTab` default; both SHIFT and bare BackTab
+  variants covered).
+
 ## 0.1.0 — themes, prefixes, dynamic highlight (unreleased)
 
 ### Added

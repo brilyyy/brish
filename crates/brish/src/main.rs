@@ -422,6 +422,19 @@ fn edit_repl(
             ReedlineEvent::MenuNext,
         ]),
     );
+    // Shift-Tab rolls the open menu back (reedline ships no BackTab
+    // default). Two variants: terminals that report SHIFT and those
+    // that deliver bare BackTab.
+    keybindings.add_binding(
+        KeyModifiers::SHIFT,
+        KeyCode::BackTab,
+        ReedlineEvent::MenuPrevious,
+    );
+    keybindings.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::BackTab,
+        ReedlineEvent::MenuPrevious,
+    );
     // Ctrl-Z suspends the shell (raw mode swallows the line-discipline
     // signal, so we stop ourselves from the read loop).
     keybindings.add_binding(

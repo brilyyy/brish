@@ -15,6 +15,8 @@ version = "0.1.0"
 edition = "2024"
 authors = ["briSH contributors"]
 license = "MIT"
+description = "A memory-safe, crash-resistant POSIX shell"
+repository = "https://github.com/brilyyy/bsh"
 
 # Zero-panic policy (plan §5.2): deny unwrap/expect outside tests.
 # unsafe is forbidden per-crate via #![forbid(unsafe_code)] except brish-platform.
