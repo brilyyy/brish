@@ -650,15 +650,51 @@ fn history_cmd(args: &[String]) -> Flow {
         }
     };
 
-    if args.is_empty() || args[0] != "-c" {
+    if args.is_empty() {
         for line in text.lines() {
             let s = line.trim();
             if !s.is_empty() {
                 println!("{s}");
             }
         }
-    } else {
-        let _ = crate::paths::write_private(&path, b"");
+        return Flow::Status(0);
+    }
+    match args[0].as_str() {
+        "-c" => {
+            let _ = crate::paths::write_private(&path, b"");
+        }
+        "-d" => {
+            // Delete history line N (1-based). The line editor's
+            // in-memory copy is untouched this session — takes effect
+            // for listings/new sessions (ponytail: reedline owns the
+            // live buffer; shared-state delete needs its History ids).
+            let Some(n): Option<usize> = args.get(1).and_then(|a| a.parse().ok()) else {
+                eprintln!("history: usage: history -d N");
+                return Flow::Status(2);
+            };
+            if n == 0 {
+                eprintln!("history: -d: line numbers start at 1");
+                return Flow::Status(2);
+            }
+            let mut lines: Vec<&str> = text.lines().collect();
+            if n > lines.len() {
+                eprintln!("history: {n}: event not found");
+                return Flow::Status(1);
+            }
+            lines.remove(n - 1);
+            let mut out = lines.join("\n");
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            if let Err(e) = crate::paths::write_private(&path, out.as_bytes()) {
+                eprintln!("history: {e}");
+                return Flow::Status(1);
+            }
+        }
+        other => {
+            eprintln!("history: {other}: unsupported (try -c, -d N)");
+            return Flow::Status(2);
+        }
     }
     Flow::Status(0)
 }

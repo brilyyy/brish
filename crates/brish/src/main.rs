@@ -7,6 +7,7 @@ mod config;
 mod edit_mode;
 mod highlight;
 mod hinter;
+mod hist;
 mod keymap;
 mod packs;
 mod prompt;
@@ -67,7 +68,7 @@ struct Run {
 /// emacs) selects it; `Registry::edit_mode_factory` takes the first.
 /// `brish-syntax-highlight` is NOT here: it carries runtime state
 /// (aliases + dynamic flag) and is built in `build_registry`.
-pub(crate) fn engine_plugins() -> [(&'static str, &'static dyn Plugin, bool); 7] {
+pub(crate) fn engine_plugins() -> [(&'static str, &'static dyn Plugin, bool); 6] {
     [
         ("brish-autosuggest", &hinter::AutosuggestPlugin, true),
         ("brish-emacs", &edit_mode::EmacsModePlugin, true),
@@ -78,7 +79,6 @@ pub(crate) fn engine_plugins() -> [(&'static str, &'static dyn Plugin, bool); 7]
             &edit_mode::HistorySearchPlugin,
             true,
         ),
-        ("brish-history", &edit_mode::HistoryPlugin, true),
         ("brish-validator", &edit_mode::ValidatorPlugin, true),
     ]
 }
@@ -90,6 +90,7 @@ fn build_registry(
     stored: Vec<brish_builtin::store::Stored>,
     var_names: &Arc<Mutex<Vec<String>>>,
     aliases: &Arc<Mutex<Vec<String>>>,
+    hist_ctl: &Arc<hist::HistControl>,
 ) -> brish_plugin::Registry {
     let mut registry = brish_plugin::Registry::default();
     // Prompt catalog first (themes + segments; order = segment order),
@@ -123,6 +124,15 @@ fn build_registry(
         registry.install(&syntax);
     } else {
         registry.record(syntax.name(), false);
+    }
+    // History backend carries HISTCONTROL state.
+    let history = edit_mode::HistoryPlugin {
+        ctl: Arc::clone(hist_ctl),
+    };
+    if config.plugin_enabled(history.name(), true) {
+        registry.install(&history);
+    } else {
+        registry.record(history.name(), false);
     }
     for (name, plugin, default_enabled) in engine_plugins() {
         if config.plugin_enabled(name, default_enabled) {
@@ -215,6 +225,7 @@ fn main() {
     let var_names: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     // Alias snapshot for dynamic highlighting (refreshed each prompt).
     let aliases: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let hist_ctl = Arc::new(hist::HistControl::default());
     // Store plugins are discovered before config loads so their names
     // count as known (disabling an installed plugin must not warn).
     let (stored, store_warnings) = brish_builtin::store::scan(&brish_builtin::paths::plugins_dir());
@@ -223,7 +234,7 @@ fn main() {
     }
     let store_names: Vec<&str> = stored.iter().map(|p| p.manifest.name.as_str()).collect();
     let config = config::load_with_known(&store_names);
-    let registry = build_registry(&config, stored, &var_names, &aliases);
+    let registry = build_registry(&config, stored, &var_names, &aliases, &hist_ctl);
     // Theme: --theme > $BRISH_THEME > config > default, validated
     // against the registry (unknown → warn + default).
     apply_theme(&mut engine, &cli, &config, &registry);
@@ -234,6 +245,7 @@ fn main() {
     {
         let var_names = Arc::clone(&var_names);
         let aliases = Arc::clone(&aliases);
+        let hist_ctl = Arc::clone(&hist_ctl);
         let cli_theme = cli.theme.clone();
         engine.set_relconf(Arc::new(move || {
             let (stored, warns) = brish_builtin::store::scan(&brish_builtin::paths::plugins_dir());
@@ -243,7 +255,7 @@ fn main() {
             let names: Vec<String> = stored.iter().map(|p| p.manifest.name.clone()).collect();
             let refs: Vec<&str> = names.iter().map(String::as_str).collect();
             let cfg = config::load_with_known(&refs);
-            let reg = build_registry(&cfg, stored, &var_names, &aliases);
+            let reg = build_registry(&cfg, stored, &var_names, &aliases, &hist_ctl);
             let theme = resolve_theme(&cli_theme, &cfg, &reg);
             (reg, theme)
         }));
@@ -266,7 +278,7 @@ fn main() {
             }
         }
     } else if cli.interactive || std::io::stdin().is_terminal() {
-        repl(&mut engine, &cli, var_names, aliases, &config)
+        repl(&mut engine, &cli, var_names, aliases, hist_ctl, &config)
     } else {
         let mut src = String::new();
         match std::io::stdin().read_to_string(&mut src) {
@@ -347,6 +359,7 @@ fn repl(
     cli: &Cli,
     var_names: Arc<Mutex<Vec<String>>>,
     aliases: Arc<Mutex<Vec<String>>>,
+    hist_ctl: Arc<hist::HistControl>,
     cfg: &config::Config,
 ) -> i32 {
     // Set `$-`'s `i` before rc loads: aliases defined in `.brishrc`
@@ -377,6 +390,7 @@ fn repl(
             engine,
             var_names,
             aliases,
+            hist_ctl,
             &cfg.prompt,
             cfg.theme_prompt.as_deref(),
         );
@@ -390,6 +404,7 @@ fn edit_repl(
     engine: &mut Engine,
     var_names: Arc<Mutex<Vec<String>>>,
     aliases: Arc<Mutex<Vec<String>>>,
+    hist_ctl: Arc<hist::HistControl>,
     chrome: &config::PromptChrome,
     template: Option<&str>,
 ) -> i32 {
@@ -506,6 +521,8 @@ fn edit_repl(
             let mut al = aliases.lock().unwrap_or_else(|e| e.into_inner());
             al.clear();
             al.extend(engine.env.aliases.keys().cloned());
+            // HISTCONTROL snapshot for erasedups filtering on save.
+            hist_ctl.set_from_value(engine.env.get("HISTCONTROL"));
         }
         // bash prints completed/stopped job notices before each prompt.
         // job_notifications also drains pending signal traps (idle

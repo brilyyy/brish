@@ -4,6 +4,7 @@
 //! directly in `edit_repl` so they can be replaced by user plugins.
 
 use reedline::{ColumnarMenu, DefaultValidator, FileBackedHistory, ListMenu, MenuBuilder};
+use std::sync::Arc;
 
 /// Plugin that installs the default Emacs edit mode.
 pub struct EmacsModePlugin;
@@ -90,8 +91,11 @@ impl brish_plugin::Plugin for HistorySearchPlugin {
     }
 }
 
-/// Plugin that installs the default file-backed history backend.
-pub struct HistoryPlugin;
+/// Plugin that installs the default file-backed history backend
+/// (wrapped with `HISTCONTROL=erasedups` support — see `hist.rs`).
+pub struct HistoryPlugin {
+    pub ctl: Arc<crate::hist::HistControl>,
+}
 
 impl brish_plugin::Plugin for HistoryPlugin {
     fn name(&self) -> &str {
@@ -99,19 +103,25 @@ impl brish_plugin::Plugin for HistoryPlugin {
     }
 
     fn install(&self, reg: &mut brish_plugin::Registry) {
-        struct F;
+        let ctl = Arc::clone(&self.ctl);
+        struct F {
+            ctl: Arc<crate::hist::HistControl>,
+        }
         impl brish_plugin::HistoryFactory for F {
             fn create(&self) -> Box<dyn reedline::History> {
                 match FileBackedHistory::with_file(1000, crate::config::history_path()) {
-                    Ok(h) => Box::new(h),
+                    Ok(h) => Box::new(crate::hist::BrishHistory::new(h, Arc::clone(&self.ctl))),
                     Err(e) => {
                         eprintln!("brish: history unavailable: {e}");
-                        Box::new(FileBackedHistory::default())
+                        Box::new(crate::hist::BrishHistory::new(
+                            FileBackedHistory::default(),
+                            Arc::clone(&self.ctl),
+                        ))
                     }
                 }
             }
         }
-        reg.history_factories.push(Box::new(F));
+        reg.history_factories.push(Box::new(F { ctl }));
     }
 }
 
