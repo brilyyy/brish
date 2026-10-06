@@ -112,6 +112,9 @@ impl Opts {
 #[derive(Debug, Clone)]
 pub struct Env {
     vars: HashMap<String, Var>,
+    /// Interactive aliases. Rides `Env` so forks/subshells inherit for
+    /// free; never exported (not a `Var`, absent from `child_env`).
+    pub aliases: HashMap<String, String>,
     positional: Vec<String>,
     /// `$0` — script/function name.
     pub name: String,
@@ -138,6 +141,7 @@ impl Env {
     pub fn new() -> Self {
         Env {
             vars: HashMap::new(),
+            aliases: HashMap::new(),
             positional: Vec::new(),
             name: "brish".to_string(),
             status: 0,

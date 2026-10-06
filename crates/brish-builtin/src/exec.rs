@@ -32,7 +32,7 @@ use brish_platform::proc::{
 };
 
 use brish_platform::RawFd;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
@@ -160,6 +160,39 @@ fn plan_setups(plan: Plan) -> Vec<(RawFd, FdSetup)> {
         }
     }
     out
+}
+
+/// Expand interactive aliases on the command word: replace `argv[0]`
+/// while the chain keeps changing. Cycle/depth guard, no expansion
+/// after `command`/`alias`/`unalias`.
+///
+/// ponytail: alias bodies split on whitespace — quoted arguments inside
+/// an alias body (`alias x='cmd "a b"'`) split wrong. Ceiling: re-lex
+/// the body with `brish_core::lexer` when aliases need quoted args.
+fn expand_aliases(argv: Vec<String>, aliases: &HashMap<String, String>) -> Vec<String> {
+    const MAX_DEPTH: usize = 64;
+    let mut argv = argv;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut depth = 0;
+    while depth < MAX_DEPTH {
+        let first = argv[0].clone();
+        if first == "command" || first == "alias" || first == "unalias" {
+            break;
+        }
+        if !seen.insert(first.clone()) {
+            break; // alias loop: `alias a='a b'`
+        }
+        let Some(body) = aliases.get(&first) else {
+            break;
+        };
+        let parts: Vec<String> = body.split_whitespace().map(str::to_string).collect();
+        if parts.is_empty() {
+            break;
+        }
+        argv.splice(0..1, parts);
+        depth += 1;
+    }
+    argv
 }
 
 /// Best-effort display text of an and-or list (for `jobs`, plan 4.10).
@@ -1135,11 +1168,18 @@ impl Engine {
         let cmd_words = &s.words;
 
         // Command words expand first, then redirections (bash order).
-        let argv = if cmd_words.is_empty() {
+        let mut argv = if cmd_words.is_empty() {
             Vec::new()
         } else {
             self.xwords(cmd_words)?
         };
+
+        // Interactive aliases (POSIX: batch never expands). `command`/
+        // `alias`/`unalias` as first word suppress expansion inside
+        // expand_aliases.
+        if self.env.flags.contains('i') && !argv.is_empty() {
+            argv = expand_aliases(argv, &self.env.aliases);
+        }
         let Some(plan) = self.plan_or_skip(s.redirs.iter().chain(extra.iter()))? else {
             return Ok(());
         };
@@ -2029,6 +2069,46 @@ mod tests {
             Ok(Outcome::Status(s)) | Ok(Outcome::Exit(s)) => s,
             Err(err) => panic!("fatal: {err}"),
         }
+    }
+
+    /// Engine with interactive flag set (alias expansion gate).
+    fn interactive_engine() -> Engine {
+        let mut e = Engine::new();
+        e.env.flags.push('i');
+        e
+    }
+
+    #[test]
+    fn aliases_expand_interactive_only() {
+        let mut e = interactive_engine();
+        run_src(&mut e, "alias f=false");
+        assert_eq!(run_src(&mut e, "f"), 1, "alias expands in interactive");
+        // Batch: no `i` flag — alias never expands, command not found.
+        let mut b = Engine::new();
+        run_src(&mut b, "alias f=false");
+        assert_eq!(run_src(&mut b, "f"), 127, "batch must not expand aliases");
+    }
+
+    #[test]
+    fn alias_chain_and_cycle_guard() {
+        let mut e = interactive_engine();
+        run_src(&mut e, "alias a=b; alias b=true");
+        assert_eq!(run_src(&mut e, "a"), 0, "alias chain a->b->true");
+        // Self-loop must terminate, not hang: `a` -> `a x`, seen, stop;
+        // argv stays `a x` -> command a not found.
+        run_src(&mut e, "alias a='a x'");
+        assert_eq!(run_src(&mut e, "a"), 127);
+    }
+
+    #[test]
+    fn alias_suppressed_by_command_and_unalias() {
+        let mut e = interactive_engine();
+        run_src(&mut e, "alias true=false");
+        // `command` suppresses expansion (POSIX).
+        assert_eq!(run_src(&mut e, "command true"), 0);
+        // unalias removes it.
+        run_src(&mut e, "unalias true");
+        assert_eq!(run_src(&mut e, "true"), 0);
     }
 
     #[test]

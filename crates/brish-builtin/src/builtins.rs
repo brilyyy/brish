@@ -9,6 +9,8 @@
 pub enum BuiltIn {
     /// `alias`
     Alias,
+    /// `unalias`
+    Unalias,
     /// `cd`
     Cd,
     /// `echo`
@@ -58,6 +60,7 @@ impl BuiltIn {
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name {
             "alias" => BuiltIn::Alias,
+            "unalias" => BuiltIn::Unalias,
             "cd" => BuiltIn::Cd,
             "echo" => BuiltIn::Echo,
             "exit" => BuiltIn::Exit,
@@ -90,7 +93,7 @@ impl BuiltIn {
         &[
             "alias", "break", "cd", "command", "continue", "echo", "exit", "export", "history",
             "pwd", "read", "readonly", "return", "set", "shift", "source", "test", "trap", "type",
-            "unset", "z", ".", ":", "[",
+            "unalias", "unset", "z", ".", ":", "[",
         ]
     }
 
@@ -98,6 +101,7 @@ impl BuiltIn {
     pub fn name(self) -> &'static str {
         match self {
             BuiltIn::Alias => "alias",
+            BuiltIn::Unalias => "unalias",
             BuiltIn::Cd => "cd",
             BuiltIn::Echo => "echo",
             BuiltIn::Exit => "exit",
@@ -140,9 +144,9 @@ mod tests {
     #[test]
     fn round_trip() {
         for name in [
-            "alias", "cd", "echo", "exit", "export", "history", "read", "source", ".", "test", "[",
-            ":", "return", "trap", "unset", "pwd", "readonly", "set", "shift", "command", "type",
-            "break", "continue",
+            "alias", "unalias", "cd", "echo", "exit", "export", "history", "read", "source", ".",
+            "test", "[", ":", "return", "trap", "unset", "pwd", "readonly", "set", "shift",
+            "command", "type", "break", "continue",
         ] {
             let b = BuiltIn::from_name(name).unwrap();
             let _ = b.name();

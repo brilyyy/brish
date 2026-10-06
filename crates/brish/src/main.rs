@@ -244,6 +244,12 @@ fn fatal(engine: &mut Engine, e: brish_core::error::Error) -> Run {
 /// overrides, `--norc` skips. Missing default is fine; a missing
 /// explicit `--rcfile` is an error (kept from before).
 fn repl(engine: &mut Engine, cli: &Cli, var_names: Arc<Mutex<Vec<String>>>) -> i32 {
+    // Set `$-`'s `i` before rc loads: aliases defined in `.brishrc`
+    // expand for later lines in the same rc and the REPL.
+    let interactive = cli.interactive || std::io::stdin().is_terminal();
+    if interactive && !engine.env.flags.contains('i') {
+        engine.env.flags.push('i');
+    }
     if !cli.norc {
         let rc = cli.rcfile.clone().unwrap_or_else(config::rc_path);
         match std::fs::read_to_string(&rc) {
@@ -261,7 +267,6 @@ fn repl(engine: &mut Engine, cli: &Cli, var_names: Arc<Mutex<Vec<String>>>) -> i
         }
     }
 
-    let interactive = cli.interactive || std::io::stdin().is_terminal();
     if interactive && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
         return edit_repl(engine, var_names);
     }

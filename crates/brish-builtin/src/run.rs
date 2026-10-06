@@ -51,10 +51,78 @@ pub fn run(b: BuiltIn, args: &[String], env: &mut Env) -> Result<Flow, Error> {
         BuiltIn::Continue => Ok(loop_control(args, Flow::Continue)),
         BuiltIn::Z => Ok(z_cmd(args, env)),
         BuiltIn::History => Ok(history_cmd(args)),
-        BuiltIn::Alias | BuiltIn::Source | BuiltIn::Trap => {
+        BuiltIn::Alias => Ok(alias_cmd(args, env)),
+        BuiltIn::Unalias => Ok(unalias_cmd(args, env)),
+        BuiltIn::Source | BuiltIn::Trap => {
             Err(Error::Exec(format!("{}: not yet implemented", b.name())))
         }
     }
+}
+
+/// `alias`: no args lists all (sorted), `alias name` shows one
+/// (status 1 when missing), `alias name=value` / `alias name value`
+/// defines. No `-p`/`-n` (ponytail: add when scripts pass them).
+fn alias_cmd(args: &[String], env: &mut Env) -> Flow {
+    if args.len() == 1 {
+        let mut names: Vec<&String> = env.aliases.keys().collect();
+        names.sort();
+        for n in names {
+            print_alias(env, n);
+        }
+        return Flow::Status(0);
+    }
+    if args.len() == 2 && !args[1].contains('=') {
+        // Show one.
+        if let Some(v) = env.aliases.get(&args[1]) {
+            println!("alias {}='{}'", args[1], v.replace('\'', "'\\''"));
+            return Flow::Status(0);
+        }
+        eprintln!("alias: {}: not found", args[1]);
+        return Flow::Status(1);
+    }
+    // Define: `name=value` (value may contain =) or `name value...`.
+    let (name, value) = match args[1].split_once('=') {
+        Some((n, v)) => (n.to_string(), v.to_string()),
+        None => {
+            if args.len() < 3 {
+                eprintln!("alias: {}: invalid name", args[1]);
+                return Flow::Status(1);
+            }
+            (args[1].clone(), args[2..].join(" "))
+        }
+    };
+    if name.is_empty() || name.contains('/') || name.chars().any(char::is_whitespace) {
+        eprintln!("alias: {name}: invalid name");
+        return Flow::Status(1);
+    }
+    env.aliases.insert(name, value);
+    Flow::Status(0)
+}
+
+fn print_alias(env: &Env, name: &str) {
+    if let Some(v) = env.aliases.get(name) {
+        println!("alias {name}='{}'", v.replace('\'', "'\\''"));
+    }
+}
+
+/// `unalias name...` (status 1 if any missing) / `unalias -a`.
+fn unalias_cmd(args: &[String], env: &mut Env) -> Flow {
+    if args.len() == 2 && args[1] == "-a" {
+        env.aliases.clear();
+        return Flow::Status(0);
+    }
+    if args.len() < 2 {
+        eprintln!("unalias: usage: unalias name... | unalias -a");
+        return Flow::Status(2);
+    }
+    let mut status = 0;
+    for name in &args[1..] {
+        if env.aliases.remove(name).is_none() {
+            eprintln!("unalias: {name}: not found");
+            status = 1;
+        }
+    }
+    Flow::Status(status)
 }
 
 /// Dispatch `history` builtin.
@@ -1127,8 +1195,69 @@ mod tests {
     #[test]
     fn not_yet_implemented() {
         let mut e = env();
-        for b in [BuiltIn::Alias, BuiltIn::Source, BuiltIn::Trap] {
+        // `Source` is engine-intercepted (exec_inner) — the stub only
+        // fires if `run` is called directly. Trap ships next slice.
+        for b in [BuiltIn::Source, BuiltIn::Trap] {
             assert!(run(b, &[b.name().to_string()], &mut e).is_err());
         }
+    }
+
+    #[test]
+    fn alias_define_show_list_unalias() {
+        let mut e = env();
+        // define via name=value
+        assert_eq!(
+            flow(BuiltIn::Alias, &args(&["alias", "ll=ls -l"]), &mut e),
+            Flow::Status(0)
+        );
+        assert_eq!(e.aliases.get("ll").map(String::as_str), Some("ls -l"));
+        // define via name value...
+        assert_eq!(
+            flow(
+                BuiltIn::Alias,
+                &args(&["alias", "g", "git", "status"]),
+                &mut e
+            ),
+            Flow::Status(0)
+        );
+        assert_eq!(e.aliases.get("g").map(String::as_str), Some("git status"));
+        // value keeps inner `=`
+        assert_eq!(
+            flow(BuiltIn::Alias, &args(&["alias", "e=echo x=1"]), &mut e),
+            Flow::Status(0)
+        );
+        assert_eq!(e.aliases.get("e").map(String::as_str), Some("echo x=1"));
+        // show one
+        assert_eq!(
+            flow(BuiltIn::Alias, &args(&["alias", "ll"]), &mut e),
+            Flow::Status(0)
+        );
+        // show missing -> 1
+        assert_eq!(
+            flow(BuiltIn::Alias, &args(&["alias", "nope"]), &mut e),
+            Flow::Status(1)
+        );
+        // bad name
+        assert_eq!(
+            flow(BuiltIn::Alias, &args(&["alias", "a/b=1"]), &mut e),
+            Flow::Status(1)
+        );
+        // unalias one
+        assert_eq!(
+            flow(BuiltIn::Unalias, &args(&["unalias", "ll"]), &mut e),
+            Flow::Status(0)
+        );
+        assert!(!e.aliases.contains_key("ll"));
+        // unalias missing -> 1
+        assert_eq!(
+            flow(BuiltIn::Unalias, &args(&["unalias", "ll"]), &mut e),
+            Flow::Status(1)
+        );
+        // unalias -a clears
+        assert_eq!(
+            flow(BuiltIn::Unalias, &args(&["unalias", "-a"]), &mut e),
+            Flow::Status(0)
+        );
+        assert!(e.aliases.is_empty());
     }
 }
