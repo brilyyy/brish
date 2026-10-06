@@ -173,6 +173,12 @@ pub fn take_pending_traps() -> u32 {
     PENDING_TRAPS.swap(0, Ordering::Relaxed)
 }
 
+/// Test hook: mark a trap bit pending without a real signal delivery
+/// (real kills race with parallel tests restoring `SIG_DFL`).
+pub fn inject_pending_trap(bit: u32) {
+    PENDING_TRAPS.fetch_or(bit, Ordering::Relaxed);
+}
+
 fn trap_bit(sig: i32) -> u32 {
     #[cfg(unix)]
     {

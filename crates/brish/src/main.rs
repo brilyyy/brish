@@ -282,7 +282,17 @@ fn repl(engine: &mut Engine, cli: &Cli, var_names: Arc<Mutex<Vec<String>>>) -> i
 /// Interactive reedline REPL (plan phase 5): line editing, history,
 /// PS1/PS2 continuation, Ctrl-C clears the pending line, Ctrl-D exits.
 fn edit_repl(engine: &mut Engine, var_names: Arc<Mutex<Vec<String>>>) -> i32 {
-    let _ = std::fs::create_dir_all(config::config_dir());
+    let _ = brish_builtin::paths::ensure_config_dir();
+    // reedline creates the history file with the process umask; tighten
+    // it so commands (which may contain secrets) stay 0600.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let h = config::history_path();
+        if h.exists() {
+            let _ = std::fs::set_permissions(&h, std::fs::Permissions::from_mode(0o600));
+        }
+    }
     // Job control: own process group + terminal, ignore TSTP/TTIN/TTOU
     // (children still stop normally; Ctrl-Z at the prompt stops us on
     // demand via `suspend_self`).

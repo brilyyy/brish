@@ -2515,27 +2515,19 @@ mod tests {
         std::fs::write(&marker, "x").expect("write");
         let src = format!("trap 'rm -f {}' INT", marker.display());
         assert_eq!(run_src(&mut e, &src), 0);
-        // raise INT on ourselves — handler sets the flag, does not kill.
-        // Delivery is asynchronous and PENDING_TRAPS is process-global
-        // (parallel tests may drain it first), so resend + drain in a
-        // retry loop until the trap body runs (or give up).
-        let kill_self = || {
-            brish_platform::send_signal(
-                std::process::id() as i32,
-                brish_platform::signal_by_name("INT").unwrap_or(2),
-            )
-            .expect("kill self");
-        };
-        for _ in 0..200 {
-            kill_self();
-            let _ = run_src(&mut e, "true");
-            if !marker.exists() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        // Inject the pending bit rather than sending a real SIGINT — a
+        // real kill races with parallel tests restoring SIG_DFL and
+        // would terminate the whole test process. Drain path is what
+        // this exercises; handler install is covered by trap_on below.
+        brish_platform::inject_pending_trap(brish_platform::TRAP_BIT_INT);
+        assert_eq!(run_src(&mut e, "true"), 0, "drain runs the INT trap");
         assert!(!marker.exists(), "trap body must have run (marker removed)");
         // cleanup handler for other tests
         run_src(&mut e, "trap - INT");
+        // pending flags without a matching trap entry run nothing
+        brish_platform::inject_pending_trap(brish_platform::TRAP_BIT_INT);
+        std::fs::write(&marker, "x").expect("write");
+        assert_eq!(run_src(&mut e, "true"), 0);
+        assert!(marker.exists(), "no trap entry → no body");
     }
 }

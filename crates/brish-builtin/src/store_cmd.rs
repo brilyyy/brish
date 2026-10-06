@@ -658,7 +658,8 @@ fn edit_config(root: &Path, enable: bool, name: &str) -> Result<(), String> {
         return Ok(());
     }
     std::fs::create_dir_all(root).map_err(|e| format!("{}: {e}", root.display()))?;
-    std::fs::write(&path, doc.to_string()).map_err(|e| format!("{}: {e}", path.display()))
+    crate::paths::write_private(&path, doc.to_string().as_bytes())
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Enablement per config semantics (same rules as startup `Config`).

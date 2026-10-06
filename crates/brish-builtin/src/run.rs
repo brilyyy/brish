@@ -642,7 +642,7 @@ fn history_cmd(args: &[String]) -> Flow {
             if args.is_empty() || args[0] != "-c" {
                 return Flow::Status(0);
             }
-            let _ = std::fs::write(&path, "");
+            let _ = crate::paths::write_private(&path, b"");
             return Flow::Status(0);
         }
     };
@@ -655,7 +655,7 @@ fn history_cmd(args: &[String]) -> Flow {
             }
         }
     } else {
-        let _ = std::fs::write(&path, "");
+        let _ = crate::paths::write_private(&path, b"");
     }
     Flow::Status(0)
 }
@@ -669,7 +669,7 @@ fn history_cmd(args: &[String]) -> Flow {
 fn z_cmd(args: &[String], env: &mut Env) -> Flow {
     let db = crate::paths::z_path();
     if args.get(1).map(String::as_str) == Some("-c") {
-        let _ = std::fs::write(&db, b"");
+        let _ = crate::paths::write_private(&db, b"");
         return Flow::Status(0);
     }
 

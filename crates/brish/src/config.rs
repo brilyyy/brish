@@ -11,7 +11,7 @@ use std::path::Path;
 
 // The `~/.config/brish` path family lives with the engine so the
 // `plugin` builtin and the binary share one root.
-pub use brish_builtin::paths::{config_dir, config_path, history_path, rc_path};
+pub use brish_builtin::paths::{config_path, history_path, rc_path};
 
 /// Parsed `config.toml` (all sections optional, unknown keys ignored).
 #[derive(Default, serde::Deserialize)]

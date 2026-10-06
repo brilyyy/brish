@@ -59,7 +59,7 @@ fn save(db: &Path, rows: &[Row]) {
         .collect();
     // Atomic: temp + rename so a crash never half-writes the db.
     let tmp = db.with_extension("tmp");
-    if std::fs::write(&tmp, text).is_err() {
+    if crate::paths::write_private(&tmp, text.as_bytes()).is_err() {
         return;
     }
     let _ = std::fs::rename(&tmp, db);
