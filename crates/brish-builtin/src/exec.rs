@@ -571,8 +571,11 @@ impl Engine {
         };
         match self.run_trap_body(&cmd) {
             Err(Stop::Fail(e)) => eprintln!("brish: {e}"),
-            Err(Stop::Exit(_)) | Err(Stop::Return(_)) | Err(Stop::Break(_))
-            | Err(Stop::Continue(_)) | Ok(()) => {}
+            Err(Stop::Exit(_))
+            | Err(Stop::Return(_))
+            | Err(Stop::Break(_))
+            | Err(Stop::Continue(_))
+            | Ok(()) => {}
         }
     }
 
@@ -2461,7 +2464,9 @@ mod tests {
             notes[0]
         );
         assert!(
-            e.job_notifications().expect("no exit from drain").is_empty(),
+            e.job_notifications()
+                .expect("no exit from drain")
+                .is_empty(),
             "notify once"
         );
     }
@@ -2529,10 +2534,7 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        assert!(
-            !marker.exists(),
-            "trap body must have run (marker removed)"
-        );
+        assert!(!marker.exists(), "trap body must have run (marker removed)");
         // cleanup handler for other tests
         run_src(&mut e, "trap - INT");
     }

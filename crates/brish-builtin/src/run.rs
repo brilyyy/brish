@@ -57,9 +57,7 @@ pub fn run(b: BuiltIn, args: &[String], env: &mut Env) -> Result<Flow, Error> {
         BuiltIn::Umask => Ok(umask_cmd(args)),
         BuiltIn::Times => Ok(times_cmd()),
         BuiltIn::Trap => Ok(trap_cmd(args, env)),
-        BuiltIn::Source => {
-            Err(Error::Exec(format!("{}: not yet implemented", b.name())))
-        }
+        BuiltIn::Source => Err(Error::Exec(format!("{}: not yet implemented", b.name()))),
     }
 }
 
@@ -1818,7 +1816,11 @@ mod tests {
             Flow::Status(2)
         );
         // cleanup so SIG_DFL restored for the rest of the suite
-        let _ = flow(BuiltIn::Trap, &args(&["trap", "-", "TERM", "HUP", "EXIT"]), &mut e);
+        let _ = flow(
+            BuiltIn::Trap,
+            &args(&["trap", "-", "TERM", "HUP", "EXIT"]),
+            &mut e,
+        );
     }
 
     fn strs(items: &[&str]) -> Vec<String> {

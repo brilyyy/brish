@@ -210,7 +210,9 @@ extern "C" fn trap_handler(sig: i32) {
 pub fn trap_on(sig: i32) -> Result<(), PlatformError> {
     use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, sigaction};
     if trap_bit(sig) == 0 {
-        return Err(PlatformError::Process(format!("signal {sig} not trappable")));
+        return Err(PlatformError::Process(format!(
+            "signal {sig} not trappable"
+        )));
     }
     let action = SigAction::new(
         SigHandler::Handler(trap_handler),
@@ -219,8 +221,14 @@ pub fn trap_on(sig: i32) -> Result<(), PlatformError> {
     );
     // SAFETY: sigaction with our handler; old action discarded (the
     // shell owns these signals once a trap is set).
-    unsafe { sigaction(nix::sys::signal::Signal::try_from(sig).map_err(|_| PlatformError::Process("bad signal".into()))?, &action) }
-        .map_err(|e| PlatformError::Process(e.to_string()))?;
+    unsafe {
+        sigaction(
+            nix::sys::signal::Signal::try_from(sig)
+                .map_err(|_| PlatformError::Process("bad signal".into()))?,
+            &action,
+        )
+    }
+    .map_err(|e| PlatformError::Process(e.to_string()))?;
     Ok(())
 }
 
