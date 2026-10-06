@@ -115,6 +115,9 @@ pub struct Env {
     /// Interactive aliases. Rides `Env` so forks/subshells inherit for
     /// free; never exported (not a `Var`, absent from `child_env`).
     pub aliases: HashMap<String, String>,
+    /// `trap` commands keyed by signal name (`INT`, `TERM`, `HUP`,
+    /// `QUIT`, `EXIT`). Same inheritance/visibility rules as aliases.
+    pub traps: HashMap<String, String>,
     positional: Vec<String>,
     /// `$0` — script/function name.
     pub name: String,
@@ -142,6 +145,7 @@ impl Env {
         Env {
             vars: HashMap::new(),
             aliases: HashMap::new(),
+            traps: HashMap::new(),
             positional: Vec::new(),
             name: "brish".to_string(),
             status: 0,

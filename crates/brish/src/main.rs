@@ -1,6 +1,6 @@
 use std::io::{BufRead, IsTerminal, Read, Write};
 
-use brish_builtin::exec::{Engine, Outcome};
+use brish_builtin::exec::{Engine, Outcome, Stop};
 use brish_plugin::Plugin;
 mod completion;
 mod config;
@@ -202,6 +202,7 @@ fn main() {
             }
         }
     };
+    engine.run_exit_trap();
     std::process::exit(code);
 }
 
@@ -364,7 +365,18 @@ fn edit_repl(engine: &mut Engine, var_names: Arc<Mutex<Vec<String>>>) -> i32 {
             names.extend(engine.env.vars_iter().map(|(k, _)| k.clone()));
         }
         // bash prints completed/stopped job notices before each prompt.
-        for line in engine.job_notifications() {
+        // job_notifications also drains pending signal traps (idle
+        // shell still runs `trap ... TERM`).
+        let notes = match engine.job_notifications() {
+            Ok(n) => n,
+            Err(Stop::Exit(c)) => return c,
+            Err(Stop::Fail(e)) => {
+                eprintln!("brish: {e}");
+                return 1;
+            }
+            Err(_) => return engine.env.status,
+        };
+        for line in notes {
             println!("{line}");
         }
         let prompt = BrishPrompt::new(

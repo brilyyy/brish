@@ -56,7 +56,8 @@ pub fn run(b: BuiltIn, args: &[String], env: &mut Env) -> Result<Flow, Error> {
         BuiltIn::Printf => Ok(printf_cmd(args)),
         BuiltIn::Umask => Ok(umask_cmd(args)),
         BuiltIn::Times => Ok(times_cmd()),
-        BuiltIn::Source | BuiltIn::Trap => {
+        BuiltIn::Trap => Ok(trap_cmd(args, env)),
+        BuiltIn::Source => {
             Err(Error::Exec(format!("{}: not yet implemented", b.name())))
         }
     }
@@ -564,6 +565,72 @@ fn fmt_t(secs: f64) -> String {
     let m = cs / 6_000;
     let rem = cs % 6_000;
     format!("{m}m{:02}.{:02}s", rem / 100, rem % 100)
+}
+
+// ---- trap ----
+
+/// Trappable signals (beta set — ponytail: USR1/USR2/CHLD added when
+/// scripts pass them; ERR/DEBUG are not POSIX signals).
+const TRAP_SIGNALS: [&str; 5] = ["EXIT", "INT", "TERM", "HUP", "QUIT"];
+
+/// `trap` / `trap -p` lists; `trap - SIG...` resets; `trap ACTION
+/// SIG...` sets. `ACTION` of `-` also resets (POSIX). Accepts `SIGINT`
+/// style; `KILL`/`STOP` refused (unkillable by design).
+fn trap_cmd(args: &[String], env: &mut Env) -> Flow {
+    if args.len() == 1 || args[1] == "-p" {
+        let mut names: Vec<&String> = env.traps.keys().collect();
+        names.sort();
+        for n in names {
+            let cmd = &env.traps[n];
+            println!("trap -- '{}' {}", cmd.replace('\'', "'\\''"), n);
+        }
+        return Flow::Status(0);
+    }
+    // `trap - SIG...` or `trap ACTION SIG...` (ACTION may be `-`)
+    if args.len() < 3 {
+        eprintln!("trap: usage: trap [-p] | trap - SIG... | trap ACTION SIG...");
+        return Flow::Status(2);
+    }
+    let action = args[1].as_str();
+    let reset = action == "-";
+    let mut status = 0;
+    for raw in &args[2..] {
+        let Some(name) = canonical_trap_sig(raw) else {
+            if matches!(raw.trim_start_matches("SIG"), "KILL" | "STOP") {
+                eprintln!("trap: {raw}: cannot trap that signal");
+            } else {
+                eprintln!("trap: {raw}: invalid signal specification");
+            }
+            status = 1;
+            continue;
+        };
+        if reset {
+            env.traps.remove(name);
+            if name != "EXIT"
+                && let Some(num) = brish_platform::signal_by_name(name)
+            {
+                let _ = brish_platform::trap_off(num);
+            }
+        } else {
+            if name != "EXIT"
+                && let Some(num) = brish_platform::signal_by_name(name)
+                && let Err(e) = brish_platform::trap_on(num)
+            {
+                eprintln!("trap: {name}: {e}");
+                status = 1;
+                continue;
+            }
+            env.traps.insert(name.to_string(), action.to_string());
+        }
+    }
+    Flow::Status(status)
+}
+
+/// Normalize a signal operand: optional `SIG` prefix, must be in the
+/// beta trap set. `None` = invalid / not trappable.
+fn canonical_trap_sig(raw: &str) -> Option<&'static str> {
+    let n = raw.strip_prefix("SIG").unwrap_or(raw);
+    TRAP_SIGNALS.iter().copied().find(|s| *s == n)
 }
 
 /// Dispatch `history` builtin.
@@ -1637,10 +1704,9 @@ mod tests {
     fn not_yet_implemented() {
         let mut e = env();
         // `Source` is engine-intercepted (exec_inner) — the stub only
-        // fires if `run` is called directly. Trap ships next slice.
-        for b in [BuiltIn::Source, BuiltIn::Trap] {
-            assert!(run(b, &[b.name().to_string()], &mut e).is_err());
-        }
+        // fires if `run` is called directly.
+        let b = BuiltIn::Source;
+        assert!(run(b, &[b.name().to_string()], &mut e).is_err());
     }
 
     #[test]
@@ -1700,6 +1766,59 @@ mod tests {
             Flow::Status(0)
         );
         assert!(e.aliases.is_empty());
+    }
+
+    #[test]
+    fn trap_cmd_set_list_reset() {
+        let mut e = env();
+        assert_eq!(
+            flow(BuiltIn::Trap, &args(&["trap", "echo hi", "INT"]), &mut e),
+            Flow::Status(0)
+        );
+        assert_eq!(e.traps.get("INT").map(String::as_str), Some("echo hi"));
+        // list (no args) and -p both work; EXIT + SIG prefix
+        assert_eq!(
+            flow(BuiltIn::Trap, &args(&["trap", "echo bye", "EXIT"]), &mut e),
+            Flow::Status(0)
+        );
+        assert_eq!(
+            flow(
+                BuiltIn::Trap,
+                &args(&["trap", "echo t", "SIGTERM", "SIGHUP"]),
+                &mut e
+            ),
+            Flow::Status(0)
+        );
+        assert_eq!(
+            flow(BuiltIn::Trap, &args(&["trap", "-p"]), &mut e),
+            Flow::Status(0)
+        );
+        assert_eq!(
+            flow(BuiltIn::Trap, &args(&["trap"]), &mut e),
+            Flow::Status(0)
+        );
+        // invalid signal -> 1
+        assert_eq!(
+            flow(BuiltIn::Trap, &args(&["trap", "true", "NOPE"]), &mut e),
+            Flow::Status(1)
+        );
+        // KILL refused
+        assert_eq!(
+            flow(BuiltIn::Trap, &args(&["trap", "true", "KILL"]), &mut e),
+            Flow::Status(1)
+        );
+        // reset one + usage error
+        assert_eq!(
+            flow(BuiltIn::Trap, &args(&["trap", "-", "INT"]), &mut e),
+            Flow::Status(0)
+        );
+        assert!(!e.traps.contains_key("INT"));
+        assert_eq!(
+            flow(BuiltIn::Trap, &args(&["trap", "only"]), &mut e),
+            Flow::Status(2)
+        );
+        // cleanup so SIG_DFL restored for the rest of the suite
+        let _ = flow(BuiltIn::Trap, &args(&["trap", "-", "TERM", "HUP", "EXIT"]), &mut e);
     }
 
     fn strs(items: &[&str]) -> Vec<String> {

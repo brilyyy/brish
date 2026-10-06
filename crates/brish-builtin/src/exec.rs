@@ -481,8 +481,10 @@ impl Engine {
     }
 
     /// Done/stopped notices printed before the next prompt (bash-style
-    /// asynchronous notification). Interactive only.
-    pub fn job_notifications(&mut self) -> Vec<String> {
+    /// asynchronous notification). Interactive only. Drains pending
+    /// signal traps first so an idle shell still runs `trap ... TERM`.
+    pub fn job_notifications(&mut self) -> R<Vec<String>> {
+        self.drain_traps()?;
         self.reap_bg();
         let mut out = Vec::new();
         for (n, j) in self.bg.iter_mut().enumerate() {
@@ -499,7 +501,79 @@ impl Engine {
             out.push(format!("[{}]+ {}  {}", n + 1, state, j.cmd));
             j.notified = true;
         }
-        out
+        Ok(out)
+    }
+
+    /// Drain pending signal traps (flags set by the platform handler)
+    /// and run their commands. Flags swap first so a trap that raises
+    /// the same signal cannot self-requeue. Parent only.
+    ///
+    /// ponytail: signal traps fire at command/prompt boundaries — a
+    /// foreground `sleep 100` is not interrupted mid-wait. Ceiling:
+    /// self-pipe + EINTR-aware wait for mid-command delivery.
+    pub fn drain_traps(&mut self) -> R<()> {
+        if self.in_child {
+            return Ok(());
+        }
+        let pending = brish_platform::take_pending_traps();
+        if pending == 0 {
+            return Ok(());
+        }
+        let mut cmds: Vec<String> = Vec::new();
+        for (bit, name) in [
+            (brish_platform::TRAP_BIT_INT, "INT"),
+            (brish_platform::TRAP_BIT_TERM, "TERM"),
+            (brish_platform::TRAP_BIT_HUP, "HUP"),
+            (brish_platform::TRAP_BIT_QUIT, "QUIT"),
+        ] {
+            if pending & bit != 0
+                && let Some(c) = self.env.traps.get(name)
+            {
+                cmds.push(c.clone());
+            }
+        }
+        for cmd in cmds {
+            self.run_trap_body(&cmd)?;
+        }
+        Ok(())
+    }
+
+    /// Run one trap/`EXIT` action body. Parse errors warn and are
+    /// swallowed (a garbage trap must not kill the shell); `Return`
+    /// and stray loop-control are absorbed; `Exit`/`Fail` propagate.
+    fn run_trap_body(&mut self, src: &str) -> R<()> {
+        let prog = match brish_core::parser::parse(src) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("brish: trap: {e}");
+                return Ok(());
+            }
+        };
+        match self.program(&prog, true) {
+            Err(Stop::Return(s)) => {
+                self.env.status = s;
+                Ok(())
+            }
+            Err(Stop::Break(_)) | Err(Stop::Continue(_)) => Ok(()),
+            other => other,
+        }
+    }
+
+    /// Run the `EXIT` trap once, at process exit (main calls before
+    /// `process::exit`). `Exit` inside it is absorbed — we're leaving
+    /// anyway.
+    pub fn run_exit_trap(&mut self) {
+        if self.in_child {
+            return;
+        }
+        let Some(cmd) = self.env.traps.get("EXIT").cloned() else {
+            return;
+        };
+        match self.run_trap_body(&cmd) {
+            Err(Stop::Fail(e)) => eprintln!("brish: {e}"),
+            Err(Stop::Exit(_)) | Err(Stop::Return(_)) | Err(Stop::Break(_))
+            | Err(Stop::Continue(_)) | Ok(()) => {}
+        }
     }
 
     // ---- lists ----
@@ -523,6 +597,7 @@ impl Engine {
             eprintln!("brish[exec]: {}", ao_text(&item.andor));
         }
         self.reap_bg();
+        self.drain_traps()?;
         self.and_or(&item.andor, errexit_ctx)
     }
 
@@ -2378,13 +2453,87 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        let notes = e.job_notifications();
+        let notes = e.job_notifications().expect("no exit from drain");
         assert_eq!(notes.len(), 1, "{notes:?}");
         assert!(
             notes[0].contains("[1]+") && notes[0].contains("Done"),
             "{}",
             notes[0]
         );
-        assert!(e.job_notifications().is_empty(), "notify once");
+        assert!(
+            e.job_notifications().expect("no exit from drain").is_empty(),
+            "notify once"
+        );
+    }
+
+    #[test]
+    fn exit_trap_runs_at_process_exit() {
+        let mut e = Engine::new();
+        run_src(&mut e, "trap 'echo bye > /nonexistent-xyz' EXIT");
+        // EXIT body runs via run_exit_trap; parse/garbage never panics
+        e.run_exit_trap();
+        // setting + listing through the builtin path
+        run_src(&mut e, "trap 'true' EXIT; trap - EXIT");
+        assert!(!e.env.traps.contains_key("EXIT"));
+    }
+
+    #[test]
+    fn trap_builtin_stores_and_lists() {
+        let mut e = Engine::new();
+        assert_eq!(run_src(&mut e, "trap 'echo hi' INT"), 0);
+        assert_eq!(e.env.traps.get("INT").map(String::as_str), Some("echo hi"));
+        assert_eq!(run_src(&mut e, "trap 'echo bye' TERM HUP"), 0);
+        assert!(e.env.traps.contains_key("TERM"));
+        assert!(e.env.traps.contains_key("HUP"));
+        // SIG prefix accepted
+        assert_eq!(run_src(&mut e, "trap 'true' SIGQUIT"), 0);
+        assert!(e.env.traps.contains_key("QUIT"));
+        // invalid signal -> status 1, shell survives
+        assert_eq!(run_src(&mut e, "trap 'true' NOPE"), 1);
+        assert_eq!(run_src(&mut e, "trap 'true' KILL"), 1);
+        // reset
+        assert_eq!(run_src(&mut e, "trap - INT"), 0);
+        assert!(!e.env.traps.contains_key("INT"));
+        // bad body parses later — storing is fine, drain swallows errors
+        assert_eq!(run_src(&mut e, "trap 'if' INT"), 0);
+        // restore SIG_DFL for every signal this test installed
+        run_src(&mut e, "trap - INT TERM HUP QUIT EXIT");
+        assert!(e.env.traps.is_empty());
+    }
+
+    #[test]
+    fn trap_signal_fires_drain() {
+        let mut e = Engine::new();
+        // marker file the trap will remove
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let marker = dir.path().join("trapped");
+        std::fs::write(&marker, "x").expect("write");
+        let src = format!("trap 'rm -f {}' INT", marker.display());
+        assert_eq!(run_src(&mut e, &src), 0);
+        // raise INT on ourselves — handler sets the flag, does not kill.
+        // Delivery is asynchronous and PENDING_TRAPS is process-global
+        // (parallel tests may drain it first), so resend + drain in a
+        // retry loop until the trap body runs (or give up).
+        let kill_self = || {
+            brish_platform::send_signal(
+                std::process::id() as i32,
+                brish_platform::signal_by_name("INT").unwrap_or(2),
+            )
+            .expect("kill self");
+        };
+        for _ in 0..200 {
+            kill_self();
+            let _ = run_src(&mut e, "true");
+            if !marker.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            !marker.exists(),
+            "trap body must have run (marker removed)"
+        );
+        // cleanup handler for other tests
+        run_src(&mut e, "trap - INT");
     }
 }

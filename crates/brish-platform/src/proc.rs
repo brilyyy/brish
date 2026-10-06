@@ -154,6 +154,103 @@ pub fn write_stdout(bytes: &[u8]) {
     let _ = std::io::stdout().write_all(bytes);
 }
 
+// ---- trap signal flags ----
+
+use std::sync::atomic::{AtomicU32, Ordering};
+
+/// Bit per trappable signal (`trap` builtin). EXIT is virtual — no
+/// bit, fired from the engine at process exit.
+pub const TRAP_BIT_INT: u32 = 1 << 0;
+pub const TRAP_BIT_TERM: u32 = 1 << 1;
+pub const TRAP_BIT_HUP: u32 = 1 << 2;
+pub const TRAP_BIT_QUIT: u32 = 1 << 3;
+
+static PENDING_TRAPS: AtomicU32 = AtomicU32::new(0);
+
+/// Swap out pending signal-trap flags (engine drains at command
+/// boundaries / before each prompt). Async-signal-safe.
+pub fn take_pending_traps() -> u32 {
+    PENDING_TRAPS.swap(0, Ordering::Relaxed)
+}
+
+fn trap_bit(sig: i32) -> u32 {
+    #[cfg(unix)]
+    {
+        match sig {
+            nix::libc::SIGINT => TRAP_BIT_INT,
+            nix::libc::SIGTERM => TRAP_BIT_TERM,
+            nix::libc::SIGHUP => TRAP_BIT_HUP,
+            nix::libc::SIGQUIT => TRAP_BIT_QUIT,
+            _ => 0,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        match sig {
+            2 => TRAP_BIT_INT,
+            15 => TRAP_BIT_TERM,
+            1 => TRAP_BIT_HUP,
+            3 => TRAP_BIT_QUIT,
+            _ => 0,
+        }
+    }
+}
+
+#[cfg(unix)]
+extern "C" fn trap_handler(sig: i32) {
+    let bit = trap_bit(sig);
+    if bit != 0 {
+        // Only async-signal-safe work: set a flag.
+        PENDING_TRAPS.fetch_or(bit, Ordering::Relaxed);
+    }
+}
+
+/// Install the flag-setting handler for `sig` (`trap 'cmd' SIG`).
+#[cfg(unix)]
+pub fn trap_on(sig: i32) -> Result<(), PlatformError> {
+    use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, sigaction};
+    if trap_bit(sig) == 0 {
+        return Err(PlatformError::Process(format!("signal {sig} not trappable")));
+    }
+    let action = SigAction::new(
+        SigHandler::Handler(trap_handler),
+        SaFlags::empty(),
+        SigSet::empty(),
+    );
+    // SAFETY: sigaction with our handler; old action discarded (the
+    // shell owns these signals once a trap is set).
+    unsafe { sigaction(nix::sys::signal::Signal::try_from(sig).map_err(|_| PlatformError::Process("bad signal".into()))?, &action) }
+        .map_err(|e| PlatformError::Process(e.to_string()))?;
+    Ok(())
+}
+
+/// Restore default disposition (`trap - SIG`).
+#[cfg(unix)]
+pub fn trap_off(sig: i32) -> Result<(), PlatformError> {
+    use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, sigaction};
+    let action = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+    // SAFETY: restore SIG_DFL for a signal we installed earlier.
+    unsafe {
+        sigaction(
+            nix::sys::signal::Signal::try_from(sig)
+                .map_err(|_| PlatformError::Process("bad signal".into()))?,
+            &action,
+        )
+    }
+    .map_err(|e| PlatformError::Process(e.to_string()))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn trap_on(_sig: i32) -> Result<(), PlatformError> {
+    Err(PlatformError::Process("signals unsupported".into()))
+}
+
+#[cfg(not(unix))]
+pub fn trap_off(_sig: i32) -> Result<(), PlatformError> {
+    Ok(())
+}
+
 /// `umask`: `None` = query (get-and-restore), `Some(m)` = set.
 /// Returns the previous mask either way.
 #[cfg(unix)]
