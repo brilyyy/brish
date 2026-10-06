@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.0.0 — stable (unreleased)
+
+Hardening close-out from the beta: stability proofs, missing POSIX
+builtins, mid-command traps, quote-aware completion, docs.
+
+### Added
+- `getopts` (POSIX: clusters, option-arguments, silent `:` mode, `--`).
+- `local` (bash-style dynamic scoping in functions — save/restore
+  per call frame on function return).
+- `history -d N`; `HISTCONTROL=erasedups`/`ignoreboth` (consecutive
+  dedup was always on) via a `History` wrapper snapshotted per prompt.
+- Mid-command signal traps: handler sets a flag; EINTR-aware waits
+  (spawn/pipeline/job/`wait`) drain + retry — `trap … TERM` now fires
+  while a foreground command still runs. Forked subshells reset
+  trappable dispositions (POSIX).
+- Quote-aware completion: whitespace inside an unclosed quote stays in
+  the word; the opening quote is matched around and restored on splice.
+- Crash-resistance tests: Linux FD-leak smoke, `RawModeGuard`
+  restore-on-drop, mid-wait trap delivery proof.
+- Fuzz targets (`fuzz/`: lexer/parser/expand) — nightly smoke runs.
+- POSIX corpus 49 → ~115 dash-verified cases. Found + fixed a real
+  conformance bug: IFS whitespace at expansion edges is a field
+  delimiter against adjacent literals (`[$x]` now splits like dash).
+- Measured: coverage 83.65% lines, 13µs/keystroke highlight render,
+  800k+ fuzz execs panic-free. Numbers in `docs/POSIX.md`.
+
+### Added (docs)
+- `docs/ARCHITECTURE.md`, `docs/POSIX.md`, `docs/CONFIGURATION.md`,
+  `docs/CONTRIBUTING.md`.
+
+### Stability promise (SemVer)
+For 1.0+: `config.toml` schema, plugin trait/registry API, and builtin
+semantics are stable (additive changes only). Behavior tweaks that
+change script outcomes bump the minor version. Patch releases fix
+bugs without behavior change.
+
 ## 0.1.0 — install + shift-tab (unreleased)
 
 ### Added

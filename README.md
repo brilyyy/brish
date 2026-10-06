@@ -182,7 +182,11 @@ the engineering
 roadmap is [`docs/bsh-technical-plan.md`](docs/bsh-technical-plan.md)
 (original project name; still the source of truth for phases).
 Trust boundaries and file-permission policy:
-[`docs/SECURITY.md`](docs/SECURITY.md).
+[`docs/SECURITY.md`](docs/SECURITY.md). More:
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (component map),
+[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) (config reference),
+[`docs/POSIX.md`](docs/POSIX.md) (conformance + stability numbers),
+[`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) (dev gates).
 
 Crate split: depend on `brish-plugin` for behavioral plugins (hooks,
 completion, keymaps), `brish-theme` for prompt themes/segments.

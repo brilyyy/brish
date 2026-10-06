@@ -2143,6 +2143,12 @@ mod tests {
 
     #[test]
     fn trap_cmd_set_list_reset() {
+        // Sets/resets real signal dispositions (SIG_DFL on `trap -`),
+        // which would race the exec trap tests' self-signals — serialize
+        // with them (see exec.rs TRAP_LOCK).
+        let _trap_g = crate::test_util::TRAP_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut e = env();
         assert_eq!(
             flow(BuiltIn::Trap, &args(&["trap", "echo hi", "INT"]), &mut e),

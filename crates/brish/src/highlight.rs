@@ -514,4 +514,40 @@ mod tests {
         assert_eq!(prev_boundary("héllo", "héllo".len()), "héll".len());
         assert_eq!(prev_boundary("x", 1), 0);
     }
+
+    /// REPL keystroke-latency smoke (plan §9: typical line render
+    /// < 50ms). 2k renders of realistic lines must stay far under that.
+    #[test]
+    fn highlight_latency_smoke() {
+        let h = BrishHighlighter::new(true, Arc::new(Mutex::new(Vec::new())));
+        let lines: Vec<String> = (0..2000)
+            .map(|i| {
+                if i % 2 == 0 {
+                    format!(
+                        "for i in {{1..{}}}; do echo \"$i\" | grep {} > /tmp/out_{}; done",
+                        i % 20 + 1,
+                        "$HOME",
+                        i
+                    )
+                } else {
+                    format!(
+                        "command ls -la /var/tmp/path with spaces/{} 2>&1 && echo 'ok'",
+                        i
+                    )
+                }
+            })
+            .collect();
+        let start = std::time::Instant::now();
+        for l in &lines {
+            let _ = h.highlight(l, 0);
+        }
+        let total = start.elapsed();
+        // ~µs per render; 50ms is the per-keystroke budget (plan §9).
+        assert!(
+            total.as_millis() < 500,
+            "2000 renders took {:?} — per-line budget blown",
+            total
+        );
+        eprintln!("highlight: {:?} / 2000 renders", total);
+    }
 }

@@ -154,6 +154,11 @@ pub fn peek_pending_traps() -> u32 {
     PENDING_TRAPS.load(Ordering::Relaxed)
 }
 
+/// Clear only `mask` bits (leave other engines' flags pending).
+pub fn clear_pending_traps(mask: u32) {
+    PENDING_TRAPS.fetch_and(!mask, Ordering::Relaxed);
+}
+
 /// Test hook: mark a trap bit pending without a real signal delivery
 /// (real kills race with parallel tests restoring `SIG_DFL`).
 pub fn inject_pending_trap(bit: u32) {

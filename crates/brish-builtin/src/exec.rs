@@ -510,10 +510,15 @@ impl Engine {
         if self.in_child {
             return Ok(());
         }
-        let pending = brish_platform::take_pending_traps();
+        let pending = brish_platform::peek_pending_traps();
         if pending == 0 {
             return Ok(());
         }
+        // Clear + run only the bits this shell has a trap for — a flag
+        // set by our self-signal must not be swallowed by a parallel
+        // engine that has no matching trap (it would defer/stall the
+        // right owner, e.g. mid-wait trap delivery tests).
+        let mut run_mask = 0u32;
         let mut cmds: Vec<String> = Vec::new();
         for (bit, name) in [
             (brish_platform::TRAP_BIT_INT, "INT"),
@@ -524,9 +529,14 @@ impl Engine {
             if pending & bit != 0
                 && let Some(c) = self.env.traps.get(name)
             {
+                run_mask |= bit;
                 cmds.push(c.clone());
             }
         }
+        if run_mask == 0 {
+            return Ok(());
+        }
+        brish_platform::clear_pending_traps(run_mask);
         for cmd in cmds {
             self.run_trap_body(&cmd)?;
         }
@@ -2590,30 +2600,42 @@ mod tests {
         assert_eq!(run_src(&mut e, &src), 0);
 
         let t = std::thread::spawn(move || {
-            run_src(&mut e, "sleep 0.6");
+            run_src(&mut e, "sleep 1.0");
             e
         });
         // Resend SIGINT while polling: a signal that lands before
-        // waitpid is entered sets the flag but cannot EINTR it, so one
-        // send is racy against thread scheduling. Any send that hits
-        // during the blocking wait interrupts + drains.
+        // waitpid is entered sets the flag but cannot EINTR it, and
+        // parallel tests' drains may consume our flag — several sends
+        // raise the odds one EINTRs *this* wait. Mid-wait is proven by
+        // timing: the marker must vanish before the 1.0s sleep ends.
         let start = std::time::Instant::now();
-        for _ in 0..20 {
+        let mut removed = None;
+        for _ in 0..200 {
             brish_platform::send_signal(
                 std::process::id() as i32,
                 brish_platform::signal_by_name("INT").unwrap_or(2),
             )
             .expect("kill self");
-            std::thread::sleep(std::time::Duration::from_millis(25));
+            std::thread::sleep(std::time::Duration::from_millis(10));
             if !marker.exists() {
+                removed = Some(start.elapsed());
                 break;
             }
         }
-        assert!(
-            !marker.exists(),
-            "trap must run mid-wait, elapsed {:?}",
-            start.elapsed()
-        );
+        match removed {
+            // Removal before the sleep finished ⇒ drained mid-wait.
+            Some(removed) if removed.as_millis() < 950 => {
+                eprintln!("trap ran {removed:?} into a 1s wait");
+            }
+            other => {
+                assert!(
+                    other.is_some(),
+                    "trap never ran; delta {:?}",
+                    start.elapsed()
+                );
+                panic!("trap ran at boundary, not mid-wait: {:?}", other);
+            }
+        }
         let mut e = t.join().expect("sleep thread");
         // Drop the entry but KEEP the handler: restoring SIG_DFL while
         // a self-directed SIGINT may still be pending lets it kill the
