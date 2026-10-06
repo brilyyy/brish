@@ -59,6 +59,8 @@ pub enum BuiltIn {
     Continue,
     /// `z`
     Z,
+    /// `ls`
+    Ls,
 }
 
 impl BuiltIn {
@@ -91,6 +93,7 @@ impl BuiltIn {
             "break" => BuiltIn::Break,
             "continue" => BuiltIn::Continue,
             "z" => BuiltIn::Z,
+            "ls" => BuiltIn::Ls,
             _ => return None,
         })
     }
@@ -101,7 +104,7 @@ impl BuiltIn {
     pub fn names() -> &'static [&'static str] {
         &[
             "alias", "break", "cd", "command", "continue", "echo", "exit", "export", "history",
-            "printf", "pwd", "read", "readonly", "return", "set", "shift", "source", "test",
+            "ls", "printf", "pwd", "read", "readonly", "return", "set", "shift", "source", "test",
             "times", "trap", "type", "umask", "unalias", "unset", "z", ".", ":", "[",
         ]
     }
@@ -135,6 +138,7 @@ impl BuiltIn {
             BuiltIn::Break => "break",
             BuiltIn::Continue => "continue",
             BuiltIn::Z => "z",
+            BuiltIn::Ls => "ls",
         }
     }
 }
@@ -156,14 +160,14 @@ mod tests {
     #[test]
     fn round_trip() {
         for name in [
-            "alias", "unalias", "cd", "echo", "exit", "export", "history", "read", "source", ".",
-            "test", "[", ":", "return", "trap", "unset", "pwd", "printf", "umask", "times",
+            "alias", "unalias", "cd", "ls", "echo", "exit", "export", "history", "read", "source",
+            ".", "test", "[", ":", "return", "trap", "unset", "pwd", "printf", "umask", "times",
             "readonly", "set", "shift", "command", "type", "break", "continue",
         ] {
             let b = BuiltIn::from_name(name).unwrap();
             let _ = b.name();
         }
-        assert_eq!(BuiltIn::from_name("ls"), None);
+        assert_eq!(BuiltIn::from_name("ls"), Some(BuiltIn::Ls));
         assert_eq!(BuiltIn::from_name("."), Some(BuiltIn::Source));
         assert_eq!(BuiltIn::from_name("["), Some(BuiltIn::Test));
     }

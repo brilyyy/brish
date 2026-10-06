@@ -50,6 +50,7 @@ pub fn run(b: BuiltIn, args: &[String], env: &mut Env) -> Result<Flow, Error> {
         BuiltIn::Break => Ok(loop_control(args, Flow::Break)),
         BuiltIn::Continue => Ok(loop_control(args, Flow::Continue)),
         BuiltIn::Z => Ok(z_cmd(args, env)),
+        BuiltIn::Ls => ls_cmd(args, env),
         BuiltIn::History => Ok(history_cmd(args)),
         BuiltIn::Alias => Ok(alias_cmd(args, env)),
         BuiltIn::Unalias => Ok(unalias_cmd(args, env)),
@@ -705,6 +706,165 @@ fn z_cmd(args: &[String], env: &mut Env) -> Flow {
     Flow::Status(0)
 }
 
+// ---- ls ----
+
+/// `ls` (NOTES.md 2): `[ls] backend = auto|builtin|eza`.
+/// auto/eza shell out to `eza` when present; builtin fallback covers
+/// `-a`, `-l`, operands, and icons.
+///
+/// ponytail: no `-R`/`-t`/`--color`; add flags when scripts need them.
+fn ls_cmd(args: &[String], env: &Env) -> Result<Flow, Error> {
+    use crate::ucfg::{LsBackend, load};
+    let cfg = load();
+    let want_eza = match cfg.ls_backend {
+        LsBackend::Builtin => false,
+        LsBackend::Eza | LsBackend::Auto => {
+            brish_core::path::find_in_path("eza", env.get("PATH")).is_some()
+        }
+    };
+    if want_eza {
+        let mut argv = vec!["eza".to_string()];
+        if cfg.ls_icons {
+            argv.push("--icons".into());
+        }
+        argv.extend(args[1..].iter().cloned());
+        return Ok(Flow::Exec(argv));
+    }
+    if cfg.ls_backend == LsBackend::Eza {
+        eprintln!("ls: eza not found on PATH");
+        return Ok(Flow::Status(127));
+    }
+    Ok(builtin_ls(args, env, cfg.ls_icons))
+}
+
+/// Minimal ls: operands (files/dirs, default cwd), `-a` hidden,
+/// `-l` long, icons via a fixed glyph table.
+fn builtin_ls(args: &[String], env: &Env, icons: bool) -> Flow {
+    let mut all = false;
+    let mut long = false;
+    let mut operands: Vec<String> = Vec::new();
+    for a in &args[1..] {
+        if a.starts_with('-') && a.len() > 1 && a != "-" {
+            for c in a[1..].chars() {
+                match c {
+                    'a' => all = true,
+                    'l' => long = true,
+                    _ => {
+                        eprintln!("ls: -{c}: invalid option");
+                        return Flow::Status(2);
+                    }
+                }
+            }
+        } else {
+            operands.push(a.clone());
+        }
+    }
+    if operands.is_empty() {
+        operands.push(".".into());
+    }
+    let mut status = 0;
+    let mut first = true;
+    for op in &operands {
+        let p = std::path::Path::new(op);
+        if !first {
+            println!();
+        }
+        first = false;
+        let mut entries: Vec<std::fs::DirEntry> = if p.is_dir() {
+            match std::fs::read_dir(p) {
+                Ok(rd) => rd.flatten().collect(),
+                Err(e) => {
+                    eprintln!("ls: {op}: {e}");
+                    status = 1;
+                    continue;
+                }
+            }
+        } else if p.exists() {
+            println!("{}", ls_line(p, long, icons, env));
+            continue;
+        } else {
+            eprintln!("ls: {op}: No such file or directory");
+            status = 1;
+            continue;
+        };
+        entries.sort_by_key(|e| e.file_name());
+        if operands.len() > 1 {
+            println!("{op}:");
+        }
+        let mut buf = String::new();
+        for e in entries {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !all && name.starts_with('.') {
+                continue;
+            }
+            if long {
+                println!("{}", ls_line(&e.path(), true, icons, env));
+            } else {
+                if !buf.is_empty() {
+                    buf.push_str(if icons { "  " } else { " " });
+                }
+                buf.push_str(&ls_line(&e.path(), false, icons, env));
+            }
+        }
+        if !buf.is_empty() {
+            println!("{buf}");
+        }
+    }
+    Flow::Status(status)
+}
+
+/// One `ls -l` / plain entry line. Icons: fixed glyph table (dir,
+/// executable, file) — ponytail: no per-extension config; ceiling:
+/// icon map in config.toml.
+fn ls_line(p: &std::path::Path, long: bool, icons: bool, env: &Env) -> String {
+    let name = p
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| p.to_string_lossy().into_owned());
+    let meta = std::fs::symlink_metadata(p).ok();
+    let icon = if icons {
+        use std::os::unix::fs::PermissionsExt;
+        let g = match &meta {
+            Some(m) if m.is_dir() => "\u{f07b}", // folder
+            Some(m) if m.is_symlink() => "\u{f481}",
+            Some(m) if m.permissions().mode() & 0o111 != 0 => "\u{f179}",
+            Some(_) => "\u{f15c}",
+            None => "\u{f128}",
+        };
+        format!("{g} ")
+    } else {
+        String::new()
+    };
+    if !long {
+        return format!("{icon}{name}");
+    }
+    let (mode, size) = match &meta {
+        Some(m) => {
+            use std::os::unix::fs::PermissionsExt;
+            let md = m.permissions().mode();
+            let type_ch = if m.is_dir() {
+                'd'
+            } else if m.is_symlink() {
+                'l'
+            } else {
+                '-'
+            };
+            let mut s = String::with_capacity(10);
+            s.push(type_ch);
+            for shift in [6u32, 3, 0] {
+                let bits = (md >> shift) & 0o7;
+                s.push(if bits & 0o4 != 0 { 'r' } else { '-' });
+                s.push(if bits & 0o2 != 0 { 'w' } else { '-' });
+                s.push(if bits & 0o1 != 0 { 'x' } else { '-' });
+            }
+            (s, m.len())
+        }
+        None => ("?".to_string(), 0),
+    };
+    let _ = env;
+    format!("{icon}{mode} {size:>8} {name}")
+}
+
 fn loop_control(args: &[String], mk: fn(usize) -> Flow) -> Flow {
     let Some(a) = args.get(1) else {
         return mk(1);
@@ -798,6 +958,15 @@ fn cd(args: &[String], env: &mut Env) -> Flow {
         .unwrap_or_default();
 
     let (path, via_cdpath) = resolve_cd(&target, env);
+    let path = if !path.is_dir()
+        && crate::ucfg::load().cd_zoxide
+        && !target.starts_with('/')
+        && let Some(hit) = zoxide_query(&target, env)
+    {
+        hit
+    } else {
+        path
+    };
     if let Err(e) = std::env::set_current_dir(&path) {
         eprintln!("cd: {target}: {e}");
         return Flow::Status(1);
@@ -846,6 +1015,22 @@ fn resolve_cd(target: &str, env: &Env) -> (std::path::PathBuf, bool) {
         }
     }
     (direct, false)
+}
+
+/// `zoxide query -- <target>` → frecent directory (NOTES.md 1, link
+/// preferred: external binary, absent → None and plain cd errors).
+fn zoxide_query(target: &str, env: &Env) -> Option<std::path::PathBuf> {
+    brish_core::path::find_in_path("zoxide", env.get("PATH"))?;
+    let out = std::process::Command::new("zoxide")
+        .args(["query", "--", target])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8(out.stdout).ok()?;
+    let p = std::path::PathBuf::from(s.trim());
+    p.is_dir().then_some(p)
 }
 
 fn pwd(args: &[String], env: &Env) -> Flow {
@@ -1825,6 +2010,50 @@ mod tests {
 
     fn strs(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn builtin_ls_lists_and_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("b.txt"), "x").unwrap();
+        std::fs::write(dir.path().join("a.txt"), "y").unwrap();
+        std::fs::write(dir.path().join(".hidden"), "").unwrap();
+        let mut e = env();
+        let path = dir.path().to_str().unwrap().to_string();
+        // default: hides dotfiles, includes both files
+        let f = flow(BuiltIn::Ls, &args(&["ls", &path]), &mut e);
+        assert_eq!(f, Flow::Status(0));
+        // -a includes hidden (checked via ls_line unit below)
+        let line = ls_line(&dir.path().join("a.txt"), true, false, &e);
+        assert!(
+            line.contains("a.txt") && line.starts_with('-'),
+            "long line: {line}"
+        );
+        let dline = ls_line(dir.path(), true, false, &e);
+        assert!(dline.starts_with('d'), "dir line: {dline}");
+        // icon prefix when enabled
+        let iline = ls_line(&dir.path().join("a.txt"), false, true, &e);
+        assert!(iline.ends_with("a.txt"), "icon line: {iline}");
+        // missing operand → status 1
+        assert_eq!(
+            flow(
+                BuiltIn::Ls,
+                &args(&["ls", "/definitely/not/here-xyz"]),
+                &mut e
+            ),
+            Flow::Status(1)
+        );
+    }
+
+    #[test]
+    fn zoxide_query_absent_is_none() {
+        let e = env();
+        // PATH without zoxide (empty PATH in env() → default PATH may
+        // have it; force empty)
+        let mut e2 = env();
+        e2.set("PATH", "/definitely/not-a-dir").unwrap();
+        assert!(zoxide_query("anything", &e2).is_none());
+        let _ = e;
     }
 
     #[test]
