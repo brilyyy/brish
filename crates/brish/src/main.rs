@@ -63,18 +63,23 @@ struct Run {
 }
 
 /// Engine plugins wired into the REPL: (name, plugin, default enabled).
-/// `vi-mode` is opt-in — `enabled = ["vi-mode"]` (or `disabled`-minus
+/// `brish-vi` is opt-in — `enabled = ["brish-vi"]` (or `disabled`-minus
 /// emacs) selects it; `Registry::edit_mode_factory` takes the first.
-pub(crate) fn engine_plugins() -> [(&'static str, &'static dyn Plugin, bool); 8] {
+/// `brish-syntax-highlight` is NOT here: it carries runtime state
+/// (aliases + dynamic flag) and is built in `build_registry`.
+pub(crate) fn engine_plugins() -> [(&'static str, &'static dyn Plugin, bool); 7] {
     [
-        ("syntax-highlight", &highlight::SyntaxHighlightPlugin, true),
-        ("autosuggest", &hinter::AutosuggestPlugin, true),
-        ("emacs-mode", &edit_mode::EmacsModePlugin, true),
-        ("vi-mode", &edit_mode::ViModePlugin, false),
-        ("default-menus", &edit_mode::DefaultMenusPlugin, true),
-        ("history-search", &edit_mode::HistorySearchPlugin, true),
-        ("history", &edit_mode::HistoryPlugin, true),
-        ("validator", &edit_mode::ValidatorPlugin, true),
+        ("brish-autosuggest", &hinter::AutosuggestPlugin, true),
+        ("brish-emacs", &edit_mode::EmacsModePlugin, true),
+        ("brish-vi", &edit_mode::ViModePlugin, false),
+        ("brish-menus", &edit_mode::DefaultMenusPlugin, true),
+        (
+            "brish-history-search",
+            &edit_mode::HistorySearchPlugin,
+            true,
+        ),
+        ("brish-history", &edit_mode::HistoryPlugin, true),
+        ("brish-validator", &edit_mode::ValidatorPlugin, true),
     ]
 }
 
@@ -84,6 +89,7 @@ fn build_registry(
     config: &config::Config,
     stored: Vec<brish_builtin::store::Stored>,
     var_names: &Arc<Mutex<Vec<String>>>,
+    aliases: &Arc<Mutex<Vec<String>>>,
 ) -> brish_plugin::Registry {
     let mut registry = brish_plugin::Registry::default();
     // Prompt catalog first (themes + segments; order = segment order),
@@ -107,6 +113,16 @@ fn build_registry(
         registry.install(&default_completion);
     } else {
         registry.record(completion::DEFAULT_COMPLETION, false);
+    }
+    // Syntax highlighter carries runtime state (aliases + dynamic flag).
+    let syntax = highlight::SyntaxHighlightPlugin {
+        aliases: Arc::clone(aliases),
+        dynamic: config.dynamic_highlight,
+    };
+    if config.plugin_enabled(syntax.name(), true) {
+        registry.install(&syntax);
+    } else {
+        registry.record(syntax.name(), false);
     }
     for (name, plugin, default_enabled) in engine_plugins() {
         if config.plugin_enabled(name, default_enabled) {
@@ -197,6 +213,8 @@ fn main() {
     // The var-name snapshot is shared between the REPL (writer) and the
     // default completion provider (reader).
     let var_names: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    // Alias snapshot for dynamic highlighting (refreshed each prompt).
+    let aliases: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     // Store plugins are discovered before config loads so their names
     // count as known (disabling an installed plugin must not warn).
     let (stored, store_warnings) = brish_builtin::store::scan(&brish_builtin::paths::plugins_dir());
@@ -205,7 +223,7 @@ fn main() {
     }
     let store_names: Vec<&str> = stored.iter().map(|p| p.manifest.name.as_str()).collect();
     let config = config::load_with_known(&store_names);
-    let registry = build_registry(&config, stored, &var_names);
+    let registry = build_registry(&config, stored, &var_names, &aliases);
     // Theme: --theme > $BRISH_THEME > config > default, validated
     // against the registry (unknown → warn + default).
     apply_theme(&mut engine, &cli, &config, &registry);
@@ -215,6 +233,7 @@ fn main() {
     // menus, edit mode, completer box) still need a restart.
     {
         let var_names = Arc::clone(&var_names);
+        let aliases = Arc::clone(&aliases);
         let cli_theme = cli.theme.clone();
         engine.set_relconf(Arc::new(move || {
             let (stored, warns) = brish_builtin::store::scan(&brish_builtin::paths::plugins_dir());
@@ -224,7 +243,7 @@ fn main() {
             let names: Vec<String> = stored.iter().map(|p| p.manifest.name.clone()).collect();
             let refs: Vec<&str> = names.iter().map(String::as_str).collect();
             let cfg = config::load_with_known(&refs);
-            let reg = build_registry(&cfg, stored, &var_names);
+            let reg = build_registry(&cfg, stored, &var_names, &aliases);
             let theme = resolve_theme(&cli_theme, &cfg, &reg);
             (reg, theme)
         }));
@@ -247,7 +266,7 @@ fn main() {
             }
         }
     } else if cli.interactive || std::io::stdin().is_terminal() {
-        repl(&mut engine, &cli, var_names, &config)
+        repl(&mut engine, &cli, var_names, aliases, &config)
     } else {
         let mut src = String::new();
         match std::io::stdin().read_to_string(&mut src) {
@@ -327,6 +346,7 @@ fn repl(
     engine: &mut Engine,
     cli: &Cli,
     var_names: Arc<Mutex<Vec<String>>>,
+    aliases: Arc<Mutex<Vec<String>>>,
     cfg: &config::Config,
 ) -> i32 {
     // Set `$-`'s `i` before rc loads: aliases defined in `.brishrc`
@@ -353,7 +373,13 @@ fn repl(
     }
 
     if interactive && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-        return edit_repl(engine, var_names, &cfg.prompt, cfg.theme_prompt.as_deref());
+        return edit_repl(
+            engine,
+            var_names,
+            aliases,
+            &cfg.prompt,
+            cfg.theme_prompt.as_deref(),
+        );
     }
     plain_repl(engine, interactive)
 }
@@ -363,6 +389,7 @@ fn repl(
 fn edit_repl(
     engine: &mut Engine,
     var_names: Arc<Mutex<Vec<String>>>,
+    aliases: Arc<Mutex<Vec<String>>>,
     chrome: &config::PromptChrome,
     template: Option<&str>,
 ) -> i32 {
@@ -406,7 +433,7 @@ fn edit_repl(
         |name: &str| -> bool { registry.installed().iter().any(|(n, on)| n == name && *on) };
     // Ctrl-R opens the history menu; without the plugin reedline's
     // default inline SearchHistory binding stays.
-    if installed("history-search") {
+    if installed("brish-history-search") {
         keybindings.add_binding(
             KeyModifiers::CONTROL,
             KeyCode::Char('r'),
@@ -461,6 +488,11 @@ fn edit_repl(
             let mut names = var_names.lock().unwrap_or_else(|e| e.into_inner());
             names.clear();
             names.extend(engine.env.vars_iter().map(|(k, _)| k.clone()));
+            // Alias snapshot for the dynamic highlighter (patina-style
+            // "known callable" check).
+            let mut al = aliases.lock().unwrap_or_else(|e| e.into_inner());
+            al.clear();
+            al.extend(engine.env.aliases.keys().cloned());
         }
         // bash prints completed/stopped job notices before each prompt.
         // job_notifications also drains pending signal traps (idle

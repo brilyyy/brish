@@ -27,8 +27,9 @@ brish --theme plain -c 'hi'  # pick a prompt theme for this run
 echo 'echo from stdin' | brish
 ```
 
-Interactive default theme is **briiish**: `❯` arrow (green on
-success, red on failure) + cyan cwd basename + git segment. `theme`
+Interactive default theme is **briiish-minimal** (bare cwd). Also
+builtin: `briiish-plain` (`$ `), `briiish-nerd-font` (folder glyph),
+`briiish-emoji` (✅/❌). Set with `theme NAME` or `[theme] name`. `theme`
 lists/switches themes, `plugin` lists installed plugins. `PS1`/`PS2`
 set in the environment override the theme as literal strings;
 `NO_COLOR` disables ANSI. Tab runs the completion provider chain
@@ -48,7 +49,7 @@ Files (all optional, `~/.config/brish/`):
 
 ```toml
 [theme]
-name = "briiish"                     # theme selector
+name = "briiish-minimal"             # briiish-{minimal,plain,nerd-font,emoji}
 prompt = "{arrow} {cwd} {segments}\n❯ "   # optional template (\n = multiline)
 
 [prompt]
@@ -59,7 +60,7 @@ multiline = "::: "
 completion_description = "darkgray"  # or #rrggbb / off
 
 [plugins]
-enabled = ["vi-mode"]     # exact list; or disabled = [...]
+enabled = ["brish-vi"]     # exact list; or disabled = [...]
 
 [cd]
 zoxide = "auto"           # cd falls back to `zoxide query` when present
@@ -70,6 +71,9 @@ icons = true
 
 [output]
 table = "auto"            # aligned plugin/theme/jobs lists
+
+[highlight]
+dynamic = true            # missing commands red, existing paths underlined
 
 [store]
 index = "https://github.com/you/index"

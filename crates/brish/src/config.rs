@@ -20,6 +20,15 @@ pub struct ConfigFile {
     pub theme: Option<ThemeSection>,
     pub plugins: Option<PluginsSection>,
     pub prompt: Option<PromptSection>,
+    pub highlight: Option<HighlightSection>,
+}
+
+/// `[highlight]` — zsh-patina-style dynamic highlighting knobs.
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+pub struct HighlightSection {
+    /// Invalid commands red + existing paths underlined (default on).
+    pub dynamic: Option<bool>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -58,7 +67,6 @@ pub struct PluginsSection {
 }
 
 /// Effective configuration after parsing + validation.
-#[derive(Default)]
 pub struct Config {
     /// `[theme] name`, if any (priority: `--theme` > env > this).
     pub theme: Option<String>,
@@ -66,8 +74,23 @@ pub struct Config {
     pub theme_prompt: Option<String>,
     /// Prompt chrome with defaults applied.
     pub prompt: PromptChrome,
+    /// `[highlight] dynamic` (zsh-patina-style): default true.
+    pub dynamic_highlight: bool,
     enabled: Option<Vec<String>>,
     disabled: Option<Vec<String>>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            theme: None,
+            theme_prompt: None,
+            prompt: PromptChrome::default(),
+            dynamic_highlight: true,
+            enabled: None,
+            disabled: None,
+        }
+    }
 }
 
 /// Resolved indicator strings. Empty = toggle off (renders nothing).
@@ -181,10 +204,12 @@ pub fn load_from(path: &Path, known: &[&str]) -> Config {
         eprintln!("brish: config: [plugins] enabled overrides disabled");
         disabled = None;
     }
+    let dynamic_highlight = file.highlight.and_then(|h| h.dynamic).unwrap_or(true);
     let cfg = Config {
         theme,
         theme_prompt,
         prompt,
+        dynamic_highlight,
         enabled,
         disabled,
     };

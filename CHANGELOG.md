@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.0 — themes, prefixes, dynamic highlight (unreleased)
+
+### Added
+- Dynamic syntax highlighting (zsh-patina reference): missing commands
+  render **red**, resolvable callables (builtin/alias/`$PATH`) cyan,
+  existing files/dirs in argument position **underlined**; precommands
+  (`sudo`, `env`, …) keep command position. `[highlight] dynamic`
+  (default `true`); skipped above 2000-byte lines; `$PATH` lookups
+  cached per session; aliases snapshotted each prompt.
+
+### Changed
+- **Themes**: builtin set is now exactly `briiish-minimal` (default),
+  `briiish-plain`, `briiish-nerd-font`, `briiish-emoji`. Replaced
+  `briiish`/`robbyrussell`/`minimal`/`plain`.
+- **Plugin names** carry a `brish-` prefix: `brish-git`, `brish-venv`,
+  `brish-aws`, `brish-docker`, `brish-kubectx`, `brish-themes`,
+  `brish-announce-cd`, `brish-completion`, `brish-syntax-highlight`,
+  `brish-autosuggest`, `brish-emacs`, `brish-vi`, `brish-menus`,
+  `brish-history-search`, `brish-history`, `brish-validator`,
+  `brish-pack-*`. Store (user-installed) plugin names unchanged.
+  **Breaking**: update `[plugins] enabled/disabled` lists.
+
 ## 0.1.0 — NOTES.md batch (unreleased)
 
 Daily-driver customizability pass (`NOTES.md`).

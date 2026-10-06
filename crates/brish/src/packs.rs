@@ -3,7 +3,7 @@
 //!
 //! Pack name = `pack-<command>` so they don't clash with store
 //! plugin names. Enable/disable via `config.toml [plugins]`
-//! `enabled = ["pack-git", "pack-docker"]` or
+//! `enabled = ["brish-pack-git", "brish-pack-docker"]` or
 //! `disabled = ["pack-kubectl"]`.
 
 use brish_plugin::{Completion, CompletionCtx, Plugin, Registry};
@@ -103,7 +103,7 @@ pub fn catalog() -> Vec<PackPlugin> {
 /// Pack definitions (command, subcommands, flags). Content is intentionally
 /// practical not exhaustive — common daily workflow first.
 const GIT_PACK: Pack = Pack {
-    name: "pack-git",
+    name: "brish-pack-git",
     command: "git",
     subcommands: &[
         ("add", "Add file contents to the index"),
@@ -156,7 +156,7 @@ const GIT_PACK: Pack = Pack {
 };
 
 const DOCKER_PACK: Pack = Pack {
-    name: "pack-docker",
+    name: "brish-pack-docker",
     command: "docker",
     subcommands: &[
         ("build", "Build an image from a Dockerfile"),
@@ -197,7 +197,7 @@ const DOCKER_PACK: Pack = Pack {
 };
 
 const CARGO_PACK: Pack = Pack {
-    name: "pack-cargo",
+    name: "brish-pack-cargo",
     command: "cargo",
     subcommands: &[
         ("build", "Compile the current package"),
@@ -244,7 +244,7 @@ const CARGO_PACK: Pack = Pack {
 };
 
 const KUBECTL_PACK: Pack = Pack {
-    name: "pack-kubectl",
+    name: "brish-pack-kubectl",
     command: "kubectl",
     subcommands: &[
         ("get", "Display one or many resources"),
@@ -302,7 +302,7 @@ const KUBECTL_PACK: Pack = Pack {
 };
 
 const AWS_PACK: Pack = Pack {
-    name: "pack-aws",
+    name: "brish-pack-aws",
     command: "aws",
     subcommands: &[
         ("s3", "Manage S3 buckets and objects"),
@@ -344,7 +344,7 @@ const AWS_PACK: Pack = Pack {
 };
 
 const NPM_PACK: Pack = Pack {
-    name: "pack-npm",
+    name: "brish-pack-npm",
     command: "npm",
     subcommands: &[
         ("install", "Install dependencies"),
@@ -382,7 +382,7 @@ const NPM_PACK: Pack = Pack {
 };
 
 const MAKE_PACK: Pack = Pack {
-    name: "pack-make",
+    name: "brish-pack-make",
     command: "make",
     subcommands: &[], // make targets are project-specific; flags only
     flags: &[
@@ -409,7 +409,7 @@ const MAKE_PACK: Pack = Pack {
 };
 
 const MAN_PACK: Pack = Pack {
-    name: "pack-man",
+    name: "brish-pack-man",
     command: "man",
     subcommands: &[
         ("1", "User commands"),

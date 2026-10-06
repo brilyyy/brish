@@ -1,8 +1,8 @@
-//! The four built-in prompt themes.
+//! The four built-in prompt themes: `briiish-*` only (NOTES follow-up).
 //!
 //! A theme owns the whole left-prompt layout; registered
 //! [`PromptSegment`](brish_plugin::PromptSegment)s are appended wherever the
-//! theme decides (briiish/robbyrussell: after the cwd, others: ignored).
+//! theme decides (arrow themes: after the cwd, minimal/plain: ignored).
 
 use brish_plugin::{PromptSegment, Theme, color_enabled};
 
@@ -36,89 +36,48 @@ fn seg_text(status: i32, cwd: &std::path::Path, segments: &[&dyn PromptSegment])
     out
 }
 
-/// robbyrussell-style: `➜ dir [segments] ` — arrow green/red by status,
-/// cwd cyan.
-pub struct Robbyrussell;
-
-impl Theme for Robbyrussell {
-    fn name(&self) -> &str {
-        "robbyrussell"
-    }
-
-    fn render(
-        &self,
-        status: i32,
-        cwd: &std::path::Path,
-        segments: &[&dyn PromptSegment],
-    ) -> String {
-        let dir = basename(cwd);
-        let segs = seg_text(status, cwd, segments);
-        let mut out = String::from("➜ ");
-        if color_enabled() {
-            let arrow = if status == 0 { GREEN } else { RED };
-            out.clear();
-            out.push_str(arrow);
-            out.push_str("➜ ");
-            out.push_str(RESET);
-            out.push_str(CYAN);
-            out.push_str(dir);
-            out.push_str(RESET);
-        } else {
-            out.push_str(dir);
-        }
-        if !segs.is_empty() {
-            out.push(' ');
-            out.push_str(&segs);
-        }
+/// Shared arrow layout: `{color}{glyph} {RESET}{CYAN}{dir}{RESET}{segs} `.
+fn arrow_prompt(
+    status: i32,
+    cwd: &std::path::Path,
+    segments: &[&dyn PromptSegment],
+    glyph: &str,
+    dir_prefix: &str,
+) -> String {
+    let dir = basename(cwd);
+    let segs = seg_text(status, cwd, segments);
+    let mut out = String::new();
+    if color_enabled() {
+        let arrow = if status == 0 { GREEN } else { RED };
+        out.push_str(arrow);
+        out.push_str(glyph);
         out.push(' ');
-        out
-    }
-}
-/// briiish-style: `❯ dir [segments] ` — arrow green/red by status,
-/// cwd cyan.
-pub struct Briiish;
-
-impl Theme for Briiish {
-    fn name(&self) -> &str {
-        "briiish"
-    }
-
-    fn render(
-        &self,
-        status: i32,
-        cwd: &std::path::Path,
-        segments: &[&dyn PromptSegment],
-    ) -> String {
-        let dir = basename(cwd);
-        let segs = seg_text(status, cwd, segments);
-        let mut out = String::from("❯ ");
-        if color_enabled() {
-            let arrow = if status == 0 { GREEN } else { RED };
-            out.clear();
-            out.push_str(arrow);
-            out.push_str("❯ ");
-            out.push_str(RESET);
-            out.push_str(CYAN);
-            out.push_str(dir);
-            out.push_str(RESET);
-        } else {
-            out.push_str(dir);
-        }
-        if !segs.is_empty() {
-            out.push(' ');
-            out.push_str(&segs);
-        }
+        out.push_str(RESET);
+        out.push_str(CYAN);
+        out.push_str(dir_prefix);
+        out.push_str(dir);
+        out.push_str(RESET);
+    } else {
+        out.push_str(glyph);
         out.push(' ');
-        out
+        out.push_str(dir_prefix);
+        out.push_str(dir);
     }
+    if !segs.is_empty() {
+        out.push(' ');
+        out.push_str(&segs);
+    }
+    out.push(' ');
+    out
 }
 
-/// `{basename} ` — directory only, no color.
-pub struct Minimal;
+/// `{basename} ` — directory only, no color. Default theme: no font
+/// requirements.
+pub struct BriiishMinimal;
 
-impl Theme for Minimal {
+impl Theme for BriiishMinimal {
     fn name(&self) -> &str {
-        "minimal"
+        "briiish-minimal"
     }
 
     fn render(
@@ -132,11 +91,11 @@ impl Theme for Minimal {
 }
 
 /// `$ ` — POSIX-style.
-pub struct Plain;
+pub struct BriiishPlain;
 
-impl Theme for Plain {
+impl Theme for BriiishPlain {
     fn name(&self) -> &str {
-        "plain"
+        "briiish-plain"
     }
 
     fn render(
@@ -149,19 +108,57 @@ impl Theme for Plain {
     }
 }
 
-/// Registers all themes (catalog plugin `default-themes`).
-pub struct DefaultThemes;
+/// Nerd-font: `❯  dir [segments] ` — folder glyph before cwd.
+pub struct BriiishNerdFont;
 
-impl brish_plugin::Plugin for DefaultThemes {
+impl Theme for BriiishNerdFont {
     fn name(&self) -> &str {
-        "default-themes"
+        "briiish-nerd-font"
+    }
+
+    fn render(
+        &self,
+        status: i32,
+        cwd: &std::path::Path,
+        segments: &[&dyn PromptSegment],
+    ) -> String {
+        // U+F07B nf-fa-folder — requires a Nerd Font.
+        arrow_prompt(status, cwd, segments, "❯", "\u{f07b} ")
+    }
+}
+
+/// Emoji: `✅ dir [segments] ` — status emoji instead of an arrow.
+pub struct BriiishEmoji;
+
+impl Theme for BriiishEmoji {
+    fn name(&self) -> &str {
+        "briiish-emoji"
+    }
+
+    fn render(
+        &self,
+        status: i32,
+        cwd: &std::path::Path,
+        segments: &[&dyn PromptSegment],
+    ) -> String {
+        let glyph = if status == 0 { "\u{2705}" } else { "\u{274c}" };
+        arrow_prompt(status, cwd, segments, glyph, "")
+    }
+}
+
+/// Registers all themes (catalog plugin `brish-themes`).
+pub struct BrishThemes;
+
+impl brish_plugin::Plugin for BrishThemes {
+    fn name(&self) -> &str {
+        "brish-themes"
     }
 
     fn install(&self, reg: &mut brish_plugin::Registry) {
-        reg.themes.push(Box::new(Briiish));
-        reg.themes.push(Box::new(Robbyrussell));
-        reg.themes.push(Box::new(Minimal));
-        reg.themes.push(Box::new(Plain));
+        reg.themes.push(Box::new(BriiishMinimal));
+        reg.themes.push(Box::new(BriiishPlain));
+        reg.themes.push(Box::new(BriiishNerdFont));
+        reg.themes.push(Box::new(BriiishEmoji));
     }
 }
 
@@ -177,59 +174,60 @@ mod tests {
     }
 
     #[test]
-    fn robbyrussell_shows_dir_and_segments() {
+    fn arrow_themes_show_dir_and_segments() {
         let cwd = std::path::Path::new("/home/u/brish");
         let seg = Seg("git:(main)");
-        let out = Robbyrussell.render(0, cwd, &[&seg]);
-        assert!(out.contains("brish"), "{out:?}");
-        assert!(out.contains("git:(main)"), "{out:?}");
-        assert!(out.ends_with(' '), "{out:?}");
-        if color_enabled() {
-            assert!(out.starts_with(GREEN), "status 0 arrow: {out:?}");
-            assert!(out.contains(CYAN), "cwd cyan: {out:?}");
+        let themes: [&dyn Theme; 2] = [&BriiishNerdFont, &BriiishEmoji];
+        for t in themes {
+            let out = t.render(0, cwd, &[&seg]);
+            assert!(out.contains("brish"), "{}: {out:?}", t.name());
+            assert!(out.contains("git:(main)"), "{}: {out:?}", t.name());
+            assert!(out.ends_with(' '), "{}: {out:?}", t.name());
         }
-        let bad = Robbyrussell.render(1, cwd, &[]);
-        if color_enabled() {
-            assert!(bad.starts_with(RED), "status 1 arrow: {bad:?}");
-        }
+        let bad = BriiishNerdFont.render(1, cwd, &[]);
         assert!(!bad.contains("git:(main)"), "no segments when none given");
+        if color_enabled() {
+            let out = BriiishNerdFont.render(0, cwd, &[]);
+            assert!(out.contains(GREEN), "status 0: {out:?}");
+            let bad = BriiishNerdFont.render(1, cwd, &[]);
+            assert!(bad.contains(RED), "status 1: {bad:?}");
+        }
     }
 
     #[test]
-    fn briiish_shows_dir_and_segments() {
-        let cwd = std::path::Path::new("/home/u/brish");
-        let seg = Seg("git:(main)");
-        let out = Briiish.render(0, cwd, &[&seg]);
-        assert!(out.contains("brish"), "{out:?}");
-        assert!(out.contains("git:(main)"), "{out:?}");
-        assert!(out.ends_with(' '), "{out:?}");
-        if color_enabled() {
-            assert!(out.starts_with(GREEN), "status 0 arrow: {out:?}");
-            assert!(out.contains(CYAN), "cwd cyan: {out:?}");
-        }
-        let bad = Briiish.render(1, cwd, &[]);
-        if color_enabled() {
-            assert!(bad.starts_with(RED), "status 1 arrow: {bad:?}");
-        }
-        assert!(!bad.contains("git:(main)"), "no segments when none given");
+    fn emoji_glyph_follows_status() {
+        let cwd = std::path::Path::new("/x/y");
+        let ok = BriiishEmoji.render(0, cwd, &[]);
+        let bad = BriiishEmoji.render(1, cwd, &[]);
+        assert!(ok.contains("\u{2705}"), "{ok:?}");
+        assert!(bad.contains("\u{274c}"), "{bad:?}");
+        assert!(!ok.contains("\u{274c}"), "{ok:?}");
     }
 
     #[test]
     fn minimal_and_plain_ignore_segments() {
         let cwd = std::path::Path::new("/x/y");
         let seg = Seg("ignored");
-        assert_eq!(Minimal.render(0, cwd, &[&seg]), "y ");
-        assert_eq!(Plain.render(0, cwd, &[&seg]), "$ ");
+        assert_eq!(BriiishMinimal.render(0, cwd, &[&seg]), "y ");
+        assert_eq!(BriiishPlain.render(0, cwd, &[&seg]), "$ ");
     }
 
     #[test]
-    fn default_themes_plugin_registers_in_order() {
+    fn brish_themes_plugin_registers_in_order() {
         let mut reg = brish_plugin::Registry::default();
-        let p = DefaultThemes;
+        let p = BrishThemes;
         reg.install(&p);
         let names: Vec<&str> = reg.themes.iter().map(|t| t.name()).collect();
-        assert_eq!(names, vec!["briiish", "robbyrussell", "minimal", "plain"]);
-        assert_eq!(reg.installed(), &[("default-themes".to_string(), true)]);
+        assert_eq!(
+            names,
+            vec![
+                "briiish-minimal",
+                "briiish-plain",
+                "briiish-nerd-font",
+                "briiish-emoji"
+            ]
+        );
+        assert_eq!(reg.installed(), &[("brish-themes".to_string(), true)]);
     }
 
     #[test]

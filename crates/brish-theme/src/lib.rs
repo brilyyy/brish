@@ -19,7 +19,7 @@ use aws::AwsPrompt;
 use docker::DockerPrompt;
 use git::GitPrompt;
 use kubectx::KubeCtxPrompt;
-use themes::DefaultThemes;
+use themes::BrishThemes;
 use venv::VenvPrompt;
 
 /// Prompt catalog, in registration order. Segment order = prompt
@@ -28,7 +28,7 @@ pub fn catalog() -> Vec<CatalogEntry> {
     vec![
         CatalogEntry {
             default_enabled: true,
-            plugin: Box::new(DefaultThemes),
+            plugin: Box::new(BrishThemes),
         },
         CatalogEntry {
             default_enabled: true,

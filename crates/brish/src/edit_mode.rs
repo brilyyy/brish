@@ -10,7 +10,7 @@ pub struct EmacsModePlugin;
 
 impl brish_plugin::Plugin for EmacsModePlugin {
     fn name(&self) -> &str {
-        "emacs-mode"
+        "brish-emacs"
     }
 
     fn install(&self, reg: &mut brish_plugin::Registry) {
@@ -29,7 +29,7 @@ pub struct ViModePlugin;
 
 impl brish_plugin::Plugin for ViModePlugin {
     fn name(&self) -> &str {
-        "vi-mode"
+        "brish-vi"
     }
 
     fn install(&self, reg: &mut brish_plugin::Registry) {
@@ -49,7 +49,7 @@ pub struct DefaultMenusPlugin;
 
 impl brish_plugin::Plugin for DefaultMenusPlugin {
     fn name(&self) -> &str {
-        "default-menus"
+        "brish-menus"
     }
 
     fn install(&self, reg: &mut brish_plugin::Registry) {
@@ -76,7 +76,7 @@ pub struct HistorySearchPlugin;
 
 impl brish_plugin::Plugin for HistorySearchPlugin {
     fn name(&self) -> &str {
-        "history-search"
+        "brish-history-search"
     }
 
     fn install(&self, reg: &mut brish_plugin::Registry) {
@@ -95,7 +95,7 @@ pub struct HistoryPlugin;
 
 impl brish_plugin::Plugin for HistoryPlugin {
     fn name(&self) -> &str {
-        "history"
+        "brish-history"
     }
 
     fn install(&self, reg: &mut brish_plugin::Registry) {
@@ -120,7 +120,7 @@ pub struct ValidatorPlugin;
 
 impl brish_plugin::Plugin for ValidatorPlugin {
     fn name(&self) -> &str {
-        "validator"
+        "brish-validator"
     }
 
     fn install(&self, reg: &mut brish_plugin::Registry) {

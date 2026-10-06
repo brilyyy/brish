@@ -40,7 +40,7 @@ impl PromptSegment for AwsPrompt {
 
 impl Plugin for AwsPrompt {
     fn name(&self) -> &str {
-        "aws-prompt"
+        "brish-aws"
     }
 
     fn install(&self, reg: &mut brish_plugin::Registry) {

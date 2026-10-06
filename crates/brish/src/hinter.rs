@@ -62,7 +62,7 @@ pub struct AutosuggestPlugin;
 
 impl brish_plugin::Plugin for AutosuggestPlugin {
     fn name(&self) -> &str {
-        "autosuggest"
+        "brish-autosuggest"
     }
 
     fn install(&self, reg: &mut brish_plugin::Registry) {

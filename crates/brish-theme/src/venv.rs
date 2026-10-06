@@ -38,7 +38,7 @@ impl PromptSegment for VenvPrompt {
 
 impl Plugin for VenvPrompt {
     fn name(&self) -> &str {
-        "venv-prompt"
+        "brish-venv"
     }
 
     fn install(&self, reg: &mut brish_plugin::Registry) {

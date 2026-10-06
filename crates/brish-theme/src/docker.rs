@@ -34,7 +34,7 @@ impl PromptSegment for DockerPrompt {
 
 impl Plugin for DockerPrompt {
     fn name(&self) -> &str {
-        "docker-prompt"
+        "brish-docker"
     }
 
     fn install(&self, reg: &mut brish_plugin::Registry) {

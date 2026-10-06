@@ -28,9 +28,9 @@ below); each is a directory with a `plugin.toml` manifest.
 name = "plain"
 
 [plugins]
-disabled = ["git-prompt"]     # defaults minus these
+disabled = ["brish-git"]     # defaults minus these
 # or
-enabled = ["default-themes"]  # exact list; replaces defaults
+enabled = ["brish-themes"]  # exact list; replaces defaults
 ```
 
 - `enabled` (exact list) wins over `disabled`.
@@ -73,7 +73,7 @@ impl ChdirHook for AnnounceCd {
     }
 }
 impl Plugin for AnnounceCd {
-    fn name(&self) -> &str { "announce-cd" }
+    fn name(&self) -> &str { "brish-announce-cd" }
     fn install(&self, reg: &mut Registry) {
         reg.on_chdir.push(Box::new(AnnounceCd));
     }
@@ -136,7 +136,7 @@ warns and the last one wins.
 
 A theme owns the whole left-prompt layout; registered
 [`PromptSegment`](crate::PromptSegment)s are appended wherever the
-theme decides (briiish/robbyrussell: after the cwd, minimal/plain:
+theme decides (arrow themes: after the cwd, minimal/plain:
 ignored).
 
 ### The `Theme` trait
@@ -165,10 +165,10 @@ impl Plugin for MyPlugin {
 
 | Name | Visual | Source |
 |---|---|---|
-| **briiish** (default) | `❯` arrow (green on status 0, red otherwise) + cyan cwd basename + segments | `crates/brish-plugin/src/builtin/themes.rs` (`Briiish`) |
-| **robbyrussell** | `➜` arrow (green/red) + cyan cwd basename + segments | same file (`Robbyrussell`) |
-| **minimal** | `{basename} ` — directory only, no color | same file (`Minimal`) |
-| **plain** | `$ ` — POSIX-style | same file (`Plain`) |
+| **briiish-minimal** (default) | `{basename} ` — directory only, no color | `crates/brish-theme/src/themes.rs` (`BriiishMinimal`) |
+| **briiish-plain** | `$ ` — POSIX-style | same file (`BriiishPlain`) |
+| **briiish-nerd-font** | `❯ ` + Nerd-Font folder glyph + cyan cwd + segments | same file (`BriiishNerdFont`) |
+| **briiish-emoji** | `✅`/`❌` status emoji + cyan cwd + segments | same file (`BriiishEmoji`) |
 
 Helpers you can reuse: `basename(cwd)` (cwd basename with `.`
 fallback) and `seg_text(status, cwd, segments)` (non-empty
@@ -206,8 +206,8 @@ Precedence (highest first): `PS2` env while a continuation is
 pending, `PS1` env (literal string), else the active theme looked
 up by name in the registry. The name comes from `--theme NAME` >
 `BRISH_THEME` env > `[theme] name` in `config.toml` > `theme`
-builtin selection > `DEFAULT_THEME` (`"briiish"`). Unknown names
-warn and fall back to `briiish`.
+builtin selection > `DEFAULT_THEME` (`"briiish-minimal"`). Unknown names
+warn and fall back to `briiish-minimal`.
 
 Registering a `Theme` makes it selectable: `theme mytheme`,
 `BRISH_THEME=mytheme`, `brish --theme mytheme`, or

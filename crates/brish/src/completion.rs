@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Catalog name of the built-in completion plugin.
-pub const DEFAULT_COMPLETION: &str = "default-completion";
+pub const DEFAULT_COMPLETION: &str = "brish-completion";
 
 /// Commands the engine intercepts itself (exec.rs) — not in `BuiltIn`.
 pub(crate) const ENGINE_COMMANDS: &[&str] =

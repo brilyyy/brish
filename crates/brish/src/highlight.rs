@@ -1,16 +1,26 @@
 //! Syntax highlighting for the interactive REPL (plan §5.1), wired by
-//! the config-gated `syntax-highlight` plugin.
+//! the config-gated `brish-syntax-highlight` plugin.
 //!
-//! Token-level coloring over the real lexer: keywords, builtins,
-//! strings, `$vars`, substitutions, operators/redirections, comments.
-//! Incomplete input (unterminated `$(`, quote) falls back to the
-//! longest prefix that lexes, with the dangling tail marked as an
-//! unclosed token. The styled buffer always concatenates back to the
-//! exact input line.
+//! Static (always): token-level coloring over the real lexer —
+//! keywords, builtins, strings, `$vars`, substitutions,
+//! operators/redirections, comments.
+//!
+//! Dynamic (`[highlight] dynamic = true`, default; zsh-patina
+//! reference): command words are cyan when resolvable (builtin / alias
+//! / `$PATH` / executable) and **red when missing**; non-command words
+//! that name an existing file/dir are **underlined**. Disabled above
+//! [`MAX_DYNAMIC_LEN`] bytes (patina's `max_line_length` idea).
+//!
+//! Incomplete input falls back to the longest prefix that lexes, with
+//! the dangling tail marked unclosed. The styled buffer always
+//! concatenates back to the exact input line.
 
 use brish_core::lexer::{self, Op, Part, Tok, Token, Word};
 use nu_ansi_term::{Color, Style};
 use reedline::{Highlighter, StyledText};
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 /// POSIX/bash reserved words, colored at word level.
 const KEYWORDS: &[&str] = &[
@@ -18,17 +28,77 @@ const KEYWORDS: &[&str] = &[
     "esac", "function", "select", "time",
 ];
 
+/// Precommands: the *next* word is still a callable (patina
+/// `highlighting.precommands`, mode=default subset).
+const PRECOMMANDS: &[&str] = &[
+    "sudo", "env", "nohup", "nice", "command", "exec", "builtin", "doas", "strace",
+];
+
+/// Skip dynamic lookups beyond this many bytes (patina `max_line_length`).
+const MAX_DYNAMIC_LEN: usize = 2000;
+
 /// How far we walk back from an unlexable tail before giving up.
 const MAX_TRIM: usize = 128;
 
-pub struct BrishHighlighter;
+pub struct BrishHighlighter {
+    /// `[highlight] dynamic` (default true).
+    pub dynamic: bool,
+    /// Live alias names — refreshed by the REPL each prompt (shared
+    /// with completion's var snapshot pattern).
+    pub aliases: Arc<Mutex<Vec<String>>>,
+    /// `$PATH` command-existence cache: name → found.
+    cmd_cache: Mutex<HashMap<String, bool>>,
+}
+
+impl BrishHighlighter {
+    pub fn new(dynamic: bool, aliases: Arc<Mutex<Vec<String>>>) -> Self {
+        Self {
+            dynamic,
+            aliases,
+            cmd_cache: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn known_command(&self, name: &str) -> bool {
+        if crate::completion::is_builtin(name) {
+            return true;
+        }
+        if let Ok(map) = self.cmd_cache.lock()
+            && let Some(hit) = map.get(name)
+        {
+            return *hit;
+        }
+        let found = if name.contains('/') {
+            Path::new(name).is_file()
+        } else {
+            brish_core::path::find_in_path(name, std::env::var("PATH").ok().as_deref()).is_some()
+        };
+        if let Ok(mut map) = self.cmd_cache.lock() {
+            // ponytail: unbounded cache; a shell session adds a few
+            // dozen names. Ceiling: cap at 4k entries + clear on PATH change.
+            map.insert(name.to_string(), found);
+        }
+        found
+    }
+
+    fn is_alias(&self, name: &str) -> bool {
+        self.aliases
+            .lock()
+            .map(|a| a.iter().any(|x| x == name))
+            .unwrap_or(false)
+    }
+}
 
 impl Highlighter for BrishHighlighter {
     fn highlight(&self, line: &str, _cursor: usize) -> StyledText {
         let color = brish_plugin::color_enabled();
+        let dyn_on = color && self.dynamic && line.len() <= MAX_DYNAMIC_LEN;
         let mut out = StyledText::new();
         let (tokens, incomplete) = lex_best(line);
         let mut pos = 0usize;
+        // Command-position state: true at line start and after
+        // ; && || | ( newline; stays true through a precommand word.
+        let mut cmd_pos = true;
         for t in &tokens {
             let start = t.span.start.min(line.len());
             let end = t.span.end.clamp(start, line.len());
@@ -36,8 +106,33 @@ impl Highlighter for BrishHighlighter {
                 gap(&mut out, &line[pos..start], color);
             }
             if end > start {
-                let style = style_for(&t.tok, &line[start..end], color);
-                out.push((style, line[start..end].to_string()));
+                let src = &line[start..end];
+                let style = match &t.tok {
+                    Tok::Word(w) => {
+                        let s = self.word_style(w, src, cmd_pos, dyn_on);
+                        if dyn_on && plain(src) && cmd_pos && PRECOMMANDS.contains(&src) {
+                            // precommand: next word is still a callable
+                        } else {
+                            cmd_pos = false;
+                        }
+                        s
+                    }
+                    Tok::Op(op) => {
+                        if matches!(
+                            op,
+                            Op::Pipe | Op::And | Op::Or | Op::Semi | Op::Amp | Op::LParen
+                        ) {
+                            cmd_pos = true;
+                        }
+                        style_for(&t.tok, src, color)
+                    }
+                    Tok::Newline => {
+                        cmd_pos = true;
+                        Style::new()
+                    }
+                    _ => style_for(&t.tok, src, color),
+                };
+                out.push((style, src.to_string()));
             }
             pos = pos.max(end);
         }
@@ -49,21 +144,35 @@ impl Highlighter for BrishHighlighter {
 }
 
 /// Plugin that installs the built-in syntax highlighter into the registry.
-pub struct SyntaxHighlightPlugin;
+pub struct SyntaxHighlightPlugin {
+    /// Shared alias snapshot (see [`BrishHighlighter::aliases`]).
+    pub aliases: Arc<Mutex<Vec<String>>>,
+    /// `[highlight] dynamic`.
+    pub dynamic: bool,
+}
 
 impl brish_plugin::Plugin for SyntaxHighlightPlugin {
     fn name(&self) -> &str {
-        "syntax-highlight"
+        "brish-syntax-highlight"
     }
 
     fn install(&self, reg: &mut brish_plugin::Registry) {
-        struct F;
+        let aliases = Arc::clone(&self.aliases);
+        let dynamic = self.dynamic;
+        struct F {
+            aliases: Arc<Mutex<Vec<String>>>,
+            dynamic: bool,
+        }
         impl brish_plugin::HighlighterFactory for F {
             fn create(&self) -> Box<dyn reedline::Highlighter> {
-                Box::new(BrishHighlighter)
+                Box::new(BrishHighlighter::new(
+                    self.dynamic,
+                    Arc::clone(&self.aliases),
+                ))
             }
         }
-        reg.highlighter_factories.push(Box::new(F));
+        reg.highlighter_factories
+            .push(Box::new(F { aliases, dynamic }));
     }
 }
 
@@ -99,7 +208,7 @@ fn prev_boundary(s: &str, mut i: usize) -> usize {
     i
 }
 
-fn style_for(tok: &Tok, src: &str, color: bool) -> Style {
+fn style_for(tok: &Tok, _src: &str, color: bool) -> Style {
     if !color {
         return Style::new();
     }
@@ -118,36 +227,67 @@ fn style_for(tok: &Tok, src: &str, color: bool) -> Style {
         Tok::IoNumber(_) => Style::new().fg(Color::Purple).bold(),
         Tok::ArithCmd(_) => Style::new().fg(Color::Yellow),
         Tok::Newline => Style::new(),
-        Tok::Word(w) => word_style(w, src),
+        Tok::Word(_) => Style::new(), // words go through word_style
     }
 }
 
-fn word_style(w: &Word, src: &str) -> Style {
+fn word_style_base(w: &Word, src: &str) -> Option<Style> {
     match w.parts.first() {
-        Some(Part::Single(_)) | Some(Part::Double(_)) => Style::new().fg(Color::Green),
-        Some(Part::Param(_)) => Style::new().fg(Color::Cyan),
-        Some(Part::Subst(_)) | Some(Part::Arith(_)) => Style::new().fg(Color::Yellow),
-        _ => {
-            // Plain word: keyword vs builtin (a plain word's source is
-            // exactly the word text; quotes/escapes keep it a command).
-            if plain(src) {
-                if KEYWORDS.contains(&src) {
-                    Style::new().fg(Color::Blue).bold()
-                } else if crate::completion::is_builtin(src) {
-                    Style::new().fg(Color::Cyan).bold()
-                } else {
-                    Style::new()
-                }
+        Some(Part::Single(_)) | Some(Part::Double(_)) => Some(Style::new().fg(Color::Green)),
+        Some(Part::Param(_)) => Some(Style::new().fg(Color::Cyan)),
+        Some(Part::Subst(_)) | Some(Part::Arith(_)) => Some(Style::new().fg(Color::Yellow)),
+        _ => None,
+    }
+    .or_else(|| {
+        if plain(src) {
+            if KEYWORDS.contains(&src) {
+                Some(Style::new().fg(Color::Blue).bold())
             } else {
-                Style::new()
+                None
             }
+        } else {
+            None
+        }
+    })
+}
+
+impl BrishHighlighter {
+    fn word_style(&self, w: &Word, src: &str, cmd_pos: bool, dyn_on: bool) -> Style {
+        if let Some(base) = word_style_base(w, src) {
+            return base;
+        }
+        // Plain (or mixed) word, no keyword/string/param marker.
+        if !plain(src) {
+            return Style::new();
+        }
+        if crate::completion::is_builtin(src) {
+            return Style::new().fg(Color::Cyan).bold();
+        }
+        if !dyn_on {
+            return Style::new();
+        }
+        if cmd_pos {
+            if self.is_alias(src) || self.known_command(src) {
+                Style::new().fg(Color::Cyan)
+            } else {
+                // dynamic.callable.missing
+                Style::new().fg(Color::Red).bold()
+            }
+        } else if Path::new(src).exists() {
+            // dynamic.path
+            Style::new().underline()
+        } else {
+            Style::new()
         }
     }
 }
 
 /// True when `src` is a bare name (no quotes, metacharacters, `$`).
 fn plain(src: &str) -> bool {
-    !src.is_empty() && src.chars().all(|c| c.is_alphanumeric() || c == '_')
+    !src.is_empty()
+        && src
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.')
 }
 
 /// Gaps between tokens: whitespace, newlines, comments. A `#` starts a
@@ -184,7 +324,7 @@ fn gap(out: &mut StyledText, text: &str, color: bool) {
     }
 }
 
-/// Final gap: when the line didn't lex (incomplete input), mark from
+/// Final gap: when the line didn'tlex (incomplete input), mark from
 /// the first dangling quote to the end of its line as unclosed.
 fn tail(out: &mut StyledText, text: &str, incomplete: bool, color: bool) {
     if incomplete
@@ -215,8 +355,12 @@ fn push_plain(out: &mut StyledText, text: &str) {
 mod tests {
     use super::*;
 
+    fn hl() -> BrishHighlighter {
+        BrishHighlighter::new(true, Arc::new(Mutex::new(Vec::new())))
+    }
+
     fn render(line: &str) -> StyledText {
-        BrishHighlighter.highlight(line, 0)
+        hl().highlight(line, 0)
     }
 
     fn joined(st: &StyledText) -> String {
@@ -265,8 +409,67 @@ mod tests {
         assert_eq!(style_of(&st, "if"), Some(&keyword));
         assert_eq!(style_of(&st, "echo"), Some(&builtin));
         assert_eq!(style_of(&st, "\"s\""), Some(&string));
-        // `true`/`then` are... then = keyword
         assert_eq!(style_of(&st, "then"), Some(&keyword));
+    }
+
+    #[test]
+    fn dynamic_missing_command_is_red_existing_file_underlined() {
+        if !brish_plugin::color_enabled() {
+            return;
+        }
+        // missing first word → red bold (dynamic.callable.missing)
+        let st = render("definitely-not-a-cmd-xyz");
+        assert_eq!(
+            style_of(&st, "definitely-not-a-cmd-xyz"),
+            Some(&Style::new().fg(Color::Red).bold())
+        );
+        // builtin first word stays cyan bold even with dynamic on
+        let st = render("echo");
+        assert_eq!(style_of(&st, "echo"), Some(&want(Color::Cyan, true)));
+        // existing file in argument position → underline
+        let st = render("cat README.md"); // README.md exists at repo root cwd
+        if Path::new("README.md").exists() {
+            assert_eq!(style_of(&st, "README.md"), Some(&Style::new().underline()));
+        }
+        // non-existent argument stays plain
+        let st = render("cat definitely-no-such-file-xyz");
+        assert_eq!(
+            style_of(&st, "definitely-no-such-file-xyz"),
+            Some(&Style::new())
+        );
+    }
+
+    #[test]
+    fn aliases_count_as_known_and_precommands_keep_command_pos() {
+        if !brish_plugin::color_enabled() {
+            return;
+        }
+        let aliases = Arc::new(Mutex::new(vec!["myalias".to_string()]));
+        let h = BrishHighlighter::new(true, aliases);
+        let st = h.highlight("myalias", 0);
+        assert_eq!(style_of(&st, "myalias"), Some(&want(Color::Cyan, false)));
+        // sudo is a precommand → next word is still a callable (red if missing)
+        let st = h.highlight("sudo definitely-not-a-cmd-xyz", 0);
+        assert_eq!(
+            style_of(&st, "definitely-not-a-cmd-xyz"),
+            Some(&Style::new().fg(Color::Red).bold())
+        );
+        // after a plain command, args are not callables → missing word plain
+        let st = h.highlight("echo definitely-not-a-cmd-xyz", 0);
+        assert_eq!(
+            style_of(&st, "definitely-not-a-cmd-xyz"),
+            Some(&Style::new())
+        );
+    }
+
+    #[test]
+    fn dynamic_off_keeps_static_behavior() {
+        let h = BrishHighlighter::new(false, Arc::new(Mutex::new(Vec::new())));
+        let st = h.highlight("definitely-not-a-cmd-xyz", 0);
+        assert_eq!(
+            style_of(&st, "definitely-not-a-cmd-xyz"),
+            Some(&Style::new())
+        );
     }
 
     #[test]
@@ -274,14 +477,12 @@ mod tests {
         let st = render("echo $HOME # where");
         let comment = want(Color::DarkGray, false);
         assert_eq!(style_of(&st, "# where"), Some(&comment));
-        // unquoted param word is a var; a quoted one is a string
         let st = render("echo $HOME");
         assert_eq!(style_of(&st, "$HOME"), Some(&want(Color::Cyan, false)));
         let st = render("printf '%s' \"$USER\"");
         let string = want(Color::Green, false);
         assert_eq!(style_of(&st, "'%s'"), Some(&string));
         assert_eq!(style_of(&st, "\"$USER\""), Some(&string));
-        // `#` mid-word is not a comment (stays a plain word)
         let st = render("echo a#b");
         assert_eq!(style_of(&st, "a#b"), Some(&Style::new()));
         assert_eq!(joined(&st), "echo a#b");
@@ -290,8 +491,6 @@ mod tests {
     #[test]
     fn incomplete_quote_marks_unclosed_tail() {
         let st = render("echo \"abc");
-        // With colors on the dangling tail is its own red chunk; with
-        // `NO_COLOR` it rides along with the preceding space, plain.
         let (style, text) = st.buffer.last().unwrap();
         assert!(text.trim_start().ends_with("\"abc"), "{text:?}");
         assert_eq!(*style, want(Color::Red, true));
@@ -305,7 +504,6 @@ mod tests {
         let redir = want(Color::Purple, true);
         assert_eq!(style_of(&st, "|"), Some(&op));
         assert_eq!(style_of(&st, ">"), Some(&redir));
-        // `2>&1` lexes as IoNumber + op + word, all redir-colored
         assert_eq!(style_of(&st, "2"), Some(&redir));
         assert_eq!(style_of(&st, ">&"), Some(&redir));
     }

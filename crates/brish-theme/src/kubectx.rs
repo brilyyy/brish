@@ -65,7 +65,7 @@ impl PromptSegment for KubeCtxPrompt {
 
 impl Plugin for KubeCtxPrompt {
     fn name(&self) -> &str {
-        "kubectx-prompt"
+        "brish-kubectx"
     }
 
     fn install(&self, reg: &mut brish_plugin::Registry) {

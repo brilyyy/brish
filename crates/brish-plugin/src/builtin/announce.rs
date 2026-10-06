@@ -14,7 +14,7 @@ impl ChdirHook for AnnounceCd {
 
 impl Plugin for AnnounceCd {
     fn name(&self) -> &str {
-        "announce-cd"
+        "brish-announce-cd"
     }
 
     fn install(&self, reg: &mut crate::Registry) {

@@ -164,7 +164,7 @@ impl PromptSegment for GitPrompt {
 
 impl Plugin for GitPrompt {
     fn name(&self) -> &str {
-        "git-prompt"
+        "brish-git"
     }
 
     fn install(&self, reg: &mut brish_plugin::Registry) {
