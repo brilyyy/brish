@@ -13,7 +13,7 @@ behavior and never dies because a command did.
 
 ```sh
 cargo build --workspace          # debug binary at target/debug/brish
-cargo test --workspace           # 200+ tests, includes a dash-checked POSIX subset
+cargo test --workspace           # 350+ tests, includes a dash-checked POSIX subset
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo check --workspace --target x86_64-pc-windows-msvc   # Windows gate
@@ -86,7 +86,13 @@ Examples live in `examples/plugins/`, authoring guide in
   `set -o pipefail`.
 - Builtins: `cd pwd echo printf test [ true false : exit return eval .
   source unset export readonly shift set type command break continue
-  alias wait jobs kill fg bg` (+ PATH externals).
+  alias unalias trap umask times history wait jobs kill fg bg` (+ PATH
+  externals).
+- `alias`/`unalias` expand interactively only (POSIX batch safe);
+  `trap` covers `EXIT|INT|TERM|HUP|QUIT` with flag-based delivery at
+  command/prompt boundaries; `printf` cycles the format over args
+  with `%d i o u x X s c b f` + width/precision; `umask` takes octal
+  or symbolic (`go-w`).
 - Execution model: builtins run in-process (fd save/restore), pipelines
   /subshells/background/command-substitutions fork — a crashing command
   cannot take the shell with it.
@@ -94,10 +100,9 @@ Examples live in `examples/plugins/`, authoring guide in
   `wait`/`jobs`/`kill %n` with POSIX statuses (`128+signal`); in
   interactive tty shells also `fg`/`bg`, `%n` job specs, Ctrl-Z
   suspend, and terminal handoff (`tcsetpgrp`).
-- Plugin system (`brish-plugin` crate): pre/post/chdir hooks (parent
-  process only), themes, prompt segments, completion providers, keymap
-  providers; catalog gated by `config.toml`, never crashes on bad
-  config.
+- Extension crates: `brish-plugin` (traits + `Registry` + `announce`),
+  `brish-theme` (themes + prompt segments). Catalogs gated by
+  `config.toml`, never crash on bad config.
 
 ## POSIX conformance
 
@@ -115,9 +120,14 @@ gate, worked examples (hooks, themes, completion, keymaps). The design
 record is [`docs/PLUGIN-PLAN.md`](docs/PLUGIN-PLAN.md); the engineering
 roadmap is [`docs/bsh-technical-plan.md`](docs/bsh-technical-plan.md)
 (original project name; still the source of truth for phases).
+Trust boundaries and file-permission policy:
+[`docs/SECURITY.md`](docs/SECURITY.md).
+
+Crate split: depend on `brish-plugin` for behavioral plugins (hooks,
+completion, keymaps), `brish-theme` for prompt themes/segments.
 
 ## Deliberately not yet implemented
 
-Runtime plugin toggling (config is read at startup), history builtin,
-right prompt, quote-aware completion, process substitution,
-`trap ERR`.
+Runtime plugin toggling (config is read at startup), right prompt,
+quote-aware completion, process substitution, `trap ERR`, restricted
+mode (`-r`), mid-command signal traps (`sleep 100` is not cut short).

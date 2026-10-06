@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.1.0 — beta prep (unreleased)
+
+Daily-driver close-out: missing POSIX builtins, plugin/theme crate
+split, file-permission hardening.
+
+### Added
+- `alias` / `unalias`: interactive-only expansion (POSIX batch safe),
+  cycle guard, `command` suppression. Aliases ride `Env` (subshell
+  inheritance) and are never exported.
+- `trap`: `EXIT|INT|TERM|HUP|QUIT` (`SIG` prefix ok), list/`-p`/
+  reset. Flag-only signal handlers (async-signal-safe); engine drains
+  at command boundaries and before each prompt; `EXIT` runs once
+  from `main` before exit. `KILL`/`STOP` refused. Ceiling: no
+  mid-wait interrupt.
+- `printf`: POSIX format cycling + defaults, escapes in the format
+  (`\n` etc via the `$'…'` decoder), `%d i o u x X s c b f` with
+  flags/width/precision. Builtins write fd1 via raw `write(2)` so
+  redirects and cmd-subst pipes always receive bytes (libtest-proof).
+- `umask`: print/set, octal + symbolic (`go-w`, `u=rwx,g=rx,o=`)
+  applied to the running mask.
+- `times`: shell + waited-child user/sys via `times(3)`,
+  `MmSS.ss` format.
+- `docs/SECURITY.md`: trust model, permission policy, ceilings.
+
+### Changed
+- Crate split: `brish-plugin` is now API-only (traits, `Registry`,
+  `CatalogEntry`, `announce`); new `brish-theme` crate holds the
+  prompt catalog (briiish/robbyrussell/minimal/plain + git/venv/aws/
+  kubectx/docker segments). Plugin names and config keys unchanged.
+- `~/.config/brish/` created `0700`; history, `config.toml`, and the
+  `z` database written `0600` (`paths::write_private`), pre-existing
+  wide files tightened. REPL startup tightens the line-editor history
+  file.
+- `engine_plugins()` table: shared by startup + config validation;
+  `vi-mode` default off (`[plugins] enabled = ["vi-mode"]`).
+
 ## 0.1.0 — unreleased
 
 First working core: POSIX execution engine (pipelines, redirections,
