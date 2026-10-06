@@ -78,23 +78,13 @@ pub(crate) fn engine_plugins() -> [(&'static str, &'static dyn Plugin, bool); 8]
     ]
 }
 
-fn main() {
-    brish_platform::reset_sigpipe();
-    let cli = Cli::parse();
-    let mut engine = Engine::new();
-
-    // Startup plugins: catalog filtered through config.toml (plan P3).
-    // The var-name snapshot is shared between the REPL (writer) and the
-    // default completion provider (reader).
-    let var_names: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    // Store plugins are discovered before config loads so their names
-    // count as known (disabling an installed plugin must not warn).
-    let (stored, store_warnings) = brish_builtin::store::scan(&brish_builtin::paths::plugins_dir());
-    for w in &store_warnings {
-        eprintln!("brish: {w}");
-    }
-    let store_names: Vec<&str> = stored.iter().map(|p| p.manifest.name.as_str()).collect();
-    let config = config::load_with_known(&store_names);
+/// Build the plugin registry from config + store + engine plugins.
+/// Shared by startup and `relconf`.
+fn build_registry(
+    config: &config::Config,
+    stored: Vec<brish_builtin::store::Stored>,
+    var_names: &Arc<Mutex<Vec<String>>>,
+) -> brish_plugin::Registry {
     let mut registry = brish_plugin::Registry::default();
     // Prompt catalog first (themes + segments; order = segment order),
     // then behavioral plugins (announce, ...).
@@ -111,7 +101,7 @@ fn main() {
         }
     }
     let default_completion = completion::DefaultCompletion {
-        vars: Arc::clone(&var_names),
+        vars: Arc::clone(var_names),
     };
     if config.plugin_enabled(completion::DEFAULT_COMPLETION, true) {
         registry.install(&default_completion);
@@ -164,20 +154,81 @@ fn main() {
             }
         }
     }
+    registry
+}
+
+/// `--theme` > `$BRISH_THEME` > `[theme] name` > current default,
+/// validated against the registry (unknown → warn + default).
+fn resolve_theme(
+    cli_theme: &Option<String>,
+    config: &config::Config,
+    registry: &brish_plugin::Registry,
+) -> String {
+    let mut theme = brish_plugin::DEFAULT_THEME.to_string();
+    if let Some(t) = cli_theme {
+        theme = t.clone();
+    } else if let Some(t) = std::env::var("BRISH_THEME").ok().filter(|v| !v.is_empty()) {
+        theme = t;
+    } else if let Some(t) = config.theme.clone() {
+        theme = t;
+    }
+    if !registry.themes.is_empty() && !registry.themes.iter().any(|t| t.name() == theme) {
+        eprintln!("brish: unknown theme: {theme}");
+        theme = brish_plugin::DEFAULT_THEME.to_string();
+    }
+    theme
+}
+
+fn apply_theme(
+    engine: &mut Engine,
+    cli: &Cli,
+    config: &config::Config,
+    registry: &brish_plugin::Registry,
+) {
+    engine.theme = resolve_theme(&cli.theme, config, registry);
+}
+
+fn main() {
+    brish_platform::reset_sigpipe();
+    let cli = Cli::parse();
+    let mut engine = Engine::new();
+
+    // Startup plugins: catalog filtered through config.toml (plan P3).
+    // The var-name snapshot is shared between the REPL (writer) and the
+    // default completion provider (reader).
+    let var_names: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    // Store plugins are discovered before config loads so their names
+    // count as known (disabling an installed plugin must not warn).
+    let (stored, store_warnings) = brish_builtin::store::scan(&brish_builtin::paths::plugins_dir());
+    for w in &store_warnings {
+        eprintln!("brish: {w}");
+    }
+    let store_names: Vec<&str> = stored.iter().map(|p| p.manifest.name.as_str()).collect();
+    let config = config::load_with_known(&store_names);
+    let registry = build_registry(&config, stored, &var_names);
     // Theme: --theme > $BRISH_THEME > config > default, validated
     // against the registry (unknown → warn + default).
-    if let Some(t) = cli.theme.clone() {
-        engine.theme = t;
-    } else if let Some(t) = std::env::var("BRISH_THEME").ok().filter(|v| !v.is_empty()) {
-        engine.theme = t;
-    } else if let Some(t) = config.theme.clone() {
-        engine.theme = t;
-    }
-    if !registry.themes.is_empty() && !registry.themes.iter().any(|t| t.name() == engine.theme) {
-        eprintln!("brish: unknown theme: {}", engine.theme);
-        engine.theme = brish_plugin::DEFAULT_THEME.to_string();
-    }
+    apply_theme(&mut engine, &cli, &config, &registry);
     engine.set_hooks(Arc::new(registry));
+    // `relconf` re-runs the same pipeline (config reload + registry
+    // rebuild + theme re-apply). Reedline-owned pieces (highlighter,
+    // menus, edit mode, completer box) still need a restart.
+    {
+        let var_names = Arc::clone(&var_names);
+        let cli_theme = cli.theme.clone();
+        engine.set_relconf(Arc::new(move || {
+            let (stored, warns) = brish_builtin::store::scan(&brish_builtin::paths::plugins_dir());
+            for w in &warns {
+                eprintln!("brish: {w}");
+            }
+            let names: Vec<String> = stored.iter().map(|p| p.manifest.name.clone()).collect();
+            let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+            let cfg = config::load_with_known(&refs);
+            let reg = build_registry(&cfg, stored, &var_names);
+            let theme = resolve_theme(&cli_theme, &cfg, &reg);
+            (reg, theme)
+        }));
+    }
 
     let code = if let Some(cmd) = &cli.command {
         // bash -c: first trailing arg becomes $0, the rest positionals.

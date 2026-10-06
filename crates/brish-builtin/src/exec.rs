@@ -142,6 +142,9 @@ pub struct Engine {
     in_child: bool,
     /// Active theme name (`theme` builtin switches it at runtime).
     pub theme: String,
+    /// `relconf` rebuild hook (binary builds it): re-reads config,
+    /// returns (fresh registry, resolved theme). `None` in tests/batch.
+    relconf_fn: Option<Arc<dyn Fn() -> (Registry, String) + Send + Sync>>,
 }
 
 fn platform_err(e: impl std::fmt::Display) -> Stop {
@@ -355,6 +358,7 @@ fn run_subst(src: &str, env: &Env, funcs: &HashMap<String, Cmd>) -> Result<(Stri
             hooks: Arc::new(Registry::default()),
             in_child: true,
             theme: DEFAULT_THEME.to_string(),
+            relconf_fn: None,
         };
         match child.program(&prog, true) {
             Ok(()) => child.env.status,
@@ -394,6 +398,7 @@ impl Engine {
             hooks: Arc::new(Registry::default()),
             in_child: false,
             theme: DEFAULT_THEME.to_string(),
+            relconf_fn: None,
         }
     }
 
@@ -405,6 +410,11 @@ impl Engine {
     /// Swap in the startup-built registry (binary calls once).
     pub fn set_hooks(&mut self, hooks: Arc<Registry>) {
         self.hooks = hooks;
+    }
+
+    /// Install the `relconf` rebuild hook (binary only).
+    pub fn set_relconf(&mut self, f: Arc<dyn Fn() -> (Registry, String) + Send + Sync>) {
+        self.relconf_fn = Some(f);
     }
 
     /// Turn interactive job control on (tty REPL does; batch never).
@@ -682,6 +692,7 @@ impl Engine {
 
     fn jobs_cmd(&mut self) {
         self.reap_bg();
+        let mut rows: Vec<Vec<String>> = Vec::new();
         for (n, j) in self.bg.iter_mut().enumerate() {
             let state = if j.done() {
                 "Done"
@@ -690,9 +701,14 @@ impl Engine {
             } else {
                 "Running"
             };
-            println!("[{}]+  {}  {} &", n + 1, state, j.cmd);
+            rows.push(vec![
+                format!("[{}]", n + 1),
+                state.to_string(),
+                format!("{} &", j.cmd),
+            ]);
             j.notified = true;
         }
+        println!("{}", crate::table::render(&rows));
     }
 
     fn kill_cmd(&mut self, argv: &[String]) {
@@ -1373,6 +1389,9 @@ impl Engine {
         if name == "plugin" {
             return apply_plan(plan, || self.plugin_cmd(argv));
         }
+        if name == "relconf" {
+            return apply_plan(plan, || self.relconf_cmd(argv));
+        }
         if let Some(b) = BuiltIn::from_name(&name) {
             if b == BuiltIn::Command {
                 // Keep the original plan: `command ls > f` redirects the
@@ -1398,10 +1417,12 @@ impl Engine {
     /// switch the active one. Unknown name → status 1, keeps current.
     fn theme_cmd(&mut self, argv: &[String]) {
         if argv.len() == 1 {
+            let mut rows: Vec<Vec<String>> = Vec::new();
             for t in self.hooks.themes.iter() {
-                let mark = if t.name() == self.theme { "*" } else { " " };
-                println!("{mark} {}", t.name());
+                let mark = if t.name() == self.theme { "*" } else { "" };
+                rows.push(vec![mark.to_string(), t.name().to_string()]);
             }
+            println!("{}", crate::table::render(&rows));
             self.env.status = 0;
             return;
         }
@@ -1419,6 +1440,27 @@ impl Engine {
     fn plugin_cmd(&mut self, argv: &[String]) {
         self.env.status =
             crate::store_cmd::dispatch(argv, self.hooks.installed(), &self.shell_cwd());
+    }
+
+    /// `relconf`: reload `config.toml` + rebuild the registry + re-apply
+    /// the theme (NOTES.md 4). Prompt/hooks/completions read the live
+    /// registry; reedline-owned boxes (highlighter, menus, edit mode)
+    /// need a shell restart — documented ceiling.
+    fn relconf_cmd(&mut self, argv: &[String]) {
+        if argv.len() > 1 {
+            eprintln!("relconf: usage: relconf");
+            self.env.status = 2;
+            return;
+        }
+        let Some(build) = self.relconf_fn.clone() else {
+            eprintln!("brish: relconf: unavailable in this shell");
+            self.env.status = 1;
+            return;
+        };
+        let (reg, theme) = build();
+        self.hooks = Arc::new(reg);
+        self.theme = theme;
+        self.env.status = 0;
     }
 
     /// Translate a builtin's `Flow` into engine control flow.
@@ -2440,6 +2482,39 @@ mod tests {
                 .is_empty(),
             "notify once"
         );
+    }
+
+    #[test]
+    fn relconf_swaps_registry_and_theme() {
+        let mut e = Engine::new();
+        e.theme = "briiish".into();
+        e.set_relconf(Arc::new(|| {
+            let mut reg = Registry::default();
+            struct T;
+            impl brish_plugin::Theme for T {
+                fn name(&self) -> &str {
+                    "t2"
+                }
+                fn render(
+                    &self,
+                    _s: i32,
+                    _c: &std::path::Path,
+                    _seg: &[&dyn brish_plugin::PromptSegment],
+                ) -> String {
+                    "t2 ".into()
+                }
+            }
+            reg.themes.push(Box::new(T));
+            (reg, "t2".into())
+        }));
+        assert_eq!(run_src(&mut e, "relconf"), 0);
+        assert_eq!(e.theme, "t2");
+        assert_eq!(e.hooks.themes.len(), 1);
+        // usage error
+        assert_eq!(run_src(&mut e, "relconf now"), 2);
+        // no hook → status 1, shell survives
+        let mut plain = Engine::new();
+        assert_eq!(run_src(&mut plain, "relconf"), 1);
     }
 
     #[test]

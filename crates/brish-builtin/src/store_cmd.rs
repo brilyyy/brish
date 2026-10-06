@@ -63,8 +63,9 @@ fn usage(status: i32) -> i32 {
 
 fn list(installed: &[(String, bool)], root: &Path) -> i32 {
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut rows: Vec<Vec<String>> = Vec::new();
     for (name, on) in installed {
-        println!("{name} {}", on_off(*on));
+        rows.push(vec![name.clone(), on_off(*on).to_string()]);
         seen.insert(name);
     }
     // Plugins installed this session are not in the startup registry
@@ -73,9 +74,10 @@ fn list(installed: &[(String, bool)], root: &Path) -> i32 {
     for p in stored {
         if !seen.contains(p.manifest.name.as_str()) {
             let on = raw_config_enabled(root, &p.manifest.name, true);
-            println!("{} {}", p.manifest.name, on_off(on));
+            rows.push(vec![p.manifest.name.clone(), on_off(on).to_string()]);
         }
     }
+    println!("{}", crate::table::render(&rows));
     0
 }
 
