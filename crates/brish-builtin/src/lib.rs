@@ -11,7 +11,6 @@ pub use builtins::BuiltIn;
 pub use run::{Flow, run};
 
 mod builtins;
-pub mod exec;
 pub mod helper;
 pub mod paths;
 mod run;

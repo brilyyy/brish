@@ -24,7 +24,7 @@ use brish_core::path::find_in_path;
 
 use brish_plugin_api::{CmdCtx, DEFAULT_THEME, HookAction, Registry};
 
-use crate::{BuiltIn, Flow, run as run_builtin};
+use brish_builtin::{BuiltIn, Flow, run as run_builtin};
 use brish_platform::proc::{
     ChildState, FdOp, FdSetup, SIGCONT, fork_run, fork_spawn, kill_group, open_tty, poll_pid,
     preexec_fd_ops, send_signal, set_group_leader, shell_pgrp, signal_by_name, tcsetpgrp_fd,
@@ -826,7 +826,7 @@ impl Engine {
             ]);
             j.notified = true;
         }
-        println!("{}", crate::table::render(&rows));
+        println!("{}", brish_builtin::table::render(&rows));
         Ok(())
     }
 
@@ -1592,7 +1592,7 @@ impl Engine {
                 let mark = if t.name() == self.theme { "*" } else { "" };
                 rows.push(vec![mark.to_string(), t.name().to_string()]);
             }
-            println!("{}", crate::table::render(&rows));
+            println!("{}", brish_builtin::table::render(&rows));
             self.env.status = 0;
             return;
         }
@@ -1609,7 +1609,7 @@ impl Engine {
     /// `plugin`: list catalog plugins and whether they are installed.
     fn plugin_cmd(&mut self, argv: &[String]) {
         self.env.status =
-            crate::store_cmd::dispatch(argv, self.hooks.installed(), &self.shell_cwd());
+            brish_builtin::store_cmd::dispatch(argv, self.hooks.installed(), &self.shell_cwd());
     }
 
     /// `relconf`: reload `config.toml` + rebuild the registry + re-apply
@@ -1649,7 +1649,7 @@ impl Engine {
     /// no editor is configured, the path cannot be opened, or the
     /// editor exits non-zero.
     fn edit_config(&mut self) -> bool {
-        let path = crate::paths::config_path();
+        let path = brish_builtin::paths::config_path();
         let editor = std::env::var("VISUAL")
             .ok()
             .or_else(|| std::env::var("EDITOR").ok())
@@ -1663,7 +1663,7 @@ impl Engine {
             return false;
         };
         if !path.exists() {
-            if let Err(e) = crate::paths::ensure_config_dir() {
+            if let Err(e) = brish_builtin::paths::ensure_config_dir() {
                 eprintln!("relconf -e: {}: {e}", path.display());
                 return false;
             }

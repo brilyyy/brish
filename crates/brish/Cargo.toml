@@ -15,6 +15,7 @@ workspace = true
 [dependencies]
 brish-core = { path = "../brish-core" }
 brish-builtin = { path = "../brish-builtin" }
+brish-engine = { path = "../brish-engine" }
 brish-platform = { path = "../brish-platform" }
 brish-plugin-api = { path = "../brish-plugin-api" }
 brish-theme = { path = "../brish-theme" }

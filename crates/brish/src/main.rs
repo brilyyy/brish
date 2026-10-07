@@ -1,6 +1,6 @@
 use std::io::{BufRead, IsTerminal, Read, Write};
 
-use brish_builtin::exec::{Engine, Outcome, Stop};
+use brish_engine::{Engine, Outcome, Stop};
 use brish_plugin_api::Plugin;
 mod completion;
 mod config;
@@ -274,7 +274,7 @@ fn main() {
             let cfg = config::load_with_known(&refs);
             let reg = build_registry(&cfg, stored, &var_names, &aliases, &hist_ctl);
             let theme = resolve_theme(&cli_theme, &cfg, &reg);
-            brish_builtin::exec::Reload {
+            brish_engine::Reload {
                 registry: reg,
                 theme,
                 command_not_found: cfg.command_not_found.clone(),

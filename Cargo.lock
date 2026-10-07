@@ -97,6 +97,7 @@ version = "0.1.0"
 dependencies = [
  "brish-builtin",
  "brish-core",
+ "brish-engine",
  "brish-platform",
  "brish-plugin-api",
  "brish-theme",
@@ -134,6 +135,18 @@ dependencies = [
  "proptest",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "brish-engine"
+version = "0.1.0"
+dependencies = [
+ "brish-builtin",
+ "brish-core",
+ "brish-platform",
+ "brish-plugin-api",
+ "brish-words",
+ "tempfile",
 ]
 
 [[package]]

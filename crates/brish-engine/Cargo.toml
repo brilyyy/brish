@@ -1,0 +1,17 @@
+[package]
+name = "brish-engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+brish-core = { path = "../brish-core" }
+brish-words = { path = "../brish-words" }
+brish-platform = { path = "../brish-platform" }
+brish-builtin = { path = "../brish-builtin" }
+brish-plugin-api = { path = "../brish-plugin-api" }
+tempfile.workspace = true
