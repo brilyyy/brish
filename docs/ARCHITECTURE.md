@@ -58,7 +58,11 @@ previews** over the same lexer/expander — they never execute anything.
   dispositions at fork (POSIX subshell rule).
 - Signal traps use a **flag-only handler**; the engine drains at command
   boundaries, before each prompt, and — via EINTR-aware waits — while
-  blocked in `waitpid` (mid-command delivery).
+  blocked in `waitpid` (mid-command delivery). Because a
+  process-directed signal lands on *any* unblocked thread, EINTR alone
+  is not enough in a threaded process: `wait_pid`/`wait_untraced` also
+  poll `WNOHANG` (2ms) and re-check the pending-trap word while another
+  thread is alive. Single-threaded shells keep the blocking wait.
 - Zero-panic: `clippy::unwrap_used`/`expect_used` denied outside tests;
   only `brish-platform` contains `unsafe` (SAFETY-commented).
 

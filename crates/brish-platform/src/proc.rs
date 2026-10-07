@@ -165,6 +165,33 @@ pub fn inject_pending_trap(bit: u32) {
     PENDING_TRAPS.fetch_or(bit, Ordering::Relaxed);
 }
 
+/// Threads currently alive besides the caller's.
+///
+/// A process-directed signal is delivered to *any* thread that does not
+/// block it, so EINTR is not guaranteed to reach the thread blocked in
+/// `waitpid` — the trap flag can be set while the wait never wakes. With
+/// exactly one thread that cannot happen, so the blocking wait stays
+/// correct and the single-threaded shell pays nothing.
+///
+/// Linux reads `num_threads` from procfs; macOS has no procfs, so it
+/// answers `true` (poll) — correct, just not optimal there.
+pub(crate) fn other_threads_alive() -> bool {
+    // SAFETY: none — plain file read + parse of a kernel-provided field.
+    match std::fs::read_to_string("/proc/self/stat") {
+        Ok(stat) => {
+            // Field 2 is `num_threads`; `comm` (field 2) may contain
+            // spaces and parens, so start after the last ')'.
+            let after = stat.rfind(')').map_or("", |i| &stat[i + 1..]);
+            match after.split_whitespace().nth(1) {
+                // `state` is field 3, so `num_threads` is the next token.
+                Some(n) => n.parse::<u32>().is_ok_and(|n| n > 1),
+                None => true,
+            }
+        }
+        Err(_) => true,
+    }
+}
+
 fn trap_bit(sig: i32) -> u32 {
     {
         match sig {
@@ -378,13 +405,43 @@ pub fn fork_spawn(
     }
 }
 
+/// How long a blocking wait sleeps between `WNOHANG` polls when the
+/// process is multi-threaded (see [`wait_pid`]).
+const WAIT_POLL: std::time::Duration = std::time::Duration::from_millis(2);
+
 /// Wait for one child; exit code, or 128+signal for signal deaths.
+///
+/// A process-directed signal lands on *any* thread that is not blocking
+/// it. With more than one thread alive, EINTR is therefore not
+/// guaranteed to reach whoever sits in `waitpid` — the flag gets set
+/// and the wait stays parked forever, so a trapped signal never
+/// interrupts a foreground command. Single-threaded callers keep the
+/// blocking wait; multi-threaded ones poll `WNOHANG` and check the
+/// pending-trap word between sleeps, which is thread-independent.
+///
+/// ponytail: 2ms poll. Ceiling: a self-pipe or `signalfd`-style wakeup
+/// would remove the tick; the poll only exists while another thread is
+/// alive, so the common single-threaded shell never pays for it.
 pub fn wait_pid(pid: i32) -> Result<i32, PlatformError> {
+    let poll = other_threads_alive();
     loop {
-        match nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(pid), None) {
+        let flags = if poll {
+            Some(nix::sys::wait::WaitPidFlag::WNOHANG)
+        } else {
+            None
+        };
+        match nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(pid), flags) {
             Ok(nix::sys::wait::WaitStatus::Exited(_, code)) => return Ok(code),
             Ok(nix::sys::wait::WaitStatus::Signaled(_, sig, _)) => return Ok(128 + sig as i32),
-            Ok(_) => continue,
+            Ok(_) if !poll => continue,
+            Ok(_) => {
+                // StillAlive under WNOHANG.
+                if peek_pending_traps() != 0 {
+                    return Err(PlatformError::Interrupted);
+                }
+                std::thread::sleep(WAIT_POLL);
+                continue;
+            }
             Err(nix::errno::Errno::EINTR) => {
                 if peek_pending_traps() != 0 {
                     // Trap handlers fire (no SA_RESTART): let the engine
@@ -495,19 +552,32 @@ pub fn poll_pid(pid: i32) -> Result<Option<ChildState>, PlatformError> {
 
 /// Blocking wait that reports stops (`WUNTRACED`): returns when `pid`
 /// exits or is stopped. Never returns `Running`.
+///
+/// Polls like [`wait_pid`] when multi-threaded, for the same reason.
 pub fn wait_untraced(pid: i32) -> Result<ChildState, PlatformError> {
+    let poll = other_threads_alive();
     loop {
+        // WUNTRACED is always set: a stopped child must be reported even
+        // on the WNOHANG path.
+        let mut flags = nix::sys::wait::WaitPidFlag::WUNTRACED;
+        if poll {
+            flags |= nix::sys::wait::WaitPidFlag::WNOHANG;
+        }
         // SAFETY: waitpid with a valid pid and safe flag bits.
-        match nix::sys::wait::waitpid(
-            nix::unistd::Pid::from_raw(pid),
-            Some(nix::sys::wait::WaitPidFlag::WUNTRACED),
-        ) {
+        match nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(pid), Some(flags)) {
             Ok(nix::sys::wait::WaitStatus::Exited(_, code)) => return Ok(ChildState::Exited(code)),
             Ok(nix::sys::wait::WaitStatus::Signaled(_, sig, _)) => {
                 return Ok(ChildState::Exited(128 + sig as i32));
             }
             Ok(nix::sys::wait::WaitStatus::Stopped(_, _)) => return Ok(ChildState::Stopped),
-            Ok(_) => continue, // Continued/StillAlive: keep waiting
+            Ok(_) if !poll => continue, // Continued/StillAlive: keep waiting
+            Ok(_) => {
+                if peek_pending_traps() != 0 {
+                    return Err(PlatformError::Interrupted);
+                }
+                std::thread::sleep(WAIT_POLL);
+                continue;
+            }
             Err(nix::errno::Errno::EINTR) => {
                 if peek_pending_traps() != 0 {
                     return Err(PlatformError::Interrupted);
@@ -783,6 +853,45 @@ mod tests {
             ChildState::Exited(c) => assert_eq!(c, 0),
             ChildState::Stopped => panic!("stopped again after CONT"),
         }
+    }
+
+    #[test]
+    fn wait_pid_wakes_for_a_trap_flag_set_by_another_thread() {
+        // A process-directed signal lands on any thread not blocking
+        // it, so `wait_pid` on this thread may never see EINTR. The
+        // WNOHANG poll is what makes the delivery thread-independent —
+        // without it the flag sits set and the wait hangs.
+        let _g = fd_guard();
+        clear_pending_traps(u32::MAX);
+        trap_on(nix::libc::SIGINT).expect("install handler");
+        let pid = fork_spawn(vec![], false, || {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            0
+        })
+        .expect("spawn");
+
+        // Flip the flag from a second thread, as the handler would.
+        let signaler = std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            inject_pending_trap(TRAP_BIT_INT);
+        });
+
+        let woken = wait_pid(pid);
+        signaler.join().expect("signaler");
+        // Either a real EINTR or the poll found it: both are "woke up".
+        assert!(
+            matches!(woken, Err(PlatformError::Interrupted)),
+            "wait must return Interrupted, got {woken:?}"
+        );
+        clear_pending_traps(u32::MAX);
+        let _ = wait_pid(pid);
+    }
+
+    #[test]
+    fn other_threads_alive_tracks_the_test_process() {
+        // The suite itself is multi-threaded (libtest workers), so this
+        // must be true here — it is what switches wait_pid to polling.
+        assert!(other_threads_alive(), "libtest runs tests on threads");
     }
 
     #[test]

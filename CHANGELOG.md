@@ -6,6 +6,15 @@ Hardening close-out from the beta: stability proofs, missing POSIX
 builtins, mid-command traps, quote-aware completion, docs.
 
 ### Fixed
+- Trapped signals now interrupt a foreground wait even when the signal
+  is delivered to a different thread: `wait_pid`/`wait_untraced` poll
+  `WNOHANG` while another thread is alive and check the pending-trap
+  word between ticks, because a process-directed signal lands on *any*
+  unblocked thread — EINTR was never guaranteed to reach the thread in
+  `waitpid`, so the flag could be set while the wait never woke
+  (flaky mid-wait trap test, and a real hang in a threaded shell).
+
+### Fixed
 - `brish-platform` umask call compiles on macOS (`mode_t` is `u16`
   there, `u32` on Linux).
 - Function-nesting guard lowered 200 → 128 so the chunky engine frames
