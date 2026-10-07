@@ -11,6 +11,7 @@ mod hist;
 mod keymap;
 mod packs;
 mod prompt;
+mod report;
 
 use clap::Parser;
 use completion::BrishCompleter;
@@ -19,6 +20,7 @@ use reedline::{
     ColumnarMenu, Emacs, FileBackedHistory, KeyCode, KeyModifiers, MenuBuilder, Reedline,
     ReedlineEvent, ReedlineMenu, Signal, default_emacs_keybindings,
 };
+use report::Style;
 use std::sync::{Arc, Mutex};
 
 /// briSH (brily SHell) — a memory-safe, crash-resistant POSIX shell.
@@ -234,11 +236,26 @@ fn main() {
     }
     let store_names: Vec<&str> = stored.iter().map(|p| p.manifest.name.as_str()).collect();
     let config = config::load_with_known(&store_names);
+    // Fatal errors: source excerpt + caret on a terminal, one line in
+    // batch (script/expect output must not move); `[errors] style`
+    // overrides either way.
+    let err_style = {
+        let mode = if std::io::stderr().is_terminal() {
+            Style::Fancy
+        } else {
+            Style::Short
+        };
+        config
+            .error_style
+            .as_deref()
+            .map_or(mode, |s| Style::from_name(s, mode))
+    };
     let registry = build_registry(&config, stored, &var_names, &aliases, &hist_ctl);
     // Theme: --theme > $BRISH_THEME > config > default, validated
     // against the registry (unknown → warn + default).
     apply_theme(&mut engine, &cli, &config, &registry);
     engine.set_hooks(Arc::new(registry));
+    engine.set_command_not_found(config.command_not_found.clone());
     // `relconf` re-runs the same pipeline (config reload + registry
     // rebuild + theme re-apply). Reedline-owned pieces (highlighter,
     // menus, edit mode, completer box) still need a restart.
@@ -257,7 +274,11 @@ fn main() {
             let cfg = config::load_with_known(&refs);
             let reg = build_registry(&cfg, stored, &var_names, &aliases, &hist_ctl);
             let theme = resolve_theme(&cli_theme, &cfg, &reg);
-            (reg, theme)
+            brish_builtin::exec::Reload {
+                registry: reg,
+                theme,
+                command_not_found: cfg.command_not_found.clone(),
+            }
         }));
     }
 
@@ -266,23 +287,31 @@ fn main() {
         let mut rest = cli.script_args.iter().cloned();
         engine.env.name = rest.next().unwrap_or_else(|| "brish".to_string());
         engine.env.set_positional(rest.collect());
-        run_src(&mut engine, cmd).code
+        run_src(&mut engine, cmd, err_style).code
     } else if let Some(script) = cli.script_args.first().cloned() {
         engine.env.name = script.clone();
         engine.env.set_positional(cli.script_args[1..].to_vec());
         match std::fs::read_to_string(&script) {
-            Ok(src) => run_src(&mut engine, &src).code,
+            Ok(src) => run_src(&mut engine, &src, err_style).code,
             Err(e) => {
                 eprintln!("brish: {script}: {e}");
                 1
             }
         }
     } else if cli.interactive || std::io::stdin().is_terminal() {
-        repl(&mut engine, &cli, var_names, aliases, hist_ctl, &config)
+        repl(
+            &mut engine,
+            &cli,
+            var_names,
+            aliases,
+            hist_ctl,
+            &config,
+            err_style,
+        )
     } else {
         let mut src = String::new();
         match std::io::stdin().read_to_string(&mut src) {
-            Ok(_) => run_src(&mut engine, &src).code,
+            Ok(_) => run_src(&mut engine, &src, err_style).code,
             Err(e) => {
                 eprintln!("brish: {e}");
                 1
@@ -294,10 +323,10 @@ fn main() {
 }
 
 /// Parse + run one unit of source.
-fn run_src(engine: &mut Engine, src: &str) -> Run {
+fn run_src(engine: &mut Engine, src: &str, style: Style) -> Run {
     let prog = match brish_core::parser::parse(src) {
         Ok(p) => p,
-        Err(e) => return fatal(engine, e),
+        Err(e) => return fatal(engine, e, src, style),
     };
     match engine.run(&prog) {
         Ok(Outcome::Exit(c)) => Run {
@@ -308,19 +337,19 @@ fn run_src(engine: &mut Engine, src: &str) -> Run {
             code: s,
             exited: false,
         },
-        Err(e) => fatal(engine, e),
+        Err(e) => fatal(engine, e, src, style),
     }
 }
 
 /// Report a fatal error and map it to an exit status (2 for syntax,
 /// 1 otherwise — bash convention).
-fn fatal(engine: &mut Engine, e: brish_core::error::Error) -> Run {
+fn fatal(engine: &mut Engine, e: brish_core::error::Error, src: &str, style: Style) -> Run {
     use brish_core::error::Error;
     let code = match e {
-        Error::Parse(_) | Error::Incomplete => 2,
+        Error::Parse { .. } | Error::Incomplete => 2,
         _ => 1,
     };
-    eprintln!("brish: {e}");
+    eprintln!("{}", report::render(src, &e, style));
     engine.env.status = code;
     Run {
         code,
@@ -361,6 +390,7 @@ fn repl(
     aliases: Arc<Mutex<Vec<String>>>,
     hist_ctl: Arc<hist::HistControl>,
     cfg: &config::Config,
+    err_style: Style,
 ) -> i32 {
     // Set `$-`'s `i` before rc loads: aliases defined in `.brishrc`
     // expand for later lines in the same rc and the REPL.
@@ -372,7 +402,7 @@ fn repl(
         let rc = resolve_rc(cli.rcfile.clone());
         match std::fs::read_to_string(&rc) {
             Ok(src) => {
-                let run = run_src(engine, &src);
+                let run = run_src(engine, &src, err_style);
                 if run.exited {
                     return run.code;
                 }
@@ -386,16 +416,9 @@ fn repl(
     }
 
     if interactive && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-        return edit_repl(
-            engine,
-            var_names,
-            aliases,
-            hist_ctl,
-            &cfg.prompt,
-            cfg.theme_prompt.as_deref(),
-        );
+        return edit_repl(engine, var_names, aliases, hist_ctl, cfg, err_style);
     }
-    plain_repl(engine, interactive)
+    plain_repl(engine, interactive, err_style)
 }
 
 /// Interactive reedline REPL (plan phase 5): line editing, history,
@@ -405,9 +428,13 @@ fn edit_repl(
     var_names: Arc<Mutex<Vec<String>>>,
     aliases: Arc<Mutex<Vec<String>>>,
     hist_ctl: Arc<hist::HistControl>,
-    chrome: &config::PromptChrome,
-    template: Option<&str>,
+    cfg: &config::Config,
+    err_style: Style,
 ) -> i32 {
+    let chrome = &cfg.prompt;
+    let template = cfg.theme_prompt.as_deref();
+    let right = cfg.theme_prompt_right.as_deref();
+    let transient = cfg.theme_prompt_transient.as_deref();
     let _ = brish_builtin::paths::ensure_config_dir();
     // reedline creates the history file with the process umask; tighten
     // it so commands (which may contain secrets) stay 0600.
@@ -479,7 +506,10 @@ fn edit_repl(
         Box::new(Emacs::new(keybindings))
     };
     let mut rl = Reedline::create()
-        .with_completer(Box::new(BrishCompleter::new(Arc::clone(&registry))))
+        .with_completer(Box::new(BrishCompleter::new(
+            Arc::clone(&registry),
+            completion::MatchOpts::from_config(cfg),
+        )))
         .with_edit_mode(edit_mode);
     // Menus: each registered menu factory becomes one ReedlineMenu
     // (`EngineCompleter` for completion menus, `HistoryMenu` for the
@@ -509,6 +539,22 @@ fn edit_repl(
     // Hinter: registry factory first.
     if let Some(h) = registry.hinter_factory().map(|f| f.create()) {
         rl = rl.with_hinter(h);
+    }
+    // Transient prompt (`[theme] prompt_transient`): repaints a short
+    // prompt after each command, so a tall prompt scrolls away with the
+    // output instead of eating scrollback (nushell's transient prompt).
+    // No template configured → behaviour unchanged.
+    if let Some(tmpl) = transient.filter(|t| !t.is_empty()) {
+        let transient_prompt = BrishPrompt::new(
+            engine.env.status,
+            false,
+            engine.hooks(),
+            &engine.theme,
+            chrome,
+            Some(tmpl),
+            right,
+        );
+        rl = rl.with_transient_prompt(Box::new(transient_prompt));
     }
     let mut buf = String::new();
     loop {
@@ -546,6 +592,7 @@ fn edit_repl(
             &engine.theme,
             chrome,
             template,
+            right,
         );
         match rl.read_line(&prompt) {
             Ok(Signal::Success(line)) => {
@@ -556,7 +603,7 @@ fn edit_repl(
                 }
                 let src = std::mem::take(&mut buf);
                 if !src.trim().is_empty() {
-                    let run = run_src(engine, &src);
+                    let run = run_src(engine, &src, err_style);
                     if run.exited {
                         return run.code;
                     }
@@ -578,7 +625,7 @@ fn edit_repl(
 }
 
 /// Non-tty REPL: plain line reads (pipes, `brish -i < script`).
-fn plain_repl(engine: &mut Engine, interactive: bool) -> i32 {
+fn plain_repl(engine: &mut Engine, interactive: bool, err_style: Style) -> i32 {
     let ps1 = std::env::var("PS1").unwrap_or_else(|_| brish_core::reader::default_ps1());
     let ps2 = std::env::var("PS2").unwrap_or_else(|_| brish_core::reader::default_ps2());
     let stdin = std::io::stdin();
@@ -608,7 +655,7 @@ fn plain_repl(engine: &mut Engine, interactive: bool) -> i32 {
             continue;
         }
         if !buf.trim().is_empty() {
-            let run = run_src(engine, &buf);
+            let run = run_src(engine, &buf, err_style);
             if run.exited {
                 return run.code;
             }

@@ -452,3 +452,97 @@ fn tilde_and_assign_expansion() {
     let o = run(&["-c", "v=~root; printf '%s' \"$v\""]);
     assert!(out(&o).starts_with('/') && !out(&o).contains('~'));
 }
+
+/// Private `$HOME` with a `config.toml` body, so config-driven
+/// behaviour can be tested without touching the shared test home.
+fn run_with_config(args: &[&str], config: &str) -> Output {
+    let home = tempfile::tempdir().expect("home");
+    let dir = home.path().join(".config/brish");
+    std::fs::create_dir_all(&dir).expect("config dir");
+    std::fs::write(dir.join("config.toml"), config).expect("config.toml");
+    Command::new(env!("CARGO_BIN_EXE_brish"))
+        .args(args)
+        .env("HOME", home.path())
+        .output()
+        .expect("spawn brish")
+}
+
+const BAD_FOR: &str = "echo hi\nfor x in | ; do echo $x; done";
+
+#[test]
+fn batch_syntax_error_is_one_line_without_a_caret() {
+    // Batch (non-tty stderr) keeps the old single-line text: scripts and
+    // the dash cross-check in posix.rs must not see extra output.
+    let o = run(&["-c", BAD_FOR]);
+    assert_eq!(code(&o), 2);
+    assert_eq!(
+        err(&o),
+        "brish: parse error: unexpected token in for word list\n"
+    );
+}
+
+#[test]
+fn errors_style_fancy_adds_excerpt_and_caret() {
+    let o = run_with_config(&["-c", BAD_FOR], "[errors]\nstyle = \"fancy\"\n");
+    assert_eq!(code(&o), 2);
+    let e = err(&o);
+    assert!(
+        e.starts_with("brish: parse error: unexpected token in for word list\n"),
+        "{e}"
+    );
+    assert!(e.contains("2 | for x in | ; do echo $x; done"), "{e}");
+    assert!(e.contains("(line 2, col 10)"), "{e}");
+}
+
+#[test]
+fn errors_style_plain_drops_the_program_prefix() {
+    let o = run_with_config(&["-c", BAD_FOR], "[errors]\nstyle = \"plain\"\n");
+    let e = err(&o);
+    assert_eq!(e, "parse error: unexpected token in for word list\n");
+}
+
+#[test]
+fn relconf_e_runs_the_editor_then_reloads() {
+    // `EDITOR` is set per-spawn, so no env mutation in-process.
+    let home = tempfile::tempdir().expect("home");
+    let cfg_dir = home.path().join(".config/brish");
+    std::fs::create_dir_all(&cfg_dir).expect("config dir");
+    let cfg = cfg_dir.join("config.toml");
+    std::fs::write(&cfg, "[theme]\nname = \"briiish-plain\"\n").expect("config");
+
+    // Editor succeeds → config is (re)loaded, status 0.
+    let o = Command::new(env!("CARGO_BIN_EXE_brish"))
+        .args(["-c", "relconf -e"])
+        .env("HOME", home.path())
+        .env_remove("VISUAL")
+        .env("EDITOR", "true")
+        .output()
+        .expect("spawn brish");
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+
+    // Editor fails → non-zero, shell survives to the next command.
+    let o = Command::new(env!("CARGO_BIN_EXE_brish"))
+        .args(["-c", "relconf -e; echo after"])
+        .env("HOME", home.path())
+        .env_remove("VISUAL")
+        .env("EDITOR", "false")
+        .output()
+        .expect("spawn brish");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("relconf -e:"));
+    assert_eq!(out(&o), "after\n");
+
+    // No editor configured → clear message, no crash.
+    let o = Command::new(env!("CARGO_BIN_EXE_brish"))
+        .args(["-c", "relconf -e"])
+        .env("HOME", home.path())
+        .env_remove("VISUAL")
+        .env_remove("EDITOR")
+        .output()
+        .expect("spawn brish");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("$VISUAL or $EDITOR"));
+}

@@ -74,11 +74,14 @@ fn left_text(
 /// Active-theme prompt for one `read_line` call.
 pub struct BrishPrompt {
     left: String,
+    right: String,
     chrome: PromptChrome,
 }
 
 impl BrishPrompt {
     /// `continuation` selects PS2 (a multi-line buffer is pending).
+    /// `right_template` renders the right-hand prompt (`[theme]
+    /// prompt_right`); `None`/empty leaves it blank.
     pub fn new(
         status: i32,
         continuation: bool,
@@ -86,10 +89,15 @@ impl BrishPrompt {
         theme: &str,
         chrome: &PromptChrome,
         template: Option<&str>,
+        right_template: Option<&str>,
     ) -> Self {
         let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
         let ps1 = std::env::var("PS1").ok();
         let ps2 = std::env::var("PS2").ok();
+        let right = right_template
+            .filter(|t| !t.is_empty())
+            .map(|t| theme_text(status, &cwd, registry, theme, Some(t)))
+            .unwrap_or_default();
         Self {
             left: left_text(
                 status,
@@ -102,6 +110,7 @@ impl BrishPrompt {
                 template,
                 chrome,
             ),
+            right,
             chrome: chrome.clone(),
         }
     }
@@ -113,7 +122,7 @@ impl Prompt for BrishPrompt {
     }
 
     fn render_prompt_right(&self) -> Cow<'_, str> {
-        Cow::Borrowed("")
+        Cow::Borrowed(&self.right)
     }
 
     fn render_prompt_indicator(&self, edit_mode: PromptEditMode) -> Cow<'_, str> {
@@ -201,6 +210,24 @@ mod tests {
         assert_eq!(
             theme_text(0, Path::new("/x"), &Registry::default(), "t1", None),
             "$ "
+        );
+    }
+
+    #[test]
+    fn right_prompt_renders_only_from_its_template() {
+        let reg = registry_with("t1");
+        let chrome = PromptChrome::default();
+        let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+        let none = BrishPrompt::new(0, false, &reg, "t1", &chrome, None, None);
+        assert_eq!(none.render_prompt_right(), "");
+        let empty = BrishPrompt::new(0, false, &reg, "t1", &chrome, None, Some(""));
+        assert_eq!(empty.render_prompt_right(), "");
+        let some = BrishPrompt::new(0, false, &reg, "t1", &chrome, None, Some("[{cwd}]"));
+        let right = some.render_prompt_right().to_string();
+        assert!(right.starts_with('[') && right.ends_with(']'), "{right}");
+        assert_eq!(
+            right.len(),
+            cwd.file_name().unwrap().to_string_lossy().len() + 2
         );
     }
 

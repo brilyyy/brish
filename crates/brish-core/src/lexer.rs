@@ -316,7 +316,13 @@ impl<'a> Lexer<'a> {
                 ')' => Op::RParen,
                 '<' => Op::Less,
                 '>' => Op::Great,
-                _ => return Err(Error::Parse("unexpected operator".into())),
+                _ => {
+                    let at = Span {
+                        start,
+                        end: self.pos,
+                    };
+                    return Err(Error::parse_at("unexpected operator", at));
+                }
             }
         };
         let end = self.pos;
@@ -412,7 +418,7 @@ impl<'a> Lexer<'a> {
         }
         flush_raw(&mut raw, &mut parts);
         if parts.is_empty() {
-            return Err(Error::Parse("empty word".into()));
+            return Err(Error::parse_at("empty word", Span { start, end: start }));
         }
         let end = self.pos;
         let word = Word {
@@ -803,12 +809,20 @@ pub fn plain_text(word: &Word) -> Result<String, Error> {
                         Part::Raw(t) => s.push_str(t),
                         Part::Esc(c) => s.push(*c),
                         _ => {
-                            return Err(Error::Parse("here-doc delimiter cannot contain $".into()));
+                            return Err(Error::parse_at(
+                                "here-doc delimiter cannot contain $",
+                                word.span,
+                            ));
                         }
                     }
                 }
             }
-            _ => return Err(Error::Parse("here-doc delimiter cannot contain $".into())),
+            _ => {
+                return Err(Error::parse_at(
+                    "here-doc delimiter cannot contain $",
+                    word.span,
+                ));
+            }
         }
     }
     Ok(s)

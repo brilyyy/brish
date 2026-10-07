@@ -710,6 +710,8 @@ timeout_ms = 400
             after_dollar: false,
             cwd: Path::new("."),
             line_before: before,
+            algorithm: brish_plugin::Algorithm::Prefix,
+            match_description: false,
         }
     }
 
@@ -763,6 +765,8 @@ timeout_ms = 400
             after_dollar: true,
             cwd: Path::new("."),
             line_before: "",
+            algorithm: brish_plugin::Algorithm::Prefix,
+            match_description: false,
         };
         assert!(p.complete(&ctx).is_empty());
     }

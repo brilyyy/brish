@@ -28,7 +28,8 @@ pub fn parse_lexed(lexed: lexer::Lexed) -> Result<Program, Error> {
     };
     let prog = p.parse_program(Stops::top())?;
     if p.idx < p.tokens.len() {
-        return Err(Error::parse("unexpected trailing token"));
+        let span = p.tokens[p.idx].span;
+        return Err(Error::parse_at("unexpected trailing token", span));
     }
     Ok(prog)
 }
@@ -131,6 +132,15 @@ impl Parser {
         self.idx >= self.tokens.len()
     }
 
+    /// Parse error located at the current token (last token at EOF), so
+    /// the REPL can point a caret at it.
+    fn err(&self, msg: impl Into<String>) -> Error {
+        match self.tokens.get(self.idx).or_else(|| self.tokens.last()) {
+            Some(t) => Error::parse_at(msg, t.span),
+            None => Error::parse(msg),
+        }
+    }
+
     fn skip_newlines(&mut self) {
         while matches!(self.peek_tok(), Some(Tok::Newline)) {
             self.idx += 1;
@@ -161,9 +171,9 @@ impl Parser {
                 self.idx += 1;
                 Ok(())
             }
-            Some(_) => Err(Error::parse(format!("expected `{kw}'"))),
+            Some(_) => Err(self.err(format!("expected `{kw}'"))),
             None if self.at_eof() => Err(Error::Incomplete),
-            None => Err(Error::parse(format!("expected `{kw}'"))),
+            None => Err(self.err(format!("expected `{kw}'"))),
         }
     }
 
@@ -186,7 +196,7 @@ impl Parser {
                     break;
                 }
                 if CLOSERS.contains(&w.as_str()) {
-                    return Err(Error::parse(format!("unexpected `{w}'")));
+                    return Err(self.err(format!("unexpected `{w}'")));
                 }
             }
             if stops.rparen && self.peek_op() == Some(Op::RParen) {
@@ -282,7 +292,7 @@ impl Parser {
             if !name.is_empty() && !RESERVED.contains(&name.as_str()) {
                 self.idx += 2; // name (
                 if !self.eat_op(Op::RParen) {
-                    return Err(Error::parse("expected `)' after function name"));
+                    return Err(self.err("expected `)' after function name"));
                 }
                 let body = self.parse_command()?;
                 let ok = matches!(body, Cmd::Group(_) | Cmd::Subshell(_));
@@ -291,7 +301,7 @@ impl Parser {
                     body: Box::new(body),
                 };
                 if !ok {
-                    return Err(Error::parse("function body must be a compound command"));
+                    return Err(self.err("function body must be a compound command"));
                 }
                 return self.parse_trailing_redirs(body);
             }
@@ -317,7 +327,7 @@ impl Parser {
                 }
             }
             Some(Tok::IoNumber(_)) | Some(Tok::Op(_)) => self.parse_simple()?,
-            Some(Tok::Newline) => return Err(Error::parse("expected command")),
+            Some(Tok::Newline) => return Err(self.err("expected command")),
         };
         self.parse_trailing_redirs(cmd)
     }
@@ -326,7 +336,7 @@ impl Parser {
         self.idx += 1; // (
         let prog = self.parse_program(Stops::rparen())?;
         if !self.eat_op(Op::RParen) {
-            return Err(Error::parse("expected `)'"));
+            return Err(self.err("expected `)'"));
         }
         Ok(Cmd::Subshell(prog))
     }
@@ -384,12 +394,12 @@ impl Parser {
             Some(Tok::Word(w)) => {
                 let name = literal_text(w)
                     .filter(|n| is_name(n))
-                    .ok_or_else(|| Error::parse("bad for-loop variable name"))?;
+                    .ok_or_else(|| self.err("bad for-loop variable name"))?;
                 self.idx += 1;
                 name
             }
             None => return Err(Error::Incomplete),
-            _ => return Err(Error::parse("expected for-loop variable name")),
+            _ => return Err(self.err("expected for-loop variable name")),
         };
         let words = if self.eat_word("in") {
             let mut ws = Vec::new();
@@ -411,7 +421,7 @@ impl Parser {
                         break;
                     }
                     None => return Err(Error::Incomplete),
-                    _ => return Err(Error::parse("unexpected token in for word list")),
+                    _ => return Err(self.err("unexpected token in for word list")),
                 }
             }
             Some(ws)
@@ -423,7 +433,7 @@ impl Parser {
                 if self.at_eof() {
                     return Err(Error::Incomplete);
                 }
-                return Err(Error::parse("expected `;' or newline"));
+                return Err(self.err("expected `;' or newline"));
             }
             self.idx += 1;
             self.skip_newlines();
@@ -444,7 +454,7 @@ impl Parser {
                 w
             }
             None => return Err(Error::Incomplete),
-            _ => return Err(Error::parse("expected word after `case'")),
+            _ => return Err(self.err("expected word after `case'")),
         };
         self.skip_newlines();
         self.expect_word("in")?;
@@ -476,18 +486,18 @@ impl Parser {
                         break;
                     }
                     None => return Err(Error::Incomplete),
-                    _ => return Err(Error::parse("expected `)' in case pattern")),
+                    _ => return Err(self.err("expected `)' in case pattern")),
                 }
             }
             if pats.is_empty() {
-                return Err(Error::parse("empty case pattern"));
+                return Err(self.err("empty case pattern"));
             }
             let body = self.parse_program(Stops::dsemi())?;
             if !self.eat_op(Op::Dsemi)
                 && self.peek_word_literal().as_deref() != Some("esac")
                 && !self.at_eof()
             {
-                return Err(Error::parse("expected `;;' or `esac'"));
+                return Err(self.err("expected `;;' or `esac'"));
             }
             arms.push(CaseArm { pats, body });
         }
@@ -509,9 +519,7 @@ impl Parser {
                         Some(o) if is_redir(o) => o,
                         None => return Err(Error::Incomplete),
                         _ => {
-                            return Err(Error::parse(
-                                "expected redirection operator after IO number",
-                            ));
+                            return Err(self.err("expected redirection operator after IO number"));
                         }
                     };
                     self.idx += 1;
@@ -534,7 +542,7 @@ impl Parser {
             }
         }
         if words.is_empty() && assigns.is_empty() && redirs.is_empty() {
-            return Err(Error::parse("expected command"));
+            return Err(self.err("expected command"));
         }
         Ok(Cmd::Simple(Simple {
             assigns,
@@ -552,7 +560,7 @@ impl Parser {
                 w
             }
             None => return Err(Error::Incomplete),
-            _ => return Err(Error::parse("expected redirection target")),
+            _ => return Err(self.err("expected redirection target")),
         };
         Ok(match op {
             Op::Less => Redir::Input { fd, target },
@@ -567,7 +575,7 @@ impl Parser {
                     .heredocs
                     .get(self.hd_index)
                     .cloned()
-                    .ok_or_else(|| Error::parse("missing here-doc body"))?;
+                    .ok_or_else(|| self.err("missing here-doc body"))?;
                 self.hd_index += 1;
                 Redir::Heredoc {
                     fd,
@@ -575,7 +583,7 @@ impl Parser {
                     expand: body.expand,
                 }
             }
-            _ => return Err(Error::parse("not a redirection operator")),
+            _ => return Err(self.err("not a redirection operator")),
         })
     }
 
@@ -590,9 +598,7 @@ impl Parser {
                         Some(o) if is_redir(o) => o,
                         None => return Err(Error::Incomplete),
                         _ => {
-                            return Err(Error::parse(
-                                "expected redirection operator after IO number",
-                            ));
+                            return Err(self.err("expected redirection operator after IO number"));
                         }
                     };
                     self.idx += 1;
@@ -969,11 +975,31 @@ mod tests {
         ] {
             let r = parse(src);
             assert!(
-                matches!(r, Err(Error::Parse(_))),
+                matches!(r, Err(Error::Parse { .. })),
                 "want Parse error for {src:?}, got {:?}",
                 r.map(|p| format!("{p:?}")).map_err(|e| e.to_string())
             );
         }
+    }
+
+    #[test]
+    fn parse_errors_carry_the_span_the_caret_points_at() {
+        let src = "echo hi\nfor x in | ; do echo; done";
+        let Err(e) = parse(src) else {
+            panic!("expected a parse error");
+        };
+        let span = e.span().expect("span");
+        assert_eq!(&src[span.start..span.end], "|", "{src:?}");
+    }
+
+    #[test]
+    fn closer_word_error_points_at_the_word() {
+        let src = "echo hi\nfi";
+        let Err(e) = parse(src) else {
+            panic!("expected a parse error");
+        };
+        let span = e.span().expect("span");
+        assert_eq!(&src[span.start..span.end], "fi");
     }
 
     #[test]

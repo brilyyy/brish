@@ -487,6 +487,8 @@ mod tests {
             after_dollar: false,
             cwd: tmp.path(),
             line_before: "",
+            algorithm: brish_plugin::Algorithm::Prefix,
+            match_description: false,
         };
         let out = p.complete(&ctx);
         assert_eq!(out.len(), 3);
@@ -510,6 +512,8 @@ mod tests {
             after_dollar: false,
             cwd: tmp.path(),
             line_before: "",
+            algorithm: brish_plugin::Algorithm::Prefix,
+            match_description: false,
         };
         assert!(p.complete(&ctx).is_empty());
     }
@@ -600,6 +604,8 @@ mod tests {
             after_dollar: true,
             cwd: tmp.path(),
             line_before: "",
+            algorithm: brish_plugin::Algorithm::Prefix,
+            match_description: false,
         };
         assert!(p.complete(&ctx).is_empty());
     }

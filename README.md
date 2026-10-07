@@ -70,6 +70,8 @@ Files (all optional, `~/.config/brish/`):
 [theme]
 name = "briiish-minimal"             # briiish-{minimal,plain,nerd-font,emoji}
 prompt = "{arrow} {cwd} {segments}\n❯ "   # optional template (\n = multiline)
+prompt_right = "{segments}"          # optional right-hand prompt
+prompt_transient = "> "             # optional short prompt after a command
 
 [prompt]
 indicator = "> "          # emacs prompt indicator ("" = off)
@@ -94,11 +96,22 @@ table = "auto"            # aligned plugin/theme/jobs lists
 [highlight]
 dynamic = true            # missing commands red, existing paths underlined
 
+[errors]
+style = "auto"            # auto (fancy on a tty) | fancy | short | plain
+
+[hooks]
+command_not_found = "command-not-found"   # optional, interactive
+
+[completion]
+algorithm = "prefix"      # prefix | substring | fuzzy
+match_description = false
+
 [store]
 index = "https://github.com/you/index"
 ```
 
-`relconf` reloads `config.toml` and rebuilds the plugin registry
+`relconf -e` opens `config.toml` in `$VISUAL`/`$EDITOR` first, then
+reloads it. `relconf` reloads `config.toml` and rebuilds the plugin registry
 (theme/segments/hooks live immediately; reedline-owned
 highlighter/menus/edit-mode need a restart).
 
@@ -164,6 +177,19 @@ Examples live in `examples/plugins/`, authoring guide in
   `brish-theme` (themes + prompt segments). Catalogs gated by
   `config.toml`, never crash on bad config.
 
+- `command not found` (interactive only) prints a `did you mean '…'?`
+  line when a builtin, alias or `$PATH` command is within edit distance
+  2, then runs `[hooks] command_not_found` with the name as `$1`.
+- Right prompt (`[theme] prompt_right`) and a transient prompt
+  (`[theme] prompt_transient`) — both optional, off by default.
+- `[completion] algorithm` (`prefix`/`substring`/`fuzzy`), `sort`,
+  `match_description`.
+- `HISTCONTROL=ignorespace` keeps space-prefixed lines out of history.
+- Errors: lexer/parser errors carry a source span, so an interactive
+  failure shows the offending line, a caret and `(line L, col C)`;
+  batch keeps the one-line `brish: parse error: …` text. `[errors]
+  style` (`fancy`/`short`/`plain`) overrides.
+
 ## POSIX conformance
 
 `crates/brish/tests/posix.rs` runs a curated subset against expected
@@ -196,5 +222,7 @@ completion, keymaps), `brish-theme` for prompt themes/segments.
 Runtime plugin toggling (config is read at startup; `relconf` bridges
 the gap), right prompt, quote-aware completion, process substitution,
 `trap ERR`, restricted mode (`-r`), mid-command signal traps
-(`sleep 100` is not cut short), `ls`/`zoxide` depth (`-R`, `zi`
-picker).
+(`sleep 100` is not cut short), `ls`/`zoxide` depth (`-R`, `zi` picker). Prompt segments are computed
+synchronously (a slow `git` call delays the prompt), and
+`prompt_right`/`prompt_transient` have no clock or `%`-style escapes —
+templates only.

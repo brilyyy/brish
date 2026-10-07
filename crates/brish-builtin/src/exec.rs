@@ -142,9 +142,12 @@ pub struct Engine {
     in_child: bool,
     /// Active theme name (`theme` builtin switches it at runtime).
     pub theme: String,
+    /// `[hooks] command_not_found` command line (binary passes it from
+    /// config; `relconf` refreshes it). Interactive only.
+    not_found_hook: Option<String>,
     /// `relconf` rebuild hook (binary builds it): re-reads config,
     /// returns (fresh registry, resolved theme). `None` in tests/batch.
-    relconf_fn: Option<Arc<dyn Fn() -> (Registry, String) + Send + Sync>>,
+    relconf_fn: Option<Arc<dyn Fn() -> Reload + Send + Sync>>,
 }
 
 fn platform_err(e: impl std::fmt::Display) -> Stop {
@@ -348,6 +351,7 @@ fn run_subst(src: &str, env: &Env, funcs: &HashMap<String, Cmd>) -> Result<(Stri
             hooks: Arc::new(Registry::default()),
             in_child: true,
             theme: DEFAULT_THEME.to_string(),
+            not_found_hook: None,
             relconf_fn: None,
         };
         match child.program(&prog, true) {
@@ -378,6 +382,66 @@ fn run_subst(src: &str, env: &Env, funcs: &HashMap<String, Cmd>) -> Result<(Stri
     Ok((out, code))
 }
 
+/// Single-quote `word` for safe re-entry into a command line.
+fn quote_word(word: &str) -> String {
+    let mut q = String::with_capacity(word.len() + 2);
+    q.push('\'');
+    for c in word.chars() {
+        if c == '\'' {
+            q.push_str("'\\''");
+        } else {
+            q.push(c);
+        }
+    }
+    q.push('\'');
+    q
+}
+
+/// Levenshtein distance over chars (two rows, no allocation per step
+/// beyond the two `Vec`s).
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, ca) in a.chars().enumerate() {
+        cur[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            cur[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+/// Executable names on `$PATH` (one read_dir per entry; only called
+/// when a command is missing, so the cost does not show up otherwise).
+fn path_executables(path: Option<&str>) -> Vec<String> {
+    let Some(path) = path else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for dir in path.split(':').filter(|d| !d.is_empty()) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            if let Some(n) = e.file_name().to_str() {
+                out.push(n.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// What `relconf` rebuilds: plugin registry, resolved theme, and the
+/// `[hooks] command_not_found` line.
+pub struct Reload {
+    pub registry: Registry,
+    pub theme: String,
+    pub command_not_found: Option<String>,
+}
+
 /// Saved state per temp assignment: name -> (value, exported).
 type TempSaved = Vec<(String, Option<(String, bool)>)>;
 
@@ -397,6 +461,7 @@ impl Engine {
             hooks: Arc::new(Registry::default()),
             in_child: false,
             theme: DEFAULT_THEME.to_string(),
+            not_found_hook: None,
             relconf_fn: None,
         }
     }
@@ -411,8 +476,14 @@ impl Engine {
         self.hooks = hooks;
     }
 
+    /// `[hooks] command_not_found` line (interactive only; batch keeps
+    /// POSIX output so scripts do not see extra text).
+    pub fn set_command_not_found(&mut self, hook: Option<String>) {
+        self.not_found_hook = hook;
+    }
+
     /// Install the `relconf` rebuild hook (binary only).
-    pub fn set_relconf(&mut self, f: Arc<dyn Fn() -> (Registry, String) + Send + Sync>) {
+    pub fn set_relconf(&mut self, f: Arc<dyn Fn() -> Reload + Send + Sync>) {
         self.relconf_fn = Some(f);
     }
 
@@ -1501,9 +1572,16 @@ impl Engine {
     /// registry; reedline-owned boxes (highlighter, menus, edit mode)
     /// need a shell restart — documented ceiling.
     fn relconf_cmd(&mut self, argv: &[String]) {
-        if argv.len() > 1 {
-            eprintln!("relconf: usage: relconf");
+        // `relconf [-e]`: `-e` opens `config.toml` in `$VISUAL`/
+        // `$EDITOR` first, so the reload below picks the edits up.
+        let edit = argv.get(1).is_some_and(|a| a == "-e");
+        if argv.len() > usize::from(edit) + 1 {
+            eprintln!("relconf: usage: relconf [-e]");
             self.env.status = 2;
+            return;
+        }
+        if edit && !self.edit_config() {
+            self.env.status = 1;
             return;
         }
         let Some(build) = self.relconf_fn.clone() else {
@@ -1511,10 +1589,56 @@ impl Engine {
             self.env.status = 1;
             return;
         };
-        let (reg, theme) = build();
-        self.hooks = Arc::new(reg);
+        let Reload {
+            registry,
+            theme,
+            command_not_found,
+        } = build();
+        self.hooks = Arc::new(registry);
         self.theme = theme;
+        self.not_found_hook = command_not_found;
         self.env.status = 0;
+    }
+
+    /// Open `config.toml` in `$VISUAL`/`$EDITOR` and wait. False when
+    /// no editor is configured, the path cannot be opened, or the
+    /// editor exits non-zero.
+    fn edit_config(&mut self) -> bool {
+        let path = crate::paths::config_path();
+        let editor = std::env::var("VISUAL")
+            .ok()
+            .or_else(|| std::env::var("EDITOR").ok())
+            .filter(|e| !e.trim().is_empty());
+        let Some(editor) = editor else {
+            eprintln!("relconf -e: set $VISUAL or $EDITOR first");
+            return false;
+        };
+        let mut parts = editor.split_whitespace();
+        let Some(prog) = parts.next() else {
+            return false;
+        };
+        if !path.exists() {
+            if let Err(e) = crate::paths::ensure_config_dir() {
+                eprintln!("relconf -e: {}: {e}", path.display());
+                return false;
+            }
+            if let Err(e) = std::fs::write(&path, "") {
+                eprintln!("relconf -e: {}: {e}", path.display());
+                return false;
+            }
+        }
+        let status = Proc::new(prog).args(parts).arg(&path).status();
+        match status {
+            Ok(s) if s.success() => true,
+            Ok(s) => {
+                eprintln!("relconf -e: {prog} exited with {s}");
+                false
+            }
+            Err(e) => {
+                eprintln!("relconf -e: {prog}: {e}");
+                false
+            }
+        }
     }
 
     /// Translate a builtin's `Flow` into engine control flow.
@@ -1539,9 +1663,10 @@ impl Engine {
     }
 
     fn call_function(&mut self, body: Cmd, argv: Vec<String>, plan: Plan) -> R<()> {
-        // ponytail: engine frames are chunky (~KBs); 200 keeps runaway
-        // recursion off the 2MiB test/REPL stack. Raise if frames shrink.
-        if self.depth >= 200 {
+        // ponytail: engine frames are chunky (~KBs, and grew when
+        // `Error` started carrying a span); 128 keeps runaway recursion
+        // off the 2MiB test/REPL stack. Raise if frames shrink.
+        if self.depth >= 128 {
             eprintln!("brish: {}: function nesting limit", argv[0]);
             self.env.status = 1;
             return Ok(());
@@ -1613,6 +1738,69 @@ impl Engine {
         }
     }
 
+    // ---- command not found (interactive aid) ----
+
+    /// `command not found` extras: a `did you mean` line and the
+    /// `[hooks] command_not_found` command. Interactive only — batch
+    /// keeps POSIX output (`name: command not found`, status 127) so
+    /// scripts and the dash cross-check see nothing new.
+    fn report_not_found(&mut self, name: &str) {
+        if self.in_child || !self.env.flags.contains('i') {
+            return;
+        }
+        if let Some(best) = self.suggest_command(name) {
+            eprintln!("brish: did you mean '{best}'?");
+        }
+        let Some(hook) = self.not_found_hook.clone() else {
+            return;
+        };
+        let src = format!("{hook} {}", quote_word(name));
+        match brish_core::parser::parse(&src) {
+            Ok(prog) => {
+                // The hook's own output is the answer; its exit status
+                // must not turn our 127 into something else.
+                let saved = self.env.status;
+                let _ = self.program(&prog, true);
+                self.env.status = saved;
+            }
+            Err(e) => eprintln!("brish: command_not_found hook: {e}"),
+        }
+    }
+
+    /// Closest known command within edit distance 2 (builtins, then
+    /// aliases, then `$PATH`). `None` when nothing is close enough.
+    fn suggest_command(&self, name: &str) -> Option<String> {
+        if name.len() < 3 {
+            return None;
+        }
+        let budget = if name.len() <= 4 { 1 } else { 2 };
+        let mut best: Option<(usize, String)> = None;
+        let consider = |cand: &str, best: &mut Option<(usize, String)>| {
+            let d = edit_distance(name, cand);
+            if d > budget || d == 0 {
+                return;
+            }
+            match best {
+                Some((bd, _)) if *bd <= d => {}
+                _ => *best = Some((d, cand.to_string())),
+            }
+        };
+        for c in BuiltIn::names() {
+            consider(c, &mut best);
+        }
+        for c in self.env.aliases.keys() {
+            consider(c, &mut best);
+        }
+        // The `$PATH` scan is a read_dir per entry — do it only when no
+        // builtin/alias was close enough (common typo case stays free).
+        if best.is_none() {
+            for c in path_executables(self.env.get("PATH")) {
+                consider(&c, &mut best);
+            }
+        }
+        best.map(|(_, c)| c)
+    }
+
     // ---- externals ----
 
     fn spawn_external(&mut self, argv: &[String], plan: Plan) -> R<()> {
@@ -1625,6 +1813,7 @@ impl Engine {
                 None => {
                     eprintln!("brish: {name}: command not found");
                     self.env.status = 127;
+                    self.report_not_found(name);
                     return Ok(());
                 }
             }
@@ -2244,6 +2433,47 @@ mod tests {
     }
 
     #[test]
+    fn edit_distance_basics() {
+        assert_eq!(edit_distance("echo", "echo"), 0);
+        assert_eq!(edit_distance("echo", "ech"), 1);
+        assert_eq!(edit_distance("exit", "exits"), 1);
+        assert_eq!(edit_distance("ls", "echo"), 4);
+        assert_eq!(edit_distance("", "abc"), 3);
+    }
+
+    #[test]
+    fn suggest_command_finds_close_builtins() {
+        let e = interactive_engine();
+        assert_eq!(e.suggest_command("ech").as_deref(), Some("echo"));
+        assert_eq!(e.suggest_command("exprt").as_deref(), Some("export"));
+        // too short / nothing close → no advice
+        assert_eq!(e.suggest_command("x"), None);
+        assert_eq!(e.suggest_command("zzzzzzzz"), None);
+    }
+
+    #[test]
+    fn command_not_found_hook_runs_without_changing_status() {
+        let mut e = interactive_engine();
+        // hook that fails must not turn 127 into 1
+        e.set_command_not_found(Some("false".to_string()));
+        assert_eq!(run_src(&mut e, "nosuchcmd-xyz"), 127);
+        // hook output is the answer; our own status survives
+        e.set_command_not_found(Some("echo found-it".to_string()));
+        assert_eq!(run_src(&mut e, "nosuchcmd-xyz"), 127);
+        // batch (no `i` flag): hook never runs
+        let mut b = Engine::new();
+        b.set_command_not_found(Some("echo found-it".to_string()));
+        assert_eq!(run_src(&mut b, "nosuchcmd-xyz"), 127);
+    }
+
+    #[test]
+    fn quote_word_is_shell_safe() {
+        assert_eq!(quote_word("ls"), "'ls'");
+        assert_eq!(quote_word("it's"), r"'it'\''s'");
+        assert_eq!(quote_word("a b"), "'a b'");
+    }
+
+    #[test]
     fn aliases_expand_interactive_only() {
         let mut e = interactive_engine();
         run_src(&mut e, "alias f=false");
@@ -2664,13 +2894,23 @@ mod tests {
                 }
             }
             reg.themes.push(Box::new(T));
-            (reg, "t2".into())
+            Reload {
+                registry: reg,
+                theme: "t2".into(),
+                command_not_found: Some("echo reloaded".into()),
+            }
         }));
         assert_eq!(run_src(&mut e, "relconf"), 0);
         assert_eq!(e.theme, "t2");
         assert_eq!(e.hooks.themes.len(), 1);
+        // the reload also refreshes `[hooks] command_not_found`
+        assert_eq!(e.not_found_hook.as_deref(), Some("echo reloaded"));
         // usage error
         assert_eq!(run_src(&mut e, "relconf now"), 2);
+        // `-e` edits first, then reloads (editor behaviour itself is
+        // covered end-to-end in tests/batch.rs — this crate forbids
+        // `unsafe`, and Rust 2024 makes env mutation unsafe).
+        assert_eq!(run_src(&mut e, "relconf -e extra"), 2);
         // no hook → status 1, shell survives
         let mut plain = Engine::new();
         assert_eq!(run_src(&mut plain, "relconf"), 1);

@@ -52,7 +52,7 @@ impl brish_plugin::CompletionProvider for PackProvider {
             self.pack.subcommands
         };
         for (val, desc) in candidates {
-            if val.starts_with(ctx.word) {
+            if ctx.matches_with(val, Some(desc)) {
                 out.push(Completion {
                     value: (*val).to_string(),
                     description: Some((*desc).to_string()),

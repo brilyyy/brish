@@ -5,7 +5,27 @@
 Hardening close-out from the beta: stability proofs, missing POSIX
 builtins, mid-command traps, quote-aware completion, docs.
 
+### Fixed
+- `brish-platform` umask call compiles on macOS (`mode_t` is `u16`
+  there, `u32` on Linux).
+- Function-nesting guard lowered 200 → 128 so the chunky engine frames
+  stay inside the 2MiB test/REPL stack.
+
 ### Added
+- `command not found` aid (interactive only): a `did you mean '…'?`
+  line for builtins, aliases and `$PATH` within edit distance 2, plus
+  `[hooks] command_not_found` — a command line receiving the missing
+  name as `$1`, its stdout being the advice.
+- Right prompt (`[theme] prompt_right`) and transient prompt
+  (`[theme] prompt_transient`, rendered after each command).
+- `relconf -e`: open `config.toml` in `$VISUAL`/`$EDITOR`, then reload.
+- `[completion] algorithm` (`prefix`/`substring`/`fuzzy`), `sort`, and
+  `match_description`; providers match through `CompletionCtx::matches`.
+- `HISTCONTROL=ignorespace`.
+- Source-spanning errors: interactive parse/lexer failures print the
+  offending line, a caret and `(line L, col C)`; `[errors] style`
+  picks `fancy` (default on a tty), `short` (default in batch) or
+  `plain`. Batch text is unchanged.
 - `getopts` (POSIX: clusters, option-arguments, silent `:` mode, `--`).
 - `local` (bash-style dynamic scoping in functions — save/restore
   per call frame on function return).

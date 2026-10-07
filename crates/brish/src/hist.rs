@@ -4,7 +4,9 @@
 //! duplicates (bash `ignoredups` semantics, always on). This wrapper
 //! adds `erasedups` / `ignoreboth`: when enabled, saving a line that
 //! appears earlier rebuilds the store without the old copies (bash
-//! keeps only the newest occurrence, at the end).
+//! keeps only the newest occurrence, at the end), and `ignorespace`
+//! skips lines that start with a space (nushell keeps those out of
+//! history by default).
 //!
 //! ponytail: rebuild uses `clear()` (drops the file) + re-save — a
 //! crash between those loses history that session. Ceiling: in-place
@@ -22,22 +24,29 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[derive(Default)]
 pub struct HistControl {
     pub erasedups: AtomicBool,
+    /// `HISTCONTROL=ignorespace`: a leading space keeps the line out of
+    /// history (the "don't remember this" convention).
+    pub ignorespace: AtomicBool,
 }
 
 impl HistControl {
     /// Parse a `HISTCONTROL` value: `ignoredups`, `erasedups`,
-    /// `ignoreboth`, comma/colon separated. Ignoredups is free
-    /// (consecutive dedup is built in) — we only flip `erasedups`.
+    /// `ignoreboth`, `ignorespace`, comma/colon separated. Ignoredups
+    /// is free (consecutive dedup is built in) — the rest flip flags.
     pub fn set_from_value(&self, v: Option<&str>) {
-        let on = v.is_some_and(|s| {
-            s.split([',', ':'])
-                .any(|p| p == "erasedups" || p == "ignoreboth")
-        });
-        self.erasedups.store(on, Ordering::Relaxed);
+        let has = |want: &str| v.is_some_and(|s| s.split([',', ':']).any(|p| p == want));
+        self.erasedups
+            .store(has("erasedups") || has("ignoreboth"), Ordering::Relaxed);
+        self.ignorespace
+            .store(has("ignorespace"), Ordering::Relaxed);
     }
 
     pub fn erasedups(&self) -> bool {
         self.erasedups.load(Ordering::Relaxed)
+    }
+
+    pub fn ignorespace(&self) -> bool {
+        self.ignorespace.load(Ordering::Relaxed)
     }
 }
 
@@ -55,6 +64,12 @@ impl BrishHistory {
 
 impl History for BrishHistory {
     fn save(&mut self, h: HistoryItem) -> Result<HistoryItem> {
+        // `ignorespace`: " ls -rf /" is deliberately not remembered —
+        // drop it outright (bash semantics), returning the item
+        // unchanged so the REPL keeps going.
+        if self.ctl.ignorespace() && h.command_line.starts_with(' ') {
+            return Ok(h);
+        }
         if self.ctl.erasedups() && !h.command_line.is_empty() {
             let all = self
                 .inner
@@ -133,10 +148,41 @@ mod tests {
         assert!(c.erasedups());
         c.set_from_value(Some("ignoredups,erasedups"));
         assert!(c.erasedups());
+        c.set_from_value(Some("ignorespace"));
+        assert!(c.ignorespace() && !c.erasedups());
         c.set_from_value(Some("ignoredups:erasedups"));
         assert!(c.erasedups());
         c.set_from_value(None);
         assert!(!c.erasedups());
+    }
+
+    #[test]
+    fn ignorespace_keeps_space_prefixed_lines_out_of_history() {
+        let ctl = Arc::new(HistControl::default());
+        ctl.set_from_value(Some("ignorespace"));
+        assert!(ctl.ignorespace());
+        let mut h = BrishHistory::new(FileBackedHistory::default(), Arc::clone(&ctl));
+        h.save(item("secret --token x")).unwrap();
+        h.save(item(" ls")).unwrap();
+        let all = h
+            .search(SearchQuery::everything(SearchDirection::Forward, None))
+            .unwrap();
+        let lines: Vec<&str> = all.iter().map(|i| i.command_line.as_str()).collect();
+        assert_eq!(
+            lines,
+            vec!["secret --token x"],
+            "space-prefixed line skipped"
+        );
+        // off → saved
+        let ctl_off = Arc::new(HistControl::default());
+        let mut h2 = BrishHistory::new(FileBackedHistory::default(), ctl_off);
+        h2.save(item(" ls")).unwrap();
+        assert_eq!(
+            h2.search(SearchQuery::everything(SearchDirection::Forward, None))
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]

@@ -9,7 +9,7 @@
 //! stays a plain loop with merge + dedupe + cap.
 
 use brish_builtin::BuiltIn;
-use brish_plugin::{Completion, CompletionCtx, Plugin, Registry};
+use brish_plugin::{Algorithm, Completion, CompletionCtx, Plugin, Registry};
 use reedline::{Completer, CompletionResult, Span, Suggestion};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -125,7 +125,7 @@ impl brish_plugin::CompletionProvider for CommandsProvider {
         let mut out = Vec::new();
         let mut seen: HashSet<&str> = HashSet::new();
         for c in BuiltIn::names().iter().chain(ENGINE_COMMANDS) {
-            if c.starts_with(ctx.word) && seen.insert(c) {
+            if ctx.matches(c) && seen.insert(c) {
                 out.push(Completion {
                     value: (*c).to_string(),
                     description: Some("builtin".to_string()),
@@ -134,7 +134,7 @@ impl brish_plugin::CompletionProvider for CommandsProvider {
             }
         }
         for c in self.path_commands() {
-            if c.starts_with(ctx.word) && seen.insert(c.as_str()) && out.len() < MAX_SUGGESTIONS {
+            if ctx.matches(c) && seen.insert(c.as_str()) && out.len() < MAX_SUGGESTIONS {
                 out.push(Completion {
                     value: c.clone(),
                     description: None,
@@ -165,7 +165,7 @@ impl brish_plugin::CompletionProvider for VarsProvider {
         let names = self.names.lock().unwrap_or_else(|e| e.into_inner());
         names
             .iter()
-            .filter(|v| v.starts_with(ctx.word))
+            .filter(|v| ctx.matches(v))
             .take(MAX_SUGGESTIONS)
             .map(|v| Completion {
                 value: format!("${v}"),
@@ -179,8 +179,9 @@ impl brish_plugin::CompletionProvider for VarsProvider {
 /// File/dir suggestions relative to `ctx.cwd` (`~` honoured).
 pub struct FilesProvider;
 
-fn completions_for(word: &str, base: &Path) -> Vec<Completion> {
-    let (dir_part, name_part) = match word.rfind('/') {
+fn completions_for(ctx: &CompletionCtx<'_>, base: &Path) -> Vec<Completion> {
+    let word = ctx.word;
+    let (dir_part, _name_part) = match word.rfind('/') {
         Some(i) => (&word[..=i], &word[i + 1..]),
         None => ("", word),
     };
@@ -201,7 +202,7 @@ fn completions_for(word: &str, base: &Path) -> Vec<Completion> {
         .flatten()
         .filter_map(|e| {
             let n = e.file_name().to_str()?.to_string();
-            n.starts_with(name_part)
+            ctx.matches(&n)
                 .then(|| (n, e.file_type().is_ok_and(|t| t.is_dir())))
         })
         .collect();
@@ -229,7 +230,7 @@ impl brish_plugin::CompletionProvider for FilesProvider {
         if ctx.is_command || ctx.after_dollar {
             return Vec::new();
         }
-        completions_for(ctx.word, ctx.cwd)
+        completions_for(ctx, ctx.cwd)
     }
 }
 
@@ -254,15 +255,43 @@ impl Plugin for DefaultCompletion {
 
 // ---- router ----
 
+/// `[completion]` knobs, applied by the router after the providers.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MatchOpts {
+    pub algorithm: Algorithm,
+    /// Sort candidates by value before handing them to the menu.
+    pub sort: bool,
+    /// Keep a candidate whose *description* matches even when the
+    /// value does not (nushell's `match_description`).
+    pub match_description: bool,
+}
+
+impl MatchOpts {
+    /// Build from config; defaults are prefix matching, sorted.
+    pub fn from_config(cfg: &crate::config::Config) -> Self {
+        Self {
+            algorithm: cfg
+                .completion_algorithm
+                .as_deref()
+                .and_then(Algorithm::from_name)
+                .unwrap_or_default(),
+            sort: cfg.completion_sort.unwrap_or(true),
+            match_description: cfg.completion_match_description.unwrap_or(false),
+        }
+    }
+}
+
 /// Completer over a registry snapshot. Context detection stays here;
 /// providers answer only for their slice.
 pub struct BrishCompleter {
     providers: Arc<Registry>,
+    opts: MatchOpts,
 }
 
 impl BrishCompleter {
-    pub fn new(providers: Arc<Registry>) -> Self {
-        Self { providers }
+    /// With `[completion]` knobs from config.
+    pub fn new(providers: Arc<Registry>, opts: MatchOpts) -> Self {
+        Self { providers, opts }
     }
 
     fn suggestions(&self, line: &str, pos: usize) -> Vec<Suggestion> {
@@ -285,17 +314,28 @@ impl BrishCompleter {
             after_dollar,
             cwd,
             line_before: &line[..start],
+            algorithm: self.opts.algorithm,
+            match_description: self.opts.match_description,
         };
 
         let mut merged: Vec<Completion> = Vec::new();
         for p in &self.providers.completion_providers {
             merged.extend(p.complete(&ctx));
         }
+        // Providers already matched (value, and description when
+        // `match_description` is on); the router only dedupes, sorts
+        // and caps.
+        let opts = self.opts;
         let mut seen = HashSet::new();
-        merged
+        let mut out: Vec<Completion> = merged
             .into_iter()
             .filter(|c| seen.insert(c.value.clone()))
             .take(MAX_SUGGESTIONS)
+            .collect();
+        if opts.sort {
+            out.sort_by_key(|c| c.value.to_lowercase());
+        }
+        out.into_iter()
             .map(|c| {
                 let value = match quote {
                     Some(q) => format!("{q}{}", c.value),
@@ -388,6 +428,8 @@ mod tests {
             after_dollar,
             cwd,
             line_before: "",
+            algorithm: Algorithm::Prefix,
+            match_description: false,
         }
     }
 
@@ -468,11 +510,99 @@ mod tests {
     }
 
     #[test]
+    fn algorithms_match_prefix_substring_and_fuzzy() {
+        use brish_plugin::Algorithm;
+        let (prefix, substring, fuzzy) =
+            (Algorithm::Prefix, Algorithm::Substring, Algorithm::Fuzzy);
+        assert!(prefix.matches("gi", "git"));
+        assert!(!prefix.matches("gt", "git"));
+        assert!(substring.matches("it", "git"));
+        assert!(!substring.matches("gt", "git"), "g..t is not contiguous");
+        // subsequence, case-insensitive
+        assert!(fuzzy.matches("gt", "git"));
+        assert!(fuzzy.matches("GIT", "git"));
+        assert!(!fuzzy.matches("tg", "git"));
+        // empty word matches everything (bare Tab)
+        assert!(prefix.matches("", "anything"));
+        assert_eq!(Algorithm::from_name("FUZZY"), Some(fuzzy));
+        assert_eq!(Algorithm::from_name("nope"), None);
+    }
+
+    #[test]
+    fn router_applies_algorithm_sort_and_description_match() {
+        // provider matches with the ctx algorithm; values deliberately
+        // unsorted so `sort` has something to do
+        struct P;
+        impl brish_plugin::CompletionProvider for P {
+            fn complete(&self, ctx: &CompletionCtx<'_>) -> Vec<Completion> {
+                ["zeta", "alpha", "beta"]
+                    .iter()
+                    .filter(|v| {
+                        ctx.matches_with(v, if **v == "zeta" { Some("tailing") } else { None })
+                    })
+                    .map(|v| Completion {
+                        value: (*v).to_string(),
+                        description: match *v {
+                            "zeta" => Some("tailing".to_string()),
+                            _ => None,
+                        },
+                        keep_typing: false,
+                    })
+                    .collect()
+            }
+        }
+        let dir = Path::new(".");
+        let with_p = |opts: MatchOpts| {
+            let mut reg = Registry::default();
+            reg.completion_providers.push(Box::new(P));
+            BrishCompleter::new(Arc::new(reg), opts)
+        };
+
+        let c = with_p(MatchOpts {
+            algorithm: brish_plugin::Algorithm::Prefix,
+            sort: true,
+            match_description: false,
+        });
+        let got: Vec<String> = c
+            .suggestions_in("al", 2, dir)
+            .iter()
+            .map(|s| s.value.clone())
+            .collect();
+        assert_eq!(got, vec!["alpha"], "prefix match, sorted");
+
+        // substring matches inside a value
+        let c = with_p(MatchOpts {
+            algorithm: brish_plugin::Algorithm::Substring,
+            sort: false,
+            match_description: false,
+        });
+        let got: Vec<String> = c
+            .suggestions_in("et", 2, dir)
+            .iter()
+            .map(|s| s.value.clone())
+            .collect();
+        assert_eq!(got, vec!["zeta", "beta"], "substring keeps provider order");
+
+        // match_description: word matches the description, not the value
+        let c = with_p(MatchOpts {
+            algorithm: brish_plugin::Algorithm::Substring,
+            sort: true,
+            match_description: true,
+        });
+        let got: Vec<String> = c
+            .suggestions_in("ailin", 5, dir)
+            .iter()
+            .map(|s| s.value.clone())
+            .collect();
+        assert_eq!(got, vec!["zeta"], "description match keeps zeta");
+    }
+
+    #[test]
     fn router_merges_dedupes_and_caps() {
         let mut reg = Registry::default();
         reg.completion_providers.push(Box::new(Dup("one")));
         reg.completion_providers.push(Box::new(Dup("two")));
-        let c = BrishCompleter::new(Arc::new(reg));
+        let c = BrishCompleter::new(Arc::new(reg), MatchOpts::default());
         let out = c.suggestions("x", 1);
         let vals: Vec<&str> = out.iter().map(|s| s.value.as_str()).collect();
         // "same" appears once (first provider wins), one/two both kept
@@ -494,7 +624,7 @@ mod tests {
         reg.completion_providers
             .push(Box::new(VarsProvider::new(names)));
         reg.completion_providers.push(Box::new(FilesProvider));
-        let c = BrishCompleter::new(Arc::new(reg));
+        let c = BrishCompleter::new(Arc::new(reg), MatchOpts::default());
 
         // command position: builtins, not files
         let out = c.suggestions_in("ec", 2, dir.path());

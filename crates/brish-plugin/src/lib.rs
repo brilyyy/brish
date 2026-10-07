@@ -64,6 +64,48 @@ pub struct Completion {
     pub keep_typing: bool,
 }
 
+/// How Tab matches a candidate against the typed word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Algorithm {
+    /// `gi` matches `git` (default).
+    #[default]
+    Prefix,
+    /// `gt` matches `git` (anywhere, case-insensitive).
+    Substring,
+    /// `gt` matches `git`, `gi` matches `git` — chars in order.
+    Fuzzy,
+}
+
+impl Algorithm {
+    /// `[completion] algorithm` value; unknown names keep the default.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "prefix" => Some(Algorithm::Prefix),
+            "substring" => Some(Algorithm::Substring),
+            "fuzzy" => Some(Algorithm::Fuzzy),
+            _ => None,
+        }
+    }
+
+    /// Does `haystack` match `needle`? Empty needle matches anything.
+    pub fn matches(self, needle: &str, haystack: &str) -> bool {
+        if needle.is_empty() {
+            return true;
+        }
+        match self {
+            Algorithm::Prefix => haystack.starts_with(needle),
+            Algorithm::Substring => haystack.to_lowercase().contains(&needle.to_lowercase()),
+            Algorithm::Fuzzy => {
+                let mut hay = haystack.chars().map(|c| c.to_ascii_lowercase());
+                needle
+                    .chars()
+                    .map(|c| c.to_ascii_lowercase())
+                    .all(|c| hay.any(|h| h == c))
+            }
+        }
+    }
+}
+
 pub struct CompletionCtx<'a> {
     /// Word under the cursor (without a leading `$` when `after_dollar`).
     pub word: &'a str,
@@ -75,6 +117,28 @@ pub struct CompletionCtx<'a> {
     /// Raw line text before the current word — lets providers match on
     /// the parent command (e.g. `args.git` wordlists).
     pub line_before: &'a str,
+    /// Matching rule from `[completion] algorithm`.
+    pub algorithm: Algorithm,
+    /// `[completion] match_description`: a candidate also matches when
+    /// its description does (nushell's behaviour).
+    pub match_description: bool,
+}
+
+impl CompletionCtx<'_> {
+    /// Does `candidate` match the word under the cursor, using the
+    /// configured algorithm? Providers should call this instead of a
+    /// hand-rolled `starts_with`.
+    pub fn matches(&self, candidate: &str) -> bool {
+        self.algorithm.matches(self.word, candidate)
+    }
+
+    /// Like [`Self::matches`], but with the candidate's description
+    /// accepted too when `[completion] match_description` is on.
+    pub fn matches_with(&self, candidate: &str, description: Option<&str>) -> bool {
+        self.matches(candidate)
+            || (self.match_description
+                && description.is_some_and(|d| self.algorithm.matches(self.word, d)))
+    }
 }
 
 pub trait CompletionProvider: Send + Sync {

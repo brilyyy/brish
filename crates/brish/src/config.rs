@@ -21,6 +21,41 @@ pub struct ConfigFile {
     pub plugins: Option<PluginsSection>,
     pub prompt: Option<PromptSection>,
     pub highlight: Option<HighlightSection>,
+    pub errors: Option<ErrorsSection>,
+    pub hooks: Option<HooksSection>,
+    pub completion: Option<CompletionSection>,
+}
+
+/// `[completion]` — how Tab matches candidates.
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+pub struct CompletionSection {
+    /// `prefix` (default), `substring`, or `fuzzy` (subsequence).
+    pub algorithm: Option<String>,
+    /// Sort candidates alphabetically before display (default true).
+    pub sort: Option<bool>,
+    /// Also match the typed text against each candidate's description.
+    pub match_description: Option<bool>,
+}
+
+/// `[hooks]` — shell-level hooks the engine runs.
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+pub struct HooksSection {
+    /// Command line run with the missing name as its only argument
+    /// when a command is not found (interactive only). Its stdout is
+    /// the answer (nushell's `command_not_found` hook, Arch/NixOS
+    /// `command-not-found` style).
+    pub command_not_found: Option<String>,
+}
+
+/// `[errors]` — error report verbosity.
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+pub struct ErrorsSection {
+    /// `fancy` (source excerpt + caret), `short`, or `plain`. Absent =
+    /// mode default (fancy on a tty, short in batch).
+    pub style: Option<String>,
 }
 
 /// `[highlight]` — zsh-patina-style dynamic highlighting knobs.
@@ -39,6 +74,13 @@ pub struct ThemeSection {
     /// `\n` allowed). Overrides the named-theme render when set;
     /// `PS1` env still wins.
     pub prompt: Option<String>,
+    /// Right-hand prompt template (same tokens as `prompt`). Empty /
+    /// absent = no right prompt.
+    pub prompt_right: Option<String>,
+    /// Transient prompt (nushell-style): shown after a command runs,
+    /// so a long prompt does not scroll away with the output. Absent
+    /// or empty = no transient prompt (behaviour unchanged).
+    pub prompt_transient: Option<String>,
 }
 
 /// Prompt chrome (indicators + completion description style).
@@ -72,10 +114,24 @@ pub struct Config {
     pub theme: Option<String>,
     /// `[theme] prompt` template, if any (overrides named theme).
     pub theme_prompt: Option<String>,
+    /// `[theme] prompt_right` template, if any.
+    pub theme_prompt_right: Option<String>,
+    /// `[theme] prompt_transient` template, if any.
+    pub theme_prompt_transient: Option<String>,
     /// Prompt chrome with defaults applied.
     pub prompt: PromptChrome,
     /// `[highlight] dynamic` (zsh-patina-style): default true.
     pub dynamic_highlight: bool,
+    /// `[errors] style` override, if any.
+    pub error_style: Option<String>,
+    /// `[hooks] command_not_found` line, if any.
+    pub command_not_found: Option<String>,
+    /// `[completion] algorithm`, if any.
+    pub completion_algorithm: Option<String>,
+    /// `[completion] sort`, if any.
+    pub completion_sort: Option<bool>,
+    /// `[completion] match_description`, if any.
+    pub completion_match_description: Option<bool>,
     enabled: Option<Vec<String>>,
     disabled: Option<Vec<String>>,
 }
@@ -85,8 +141,15 @@ impl Default for Config {
         Self {
             theme: None,
             theme_prompt: None,
+            theme_prompt_right: None,
+            theme_prompt_transient: None,
             prompt: PromptChrome::default(),
             dynamic_highlight: true,
+            error_style: None,
+            command_not_found: None,
+            completion_algorithm: None,
+            completion_sort: None,
+            completion_match_description: None,
             enabled: None,
             disabled: None,
         }
@@ -179,7 +242,10 @@ pub fn load_from(path: &Path, known: &[&str]) -> Config {
         }
     };
     let theme = file.theme.as_ref().and_then(|t| t.name.clone());
-    let theme_prompt = file.theme.and_then(|t| t.prompt);
+    let (theme_prompt, theme_prompt_right, theme_prompt_transient) = match file.theme {
+        Some(t) => (t.prompt, t.prompt_right, t.prompt_transient),
+        None => (None, None, None),
+    };
     let mut prompt = PromptChrome::default();
     if let Some(p) = file.prompt {
         if let Some(v) = p.indicator {
@@ -208,8 +274,18 @@ pub fn load_from(path: &Path, known: &[&str]) -> Config {
     let cfg = Config {
         theme,
         theme_prompt,
+        theme_prompt_right,
+        theme_prompt_transient,
         prompt,
         dynamic_highlight,
+        error_style: file.errors.and_then(|e| e.style),
+        command_not_found: file
+            .hooks
+            .and_then(|h| h.command_not_found)
+            .filter(|h| !h.trim().is_empty()),
+        completion_algorithm: file.completion.as_ref().and_then(|c| c.algorithm.clone()),
+        completion_sort: file.completion.as_ref().and_then(|c| c.sort),
+        completion_match_description: file.completion.as_ref().and_then(|c| c.match_description),
         enabled,
         disabled,
     };
