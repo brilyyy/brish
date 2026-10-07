@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 400" width="1280" height="400" role="img" aria-label="briSH — a memory-safe POSIX shell">
+  <title>briSH — a memory-safe POSIX shell</title>
+  <g transform="translate(200 104) scale(3)" fill="none" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke="#1e66f5" d="M21 9V55M21 24C42 25 50 31 52 39.5C50 48 42 54 21 55"/>
+    <path stroke="#179299" d="M31 32.5 38.5 39.5 31 46.5"/>
+  </g>
+  <text x="452" y="226" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="132" font-weight="700" letter-spacing="-4"><tspan fill="#4c4f69">bri</tspan><tspan fill="#179299">SH</tspan></text>
+  <text x="458" y="290" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="40" font-weight="400" letter-spacing="-0.4" fill="#6c6f85">a memory-safe POSIX shell</text>
+</svg>

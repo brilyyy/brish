@@ -1,4 +1,7 @@
-# briSH
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.svg">
+  <img alt="briSH — a memory-safe POSIX shell" src="assets/banner.svg">
+</picture>
 
 **briSH** (brily SHell) — a memory-safe, crash-resistant POSIX shell
 written in Rust. Unix-only (Linux/macOS).
