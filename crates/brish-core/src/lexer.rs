@@ -432,7 +432,7 @@ impl<'a> Lexer<'a> {
                 Some(Tok::Op(Op::DLessDash))
             );
             let delim = plain_text(&word)?;
-            let expand = !word_contains_single(&word);
+            let expand = !word_quoted(&word);
             self.pending.push(PendingHd {
                 delim,
                 expand,
@@ -828,8 +828,12 @@ pub fn plain_text(word: &Word) -> Result<String, Error> {
     Ok(s)
 }
 
-fn word_contains_single(word: &Word) -> bool {
-    word.parts.iter().any(|p| matches!(p, Part::Single(_)))
+/// Any quoting (single quotes, double quotes, or backslash escapes) in
+/// the here-doc delimiter word disables expansion of the body (POSIX).
+fn word_quoted(word: &Word) -> bool {
+    word.parts
+        .iter()
+        .any(|p| matches!(p, Part::Single(_) | Part::Double(_) | Part::Esc(_)))
 }
 
 /// Plain text of a word if it is fully literal (no expansions).
@@ -981,7 +985,7 @@ mod tests {
         assert!(!out.heredocs[0].expand);
 
         let out = lex("cat <<\"E\"OF\n$x\nEOF\n").unwrap();
-        assert!(out.heredocs[0].expand);
+        assert!(!out.heredocs[0].expand);
     }
 
     #[test]
