@@ -9,14 +9,14 @@ use std::sync::Arc;
 /// Plugin that installs the default Emacs edit mode.
 pub struct EmacsModePlugin;
 
-impl brish_plugin::Plugin for EmacsModePlugin {
+impl brish_plugin_api::Plugin for EmacsModePlugin {
     fn name(&self) -> &str {
         "brish-emacs"
     }
 
-    fn install(&self, reg: &mut brish_plugin::Registry) {
+    fn install(&self, reg: &mut brish_plugin_api::Registry) {
         struct F;
-        impl brish_plugin::EditModeFactory for F {
+        impl brish_plugin_api::EditModeFactory for F {
             fn create(&self, keybindings: reedline::Keybindings) -> Box<dyn reedline::EditMode> {
                 Box::new(reedline::Emacs::new(keybindings))
             }
@@ -28,14 +28,14 @@ impl brish_plugin::Plugin for EmacsModePlugin {
 /// Plugin that installs vi keybindings.
 pub struct ViModePlugin;
 
-impl brish_plugin::Plugin for ViModePlugin {
+impl brish_plugin_api::Plugin for ViModePlugin {
     fn name(&self) -> &str {
         "brish-vi"
     }
 
-    fn install(&self, reg: &mut brish_plugin::Registry) {
+    fn install(&self, reg: &mut brish_plugin_api::Registry) {
         struct F;
-        impl brish_plugin::EditModeFactory for F {
+        impl brish_plugin_api::EditModeFactory for F {
             fn create(&self, keybindings: reedline::Keybindings) -> Box<dyn reedline::EditMode> {
                 let kb = keybindings;
                 Box::new(reedline::Vi::new(kb.clone(), kb.clone(), kb))
@@ -48,14 +48,14 @@ impl brish_plugin::Plugin for ViModePlugin {
 /// Plugin that installs the default completion menu.
 pub struct DefaultMenusPlugin;
 
-impl brish_plugin::Plugin for DefaultMenusPlugin {
+impl brish_plugin_api::Plugin for DefaultMenusPlugin {
     fn name(&self) -> &str {
         "brish-menus"
     }
 
-    fn install(&self, reg: &mut brish_plugin::Registry) {
+    fn install(&self, reg: &mut brish_plugin_api::Registry) {
         struct F;
-        impl brish_plugin::MenuFactory for F {
+        impl brish_plugin_api::MenuFactory for F {
             fn create(&self) -> Box<dyn reedline::Menu> {
                 // Muted descriptions by default (NOTES.md 8); config
                 // `[prompt] completion_description` overrides (off = plain).
@@ -75,14 +75,14 @@ impl brish_plugin::Plugin for DefaultMenusPlugin {
 /// Plugin that installs the history-search menu (Ctrl-R).
 pub struct HistorySearchPlugin;
 
-impl brish_plugin::Plugin for HistorySearchPlugin {
+impl brish_plugin_api::Plugin for HistorySearchPlugin {
     fn name(&self) -> &str {
         "brish-history-search"
     }
 
-    fn install(&self, reg: &mut brish_plugin::Registry) {
+    fn install(&self, reg: &mut brish_plugin_api::Registry) {
         struct F;
-        impl brish_plugin::MenuFactory for F {
+        impl brish_plugin_api::MenuFactory for F {
             fn create(&self) -> Box<dyn reedline::Menu> {
                 Box::new(ListMenu::default().with_name(crate::keymap::HISTORY_MENU))
             }
@@ -97,17 +97,17 @@ pub struct HistoryPlugin {
     pub ctl: Arc<crate::hist::HistControl>,
 }
 
-impl brish_plugin::Plugin for HistoryPlugin {
+impl brish_plugin_api::Plugin for HistoryPlugin {
     fn name(&self) -> &str {
         "brish-history"
     }
 
-    fn install(&self, reg: &mut brish_plugin::Registry) {
+    fn install(&self, reg: &mut brish_plugin_api::Registry) {
         let ctl = Arc::clone(&self.ctl);
         struct F {
             ctl: Arc<crate::hist::HistControl>,
         }
-        impl brish_plugin::HistoryFactory for F {
+        impl brish_plugin_api::HistoryFactory for F {
             fn create(&self) -> Box<dyn reedline::History> {
                 match FileBackedHistory::with_file(1000, crate::config::history_path()) {
                     Ok(h) => Box::new(crate::hist::BrishHistory::new(h, Arc::clone(&self.ctl))),
@@ -128,14 +128,14 @@ impl brish_plugin::Plugin for HistoryPlugin {
 /// Plugin that installs the default validator.
 pub struct ValidatorPlugin;
 
-impl brish_plugin::Plugin for ValidatorPlugin {
+impl brish_plugin_api::Plugin for ValidatorPlugin {
     fn name(&self) -> &str {
         "brish-validator"
     }
 
-    fn install(&self, reg: &mut brish_plugin::Registry) {
+    fn install(&self, reg: &mut brish_plugin_api::Registry) {
         struct F;
-        impl brish_plugin::ValidatorFactory for F {
+        impl brish_plugin_api::ValidatorFactory for F {
             fn create(&self) -> Box<dyn reedline::Validator> {
                 Box::new(DefaultValidator)
             }

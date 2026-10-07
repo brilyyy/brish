@@ -1,10 +1,11 @@
 //! briSH prompt catalog: themes + prompt segments.
 //!
-//! Split out of `brish-plugin` so theme authors depend on this crate
-//! (+ the `brish-plugin` traits) without pulling the behavioral plugin
-//! surface. `brish-plugin` stays the API: traits + `Registry` +
-//! announce. Registration lives in the binary (`brish`), which filters
-//! both catalogs through `config.toml`.
+//! Split out of `brish-plugin-api` so theme authors depend on this
+//! crate (+ the `brish-plugin-api` traits) without pulling the
+//! behavioral plugin surface. `brish-plugin-api` stays the API: the
+//! traits, `Registry`, and the announce hook. Registration lives in the
+//! binary (`brish`), which filters both catalogs through
+//! `config.toml`.
 pub mod aws;
 pub mod docker;
 pub mod git;
@@ -13,7 +14,7 @@ pub mod segments;
 pub mod themes;
 pub mod venv;
 
-use brish_plugin::CatalogEntry;
+use brish_plugin_api::CatalogEntry;
 
 use aws::AwsPrompt;
 use docker::DockerPrompt;

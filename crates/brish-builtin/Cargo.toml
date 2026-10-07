@@ -12,7 +12,7 @@ workspace = true
 brish-core = { path = "../brish-core" }
 brish-words = { path = "../brish-words" }
 brish-platform = { path = "../brish-platform" }
-brish-plugin = { path = "../brish-plugin" }
+brish-plugin-api = { path = "../brish-plugin-api" }
 dirs.workspace = true
 serde.workspace = true
 toml.workspace = true

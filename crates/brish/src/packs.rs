@@ -6,7 +6,7 @@
 //! `enabled = ["brish-pack-git", "brish-pack-docker"]` or
 //! `disabled = ["pack-kubectl"]`.
 
-use brish_plugin::{Completion, CompletionCtx, Plugin, Registry};
+use brish_plugin_api::{Completion, CompletionCtx, Plugin, Registry};
 
 #[derive(Debug)]
 pub struct Pack {
@@ -33,7 +33,7 @@ impl PackProvider {
     }
 }
 
-impl brish_plugin::CompletionProvider for PackProvider {
+impl brish_plugin_api::CompletionProvider for PackProvider {
     fn complete(&self, ctx: &CompletionCtx<'_>) -> Vec<Completion> {
         if ctx.is_command || ctx.after_dollar {
             return Vec::new();

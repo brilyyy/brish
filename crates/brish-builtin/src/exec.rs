@@ -22,7 +22,7 @@ use brish_core::expand::{self, CmdSubst};
 use brish_core::lexer::Word;
 use brish_core::path::find_in_path;
 
-use brish_plugin::{CmdCtx, DEFAULT_THEME, HookAction, Registry};
+use brish_plugin_api::{CmdCtx, DEFAULT_THEME, HookAction, Registry};
 
 use crate::{BuiltIn, Flow, run as run_builtin};
 use brish_platform::proc::{
@@ -2511,7 +2511,7 @@ mod tests {
 
     // ---- plugin hooks (plan 6.6) ----
 
-    use brish_plugin::{ChdirHook, PostExecHook, PreExecHook, PromptSegment, Theme};
+    use brish_plugin_api::{ChdirHook, PostExecHook, PreExecHook, PromptSegment, Theme};
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -3012,7 +3012,7 @@ mod tests {
         e.set_relconf(Arc::new(|| {
             let mut reg = Registry::default();
             struct T;
-            impl brish_plugin::Theme for T {
+            impl brish_plugin_api::Theme for T {
                 fn name(&self) -> &str {
                     "t2"
                 }
@@ -3020,7 +3020,7 @@ mod tests {
                     &self,
                     _s: i32,
                     _c: &std::path::Path,
-                    _seg: &[&dyn brish_plugin::PromptSegment],
+                    _seg: &[&dyn brish_plugin_api::PromptSegment],
                 ) -> String {
                     "t2 ".into()
                 }

@@ -6,7 +6,7 @@
 //! once and does nothing — it can never wedge the shell.
 
 use crate::store::SegmentDecl;
-use brish_plugin::{
+use brish_plugin_api::{
     CmdCtx, Completion, CompletionCtx, CompletionProvider, HookAction, PreExecHook, PromptSegment,
 };
 use std::path::{Path, PathBuf};
@@ -331,7 +331,7 @@ impl PreExecHook for HelperHook {
 }
 
 /// Post/chdir hooks need the post/chdir traits — implemented below.
-impl brish_plugin::PostExecHook for HelperHook {
+impl brish_plugin_api::PostExecHook for HelperHook {
     fn after(&self, ctx: &CmdCtx<'_>, status: i32) {
         let args = vec![
             "hook".to_string(),
@@ -347,7 +347,7 @@ impl brish_plugin::PostExecHook for HelperHook {
     }
 }
 
-impl brish_plugin::ChdirHook for HelperHook {
+impl brish_plugin_api::ChdirHook for HelperHook {
     fn on_cd(&self, old: &Path, new: &Path) {
         let args = vec![
             "hook".to_string(),
@@ -487,7 +487,7 @@ mod tests {
             after_dollar: false,
             cwd: tmp.path(),
             line_before: "",
-            algorithm: brish_plugin::Algorithm::Prefix,
+            algorithm: brish_plugin_api::Algorithm::Prefix,
             match_description: false,
         };
         let out = p.complete(&ctx);
@@ -512,7 +512,7 @@ mod tests {
             after_dollar: false,
             cwd: tmp.path(),
             line_before: "",
-            algorithm: brish_plugin::Algorithm::Prefix,
+            algorithm: brish_plugin_api::Algorithm::Prefix,
             match_description: false,
         };
         assert!(p.complete(&ctx).is_empty());
@@ -572,9 +572,9 @@ mod tests {
         );
         let words = vec!["echo".to_string(), "hi".into()];
         let ctx = cmd_ctx(&words, tmp.path());
-        brish_plugin::PostExecHook::after(&h, &ctx, 5);
+        brish_plugin_api::PostExecHook::after(&h, &ctx, 5);
         let h2 = HelperHook::new("demo", tmp.path().to_path_buf(), argv, HookEvent::Chdir);
-        brish_plugin::ChdirHook::on_cd(&h2, Path::new("/old"), tmp.path());
+        brish_plugin_api::ChdirHook::on_cd(&h2, Path::new("/old"), tmp.path());
         let logged = std::fs::read_to_string(&log).unwrap();
         assert!(logged.contains("hook post"), "{logged}");
         assert!(logged.contains("hook chdir"), "{logged}");
@@ -604,7 +604,7 @@ mod tests {
             after_dollar: true,
             cwd: tmp.path(),
             line_before: "",
-            algorithm: brish_plugin::Algorithm::Prefix,
+            algorithm: brish_plugin_api::Algorithm::Prefix,
             match_description: false,
         };
         assert!(p.complete(&ctx).is_empty());

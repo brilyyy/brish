@@ -9,7 +9,7 @@
 //! stays a plain loop with merge + dedupe + cap.
 
 use brish_builtin::BuiltIn;
-use brish_plugin::{Algorithm, Completion, CompletionCtx, Plugin, Registry};
+use brish_plugin_api::{Algorithm, Completion, CompletionCtx, Plugin, Registry};
 use reedline::{Completer, CompletionResult, Span, Suggestion};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -117,7 +117,7 @@ impl CommandsProvider {
     }
 }
 
-impl brish_plugin::CompletionProvider for CommandsProvider {
+impl brish_plugin_api::CompletionProvider for CommandsProvider {
     fn complete(&self, ctx: &CompletionCtx<'_>) -> Vec<Completion> {
         if !ctx.is_command {
             return Vec::new();
@@ -157,7 +157,7 @@ impl VarsProvider {
     }
 }
 
-impl brish_plugin::CompletionProvider for VarsProvider {
+impl brish_plugin_api::CompletionProvider for VarsProvider {
     fn complete(&self, ctx: &CompletionCtx<'_>) -> Vec<Completion> {
         if !ctx.after_dollar {
             return Vec::new();
@@ -225,7 +225,7 @@ fn completions_for(ctx: &CompletionCtx<'_>, base: &Path) -> Vec<Completion> {
         .collect()
 }
 
-impl brish_plugin::CompletionProvider for FilesProvider {
+impl brish_plugin_api::CompletionProvider for FilesProvider {
     fn complete(&self, ctx: &CompletionCtx<'_>) -> Vec<Completion> {
         if ctx.is_command || ctx.after_dollar {
             return Vec::new();
@@ -356,7 +356,7 @@ impl Completer for BrishCompleter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use brish_plugin::CompletionProvider as _;
+    use brish_plugin_api::CompletionProvider as _;
 
     #[test]
     fn word_at_splits_on_whitespace() {
@@ -492,7 +492,7 @@ mod tests {
     }
 
     struct Dup(&'static str);
-    impl brish_plugin::CompletionProvider for Dup {
+    impl brish_plugin_api::CompletionProvider for Dup {
         fn complete(&self, _ctx: &CompletionCtx<'_>) -> Vec<Completion> {
             vec![
                 Completion {
@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn algorithms_match_prefix_substring_and_fuzzy() {
-        use brish_plugin::Algorithm;
+        use brish_plugin_api::Algorithm;
         let (prefix, substring, fuzzy) =
             (Algorithm::Prefix, Algorithm::Substring, Algorithm::Fuzzy);
         assert!(prefix.matches("gi", "git"));
@@ -533,7 +533,7 @@ mod tests {
         // provider matches with the ctx algorithm; values deliberately
         // unsorted so `sort` has something to do
         struct P;
-        impl brish_plugin::CompletionProvider for P {
+        impl brish_plugin_api::CompletionProvider for P {
             fn complete(&self, ctx: &CompletionCtx<'_>) -> Vec<Completion> {
                 ["zeta", "alpha", "beta"]
                     .iter()
@@ -559,7 +559,7 @@ mod tests {
         };
 
         let c = with_p(MatchOpts {
-            algorithm: brish_plugin::Algorithm::Prefix,
+            algorithm: brish_plugin_api::Algorithm::Prefix,
             sort: true,
             match_description: false,
         });
@@ -572,7 +572,7 @@ mod tests {
 
         // substring matches inside a value
         let c = with_p(MatchOpts {
-            algorithm: brish_plugin::Algorithm::Substring,
+            algorithm: brish_plugin_api::Algorithm::Substring,
             sort: false,
             match_description: false,
         });
@@ -585,7 +585,7 @@ mod tests {
 
         // match_description: word matches the description, not the value
         let c = with_p(MatchOpts {
-            algorithm: brish_plugin::Algorithm::Substring,
+            algorithm: brish_plugin_api::Algorithm::Substring,
             sort: true,
             match_description: true,
         });

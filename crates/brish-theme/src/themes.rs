@@ -1,10 +1,10 @@
 //! The four built-in prompt themes: `briiish-*` only (NOTES follow-up).
 //!
 //! A theme owns the whole left-prompt layout; registered
-//! [`PromptSegment`](brish_plugin::PromptSegment)s are appended wherever the
+//! [`PromptSegment`](brish_plugin_api::PromptSegment)s are appended wherever the
 //! theme decides (arrow themes: after the cwd, minimal/plain: ignored).
 
-use brish_plugin::{PromptSegment, Theme, color_enabled};
+use brish_plugin_api::{PromptSegment, Theme, color_enabled};
 
 const GREEN: &str = "\x1b[32m";
 const RED: &str = "\x1b[31m";
@@ -149,12 +149,12 @@ impl Theme for BriiishEmoji {
 /// Registers all themes (catalog plugin `brish-themes`).
 pub struct BrishThemes;
 
-impl brish_plugin::Plugin for BrishThemes {
+impl brish_plugin_api::Plugin for BrishThemes {
     fn name(&self) -> &str {
         "brish-themes"
     }
 
-    fn install(&self, reg: &mut brish_plugin::Registry) {
+    fn install(&self, reg: &mut brish_plugin_api::Registry) {
         reg.themes.push(Box::new(BriiishMinimal));
         reg.themes.push(Box::new(BriiishPlain));
         reg.themes.push(Box::new(BriiishNerdFont));
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn brish_themes_plugin_registers_in_order() {
-        let mut reg = brish_plugin::Registry::default();
+        let mut reg = brish_plugin_api::Registry::default();
         let p = BrishThemes;
         reg.install(&p);
         let names: Vec<&str> = reg.themes.iter().map(|t| t.name()).collect();

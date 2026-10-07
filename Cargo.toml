@@ -5,7 +5,7 @@ members = [
     "crates/brish-core",
     "crates/brish-builtin",
     "crates/brish-platform",
-    "crates/brish-plugin",
+    "crates/brish-plugin-api",
     "crates/brish-theme",
     "crates/brish-words",
 ]

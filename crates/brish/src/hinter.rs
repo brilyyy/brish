@@ -60,14 +60,14 @@ impl Hinter for BrishHinter {
 /// Plugin that installs the built-in history hinter into the registry.
 pub struct AutosuggestPlugin;
 
-impl brish_plugin::Plugin for AutosuggestPlugin {
+impl brish_plugin_api::Plugin for AutosuggestPlugin {
     fn name(&self) -> &str {
         "brish-autosuggest"
     }
 
-    fn install(&self, reg: &mut brish_plugin::Registry) {
+    fn install(&self, reg: &mut brish_plugin_api::Registry) {
         struct F;
-        impl brish_plugin::HinterFactory for F {
+        impl brish_plugin_api::HinterFactory for F {
             fn create(&self) -> Box<dyn reedline::Hinter> {
                 Box::new(BrishHinter::default())
             }

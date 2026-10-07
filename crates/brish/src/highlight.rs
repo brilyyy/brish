@@ -91,7 +91,7 @@ impl BrishHighlighter {
 
 impl Highlighter for BrishHighlighter {
     fn highlight(&self, line: &str, _cursor: usize) -> StyledText {
-        let color = brish_plugin::color_enabled();
+        let color = brish_plugin_api::color_enabled();
         let dyn_on = color && self.dynamic && line.len() <= MAX_DYNAMIC_LEN;
         let mut out = StyledText::new();
         let (tokens, incomplete) = lex_best(line);
@@ -151,19 +151,19 @@ pub struct SyntaxHighlightPlugin {
     pub dynamic: bool,
 }
 
-impl brish_plugin::Plugin for SyntaxHighlightPlugin {
+impl brish_plugin_api::Plugin for SyntaxHighlightPlugin {
     fn name(&self) -> &str {
         "brish-syntax-highlight"
     }
 
-    fn install(&self, reg: &mut brish_plugin::Registry) {
+    fn install(&self, reg: &mut brish_plugin_api::Registry) {
         let aliases = Arc::clone(&self.aliases);
         let dynamic = self.dynamic;
         struct F {
             aliases: Arc<Mutex<Vec<String>>>,
             dynamic: bool,
         }
-        impl brish_plugin::HighlighterFactory for F {
+        impl brish_plugin_api::HighlighterFactory for F {
             fn create(&self) -> Box<dyn reedline::Highlighter> {
                 Box::new(BrishHighlighter::new(
                     self.dynamic,
@@ -372,7 +372,7 @@ mod tests {
     }
     /// Expected style: colored when colors are on, plain under `NO_COLOR`.
     fn want(fg: Color, bold: bool) -> Style {
-        if !brish_plugin::color_enabled() {
+        if !brish_plugin_api::color_enabled() {
             return Style::new();
         }
         let s = Style::new().fg(fg);
@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn dynamic_missing_command_is_red_existing_file_underlined() {
-        if !brish_plugin::color_enabled() {
+        if !brish_plugin_api::color_enabled() {
             return;
         }
         // missing first word → red bold (dynamic.callable.missing)
@@ -441,7 +441,7 @@ mod tests {
 
     #[test]
     fn aliases_count_as_known_and_precommands_keep_command_pos() {
-        if !brish_plugin::color_enabled() {
+        if !brish_plugin_api::color_enabled() {
             return;
         }
         let aliases = Arc::new(Mutex::new(vec!["myalias".to_string()]));

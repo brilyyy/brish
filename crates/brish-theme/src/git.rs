@@ -1,4 +1,4 @@
-//! `git-prompt` — flagship [`PromptSegment`](brish_plugin::PromptSegment)
+//! `git-prompt` — flagship [`PromptSegment`](brish_plugin_api::PromptSegment)
 //! plugin: robbyrussell-style ` git:(branch) *` after the cwd.
 //!
 //! Fast path (plan: plugins must be fast):
@@ -7,7 +7,7 @@
 //! - successful summaries are cached per cwd for 1s, so a prompt storm
 //!   (tab-complete redraws) costs one stat, not one spawn.
 
-use brish_plugin::{Plugin, PromptSegment, color_enabled};
+use brish_plugin_api::{Plugin, PromptSegment, color_enabled};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -167,7 +167,7 @@ impl Plugin for GitPrompt {
         "brish-git"
     }
 
-    fn install(&self, reg: &mut brish_plugin::Registry) {
+    fn install(&self, reg: &mut brish_plugin_api::Registry) {
         // Re-install shares this instance's cache via the catalog's Box;
         // a fresh install would just start cold — acceptable.
         reg.prompt_segments.push(Box::new(Self::default()));

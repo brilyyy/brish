@@ -1,9 +1,11 @@
-//! Static plugin system for briSH (`docs/PLUGIN-PLAN.md`, plan 6.6).
+//! Static plugin API for briSH (see `docs/PLUGINS.md`).
 //!
 //! Traits + registry only, minimal dependencies (reedline for the
-//! line-editing seams). Registration lives in the binary; the engine
-//! walks the resulting registry read-only (no locks after startup —
-//! dispatch is a slice walk over borrowed contexts).
+//! line-editing seams). This crate is the leaf of the plugin stack: it
+//! never depends on the engine, so a third-party plugin author compiles
+//! against this crate alone. Registration lives in the binary; the
+//! engine walks the resulting registry read-only (no locks after
+//! startup — dispatch is a slice walk over borrowed contexts).
 pub mod builtin;
 
 use std::path::Path;

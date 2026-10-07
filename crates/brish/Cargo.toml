@@ -16,7 +16,7 @@ workspace = true
 brish-core = { path = "../brish-core" }
 brish-builtin = { path = "../brish-builtin" }
 brish-platform = { path = "../brish-platform" }
-brish-plugin = { path = "../brish-plugin" }
+brish-plugin-api = { path = "../brish-plugin-api" }
 brish-theme = { path = "../brish-theme" }
 clap.workspace = true
 serde.workspace = true

@@ -1,7 +1,7 @@
 use std::io::{BufRead, IsTerminal, Read, Write};
 
 use brish_builtin::exec::{Engine, Outcome, Stop};
-use brish_plugin::Plugin;
+use brish_plugin_api::Plugin;
 mod completion;
 mod config;
 mod edit_mode;
@@ -93,13 +93,13 @@ fn build_registry(
     var_names: &Arc<Mutex<Vec<String>>>,
     aliases: &Arc<Mutex<Vec<String>>>,
     hist_ctl: &Arc<hist::HistControl>,
-) -> brish_plugin::Registry {
-    let mut registry = brish_plugin::Registry::default();
+) -> brish_plugin_api::Registry {
+    let mut registry = brish_plugin_api::Registry::default();
     // Prompt catalog first (themes + segments; order = segment order),
     // then behavioral plugins (announce, ...).
     for entry in brish_theme::catalog()
         .into_iter()
-        .chain(brish_plugin::builtin::catalog())
+        .chain(brish_plugin_api::builtin::catalog())
     {
         let plugin = entry.plugin;
         let name = plugin.name().to_string();
@@ -190,9 +190,9 @@ fn build_registry(
 fn resolve_theme(
     cli_theme: &Option<String>,
     config: &config::Config,
-    registry: &brish_plugin::Registry,
+    registry: &brish_plugin_api::Registry,
 ) -> String {
-    let mut theme = brish_plugin::DEFAULT_THEME.to_string();
+    let mut theme = brish_plugin_api::DEFAULT_THEME.to_string();
     if let Some(t) = cli_theme {
         theme = t.clone();
     } else if let Some(t) = std::env::var("BRISH_THEME").ok().filter(|v| !v.is_empty()) {
@@ -202,7 +202,7 @@ fn resolve_theme(
     }
     if !registry.themes.is_empty() && !registry.themes.iter().any(|t| t.name() == theme) {
         eprintln!("brish: unknown theme: {theme}");
-        theme = brish_plugin::DEFAULT_THEME.to_string();
+        theme = brish_plugin_api::DEFAULT_THEME.to_string();
     }
     theme
 }
@@ -211,7 +211,7 @@ fn apply_theme(
     engine: &mut Engine,
     cli: &Cli,
     config: &config::Config,
-    registry: &brish_plugin::Registry,
+    registry: &brish_plugin_api::Registry,
 ) {
     engine.theme = resolve_theme(&cli.theme, config, registry);
 }

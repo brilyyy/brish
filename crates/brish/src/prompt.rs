@@ -11,7 +11,7 @@
 //! $                       # plain / fallback
 //! ```
 
-use brish_plugin::{PromptSegment, Registry, color_enabled};
+use brish_plugin_api::{PromptSegment, Registry, color_enabled};
 use reedline::{
     Prompt, PromptEditMode, PromptHelixMode, PromptHistorySearch, PromptHistorySearchStatus,
     PromptViMode,
@@ -168,7 +168,7 @@ impl Prompt for BrishPrompt {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use brish_plugin::{Plugin, Registry, Theme};
+    use brish_plugin_api::{Plugin, Registry, Theme};
 
     struct Dummy(&'static str);
     impl Theme for Dummy {

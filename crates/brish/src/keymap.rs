@@ -3,7 +3,7 @@
 //! bindings. Unknown keys/events warn and skip; a key bound by several
 //! providers warns once and the last binding wins.
 
-use brish_plugin::KeymapProvider;
+use brish_plugin_api::KeymapProvider;
 use reedline::{EditCommand, KeyCode, KeyModifiers, Keybindings, ReedlineEvent};
 use std::collections::HashMap;
 
@@ -102,7 +102,7 @@ pub fn merge(kb: &mut Keybindings, providers: &[Box<dyn KeymapProvider>]) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use brish_plugin::KeymapProvider;
+    use brish_plugin_api::KeymapProvider;
 
     #[test]
     fn parses_keys() {
