@@ -115,3 +115,25 @@ because reedline really does spawn helper threads.
   doc.
 - The three bash-ism rejections above are the only POSIX-level
   divergences between brish and dash that the corpus exercises.
+
+## Status after fix pass (2026-10)
+
+- **[FIXED]** `other_threads_alive()` parsed token 1 (ppid) as `num_threads`
+  (index 17) after `)`. Under any forking wrapper (`timeout`, `sudo`,
+  non-exec `sh -c`) every external spawn paid the 2ms `WAIT_POLL` path.
+  All exec-path findings (fork/pipeline/subshell) now at parity with dash.
+  Commit `78c440f`.
+- **[FIXED]** `$1`/`$n`/`${n}` inside `$(( ))`: arith rejected `$`. Expander
+  now inlines param values. Commit `7406e36`.
+- **[FIXED]** quoted heredoc delim (`<<"E"OF`, backslash) still expanded the
+  body. `word_contains_single` → `word_quoted` (Single|Double|Esc).
+  Commit `677b605`.
+- **[FIXED]** nested backticks / escaped `\$` inside backticks kept the
+  backslash, so inner didn't evaluate. `read_backtick` now strips the escape
+  for `` ` ``, `$`, `\` per POSIX phase 1. Commit `d2632c9`.
+
+Remaining gate-fails (interpreter overhead, not a one-liner):
+- parse_big 46x: 2000 separate statements parse ~62ms; the same work as a
+  while-loop runs 14ms → per-statement parse path looks ~O(n^2). Needs a
+  parser profile, not a one-line fix.
+- function 16ms vs 7ms, builtins 11ms vs 4ms: ~2-3x per-command overhead.
