@@ -2168,26 +2168,14 @@ mod tests {
         // standard fd-juggling idiom. It used to fall through to the PATH
         // search and die with "command not found".
         //
-        // Redirect to a file rather than doing bare `exec 3>&1` juggling:
-        // that mutates the *test process's* descriptors, and a leaked fd
-        // trips Rust's IO-safety check when a parallel test closes the
-        // same number. (The fd form is covered by tests/posix.rs, which
-        // runs the real binary.)
+        // The redirection half is NOT tested here: `exec > f` applies
+        // with `apply_bare`, permanently dup2'ing the file onto THIS
+        // process's fd 1 — the libtest harness shares it, so every
+        // later "... ok" line vanishes into the temp file (deleted with
+        // the tempdir) and the suite reports exit 0 with no result line.
+        // tests/posix.rs covers `exec 3>&1` and `exec > f` against the
+        // real binary, in its own process, where that is safe.
         let mut e = Engine::new();
-        let d = tempfile::tempdir().expect("tmp");
-        let f = d.path().join("x");
-        // `exec > f` makes the redirection PERMANENT for this shell, so
-        // output on a LATER command lands in the file. printf, not echo:
-        // builtin echo output is captured by libtest and never reaches a
-        // redirected file under test.
-        assert_eq!(run_src(&mut e, &format!("exec > {}", f.display())), 0);
-        assert_eq!(run_src(&mut e, "printf kept"), 0);
-        assert!(
-            std::fs::read_to_string(&f)
-                .expect("captured")
-                .contains("kept"),
-            "permanent exec redirect should route later output to the file"
-        );
         // The exec'd command's status propagates (dash-compatible).
         let prog = brish_core::parser::parse("exec sh -c 'exit 42'").unwrap();
         assert_eq!(e.run(&prog).unwrap(), Outcome::Exit(42));
@@ -2211,34 +2199,37 @@ mod tests {
         let d = tempfile::tempdir().expect("tmp");
         let (f1, f2) = (d.path().join("o1"), d.path().join("o2"));
         let src = format!(
-            "false && printf a > {f1} || printf b > {f1}; \
-             true || printf c > {f2} && printf d > {f2}",
+            "false && printf SKIP_A > {f1} || printf RAN_B > {f1}; \
+             true || printf SKIP_C > {f2} && printf RAN_D > {f2}",
             f1 = f1.display(),
             f2 = f2.display()
         );
         // `printf`, not `echo`: builtin echo output is captured by
         // libtest and never reaches a redirected file under test (same
-        // trap as noclobber_refuses_overwrite above). Even so a parallel
-        // test can emit its own fd-1 lines into the file during the dup2
-        // window, so assert our byte arrived rather than exact content.
+        // trap as noclobber_refuses_overwrite above).
+        //
+        // Distinctive multi-char markers, never bare letters: a parallel
+        // test's libtest line ("test exec::tests::aliases_... ok") can
+        // land in the file during the dup2 window, and a single-letter
+        // marker collides with ordinary output often enough to flake.
         let out = run(&mut e, &src);
         assert_eq!(out, Outcome::Status(0));
         let one = std::fs::read_to_string(&f1).expect("o1");
         let two = std::fs::read_to_string(&f2).expect("o2");
         assert!(
-            one.contains('b'),
+            one.contains("RAN_B"),
             "b must have run (and a must not): {one:?}"
         );
         assert!(
-            !one.contains('a'),
+            !one.contains("SKIP_A"),
             "the short-circuited `a` must not run: {one:?}"
         );
         assert!(
-            two.contains('d'),
+            two.contains("RAN_D"),
             "d must have run (and c must not): {two:?}"
         );
         assert!(
-            !two.contains('c'),
+            !two.contains("SKIP_C"),
             "the short-circuited `c` must not run: {two:?}"
         );
         // within one operator, the short-circuit still stops the chain
