@@ -1,0 +1,259 @@
+# Adversarial snippet corpus for qa/diff-snippets.sh
+#
+# One hermetic snippet per line. No clock, no randomness, no paths
+# outside a scratch dir, no network. Each line must be a complete
+# program; stdout and exit status are compared against dash, with bash
+# as a second opinion.
+#
+# Sections target the bug classes this QA round has actually produced:
+# silently-wrong exit status, builtins that lie, and the engine dropping
+# a command from a list.
+
+# --- test/[: every unary predicate against a fixed truth table ---
+test -e /etc/passwd
+test -f /etc/passwd
+test -d /etc
+test -s /etc/passwd
+test -r /etc/passwd
+test -w /etc/passwd
+test -x /etc/passwd
+test -h /etc/passwd
+test -L /etc/passwd
+test -e /no/such/path_xyz
+test -f /no/such/path_xyz
+test -r /no/such/path_xyz
+test -z ""
+test -z "x"
+test -n ""
+test -n "x"
+test ! -e /no/such/path_xyz
+test -e /etc/passwd -a -d /etc
+test -d /etc -a -f /etc/passwd
+test -d /etc -o -e /no/such/path_xyz
+test ! -d /etc
+
+# --- test/[: binary predicates ---
+test 1 -eq 1
+test 1 -ne 1
+test 1 -lt 2
+test 2 -le 2
+test 3 -gt 2
+test 3 -ge 3
+test abc = abc
+test abc != abd
+test a \< b
+test b \> a
+test -z "" -o -z ""
+
+# --- test/[: arity corner cases (POSIX 2.6.1) ---
+test
+test ""
+test x
+test -z
+test -e
+test -t
+test !
+test -eq
+test -a
+test -o
+test -nt
+test -ef
+test -z ""
+test 1 -eq
+test -eq 1
+test -z -n
+
+# --- test/[: parenthesised groups ---
+test \( 1 -eq 1 \)
+test \( 1 -eq 2 \)
+test ! \( 1 -eq 2 \)
+test \( 1 -eq 2 \) -o \( 3 -eq 3 \)
+
+# --- && / || equal precedence, left-to-right (the dropped-command bug) ---
+false && echo a || echo b
+true || echo a && echo b
+true && echo a || echo b
+false || echo a && echo b
+true && false || echo c
+false && echo a || echo b || echo c
+true || echo a || echo b
+false || echo a || echo b
+true && echo a && echo b
+false && echo a && echo b
+false && echo a || echo b && echo c
+true || echo a && echo b && echo c
+false && echo a && echo b || echo c
+! false && echo a || echo b
+false && echo a || true && echo b
+false || false && echo a || echo b
+true && true && false || echo z
+false && echo a || false && echo b || echo c
+echo pre && false || echo post
+
+# --- && / || interacting with pipelines and redirects ---
+false | true && echo x || echo y
+true | false && echo x || echo y
+echo a && echo b || echo c
+{ echo grouped; } && echo after
+(echo sub) && echo after-sub
+
+# --- exit status plumbing ---
+false; echo $?
+true; echo $?
+false && true; echo $?
+true || false; echo $?
+false; true; echo $?
+true; false; echo $?
+exit 3; echo unreachable
+false; exit 4
+(exit 5); echo $?
+f() { return 7; }; f; echo $?
+f() { false; }; f; echo $?
+f() { return 0; }; f && echo ok || echo no
+
+# --- subshell isolation (a classic POSIX tripwire) ---
+(x=1); echo "[$x]"
+x=1; (x=2); echo $x
+(x=1); y=$x; echo "[$y]"
+echo $( (echo sub) )
+(cd /tmp); pwd > /dev/null; echo ok
+(exit 0); echo $?
+
+# --- command substitution status ---
+x=$(false); echo $?
+x=$(true); echo $?
+echo "$(false)"; echo $?
+[ "$(echo hi)" = hi ] && echo match
+n=$(echo a; echo b); echo $n
+
+# --- quoting and word splitting ---
+x='  spaced  '; echo "[$x]"
+IFS=:; x=a:b:c; set -- $x; echo $#
+IFS=:; x=a:b:c; set -- $x; echo $1-$3
+x="a b"; set -- $x; echo $#
+x="a b"; set -- "$x"; echo $# "$1"
+echo ${#PATH} > /dev/null; echo lenok
+echo "a
+b" | wc -l
+
+# --- parameter expansion forms ---
+x=; echo "${x:-def}"
+x=; echo "${x-def}"
+x=v; echo "${x:-def}"
+x=v; echo "${x-def}"
+x=v; echo "${x:+set}"
+x=; echo "${x:+set}"
+x=abcdef; echo "${x#a}" "${x##a*}"
+x=abcdef; echo "${x%f}" "${x%%*f}"
+unset y; echo "[${y:-fallback}]"
+x=abc; echo "${x:1}"
+
+# --- arithmetic ---
+echo $((1+2*3))
+echo $((10/3)) $((10%3))
+echo $((1<<4)) $((255>>4))
+echo $((1|2)) $((3&1)) $((5^3))
+echo $((-5+3))
+echo $((2**3)) 2>/dev/null
+n=0; n=$((n+1)); echo $n
+echo $(( 07 + 1 ))
+
+# --- redirections ---
+echo x > /tmp/qa_r1; cat /tmp/qa_r1; rm -f /tmp/qa_r1
+echo x > /tmp/qa_r2; echo y >> /tmp/qa_r2; cat /tmp/qa_r2; rm -f /tmp/qa_r2
+echo e 1>&2 2>/dev/null; echo done
+{ echo a; echo b; } > /tmp/qa_r3; wc -l < /tmp/qa_r3; rm -f /tmp/qa_r3
+cat <<EOF
+heredoc
+EOF
+cat <<'EOF'
+no $expansion here
+EOF
+cat <<EOF > /tmp/qa_r4
+redirected heredoc
+EOF
+cat /tmp/qa_r4; rm -f /tmp/qa_r4
+exec 3>&1; echo via-fd3 >&3; exec 3>&-
+(echo sub) > /tmp/qa_r5; cat /tmp/qa_r5; rm -f /tmp/qa_r5
+
+# --- loops and control flow ---
+i=0; while [ $i -lt 3 ]; do echo $i; i=$((i+1)); done
+i=0; until [ $i -ge 3 ]; do echo $i; i=$((i+1)); done
+for i in a b c; do echo $i; done
+for i in; do echo never; done; echo after-empty-for
+case abc in abc) echo m1;; *) echo m2;; esac
+case xyz in abc) echo m1;; *) echo m2;; esac
+case abc in a*) echo star;; esac
+case "" in "") echo empty;; esac
+if true; then echo t; else echo f; fi
+if false; then echo t; else echo f; fi
+
+# --- functions, locals, recursion guard ---
+f() { echo "$1"; }; f one; f two
+f() { echo "$#:$*"; }; f a b c
+f() { echo "$@"; }; f a b
+f() { return 0; }; if f; then echo ok; fi
+g() { echo "$1" | tr a-z A-Z; }; g hi
+h() { local_v=set; echo $local_v; }; h
+
+# --- traps ---
+trap 'echo trapped' EXIT; echo main
+trap 'echo int' INT; echo main2
+trap - INT; echo cleared
+trap 'echo t' EXIT; trap 'echo u' EXIT; echo dup-trap
+
+# --- misc builtins ---
+cd /tmp && pwd
+echo a b c | tr ' ' '-'
+true | false; echo ${PIPESTATUS:-n/a} > /dev/null; echo pipeok
+set -- a b; echo $#; shift; echo $# "$1"
+readonly r=1; echo $r
+export E=1; sh -c 'echo $E'
+unset E; echo "[${E:-gone}]"
+: ; echo colon
+eval 'echo evaled'
+eval 'x=7'; echo $x
+type cd 2>/dev/null | head -1; echo typeok
+command echo via-command
+alias 2>/dev/null | head -1; echo aliasok
+# --- exec (POSIX special builtin; was entirely missing) ---
+exec 3>&1; printf via-fd3 >&3; exec 3>&-; printf done
+exec printf replaced; printf NOT-REACHED
+exec false; printf NOT-REACHED
+exec 4>&2; exec 4>&-; printf closed
+exec true && printf after-exec
+
+# --- case pattern groups: POSIX 2.6.4, parens are delimiters ---
+case a in (a) printf m ;; esac
+case ab in (ab) printf m ;; esac
+case a in (*) printf any ;; esac
+case a in (a|b) printf alt ;; esac
+case a in (a) printf m ;; *) printf nomatch ;; esac
+case zzz in (a) printf m ;; *) printf nomatch ;; esac
+case a in (a*z) printf p ;; esac
+case ab in (a*b) printf p ;; esac
+case '[a]' in ([a]) printf br ;; esac
+
+# --- for loops with the in-list omitted ---
+set -- x y z; for i do printf %s $i; done
+set -- p q; for i do printf %s $i; break; done
+set -- p q; for i do continue; printf never; done; printf after
+for i do printf empty ;; done; printf done
+set -- only; for i do printf n=%s $i; done
+
+# NOTE: multi-line constructs (`name()` newline `{`, `for i do` across
+# lines) cannot be written here — this corpus is one snippet per line, so
+# a literal \n would be an escaped `n`. They live in
+# crates/brish/tests/posix.rs and in the parse sweep instead.
+g() { printf inline; }; g
+
+# --- real-world script shapes harvested from Debian ---
+cat <<END > /tmp/qa_heredoc_fn; printf from-heredoc-fn
+literal body
+END
+./x 2>/dev/null; printf rc=$?
+printf '%s\n' a b c | while read -r l; do printf "[%s]" "$l"; done; printf '\n'
+if ! false; then printf not-false; fi
+while :; do printf once; break; done
+v=1; while [ $v -le 3 ]; do printf %s $v; v=$((v+1)); done; printf '\n'
+case $(printf a) in (a) printf grouped ;; esac

@@ -6,6 +6,23 @@ Hardening close-out from the beta: stability proofs, missing POSIX
 builtins, mid-command traps, quote-aware completion, docs.
 
 ### Fixed
+- `exec` is now a builtin (POSIX special builtin). It was missing
+  entirely, so `exec 3>&1` — the standard fd-juggling idiom — died with
+  "command not found". Bare `exec` applies redirections permanently;
+  `exec cmd` replaces the shell with the child's status.
+- A `case` pattern may now open with a group: POSIX 2.6.4 makes the
+  parens delimiters, not literals, so `(ab)` matches the string `ab`.
+  `/usr/bin/zgrep` and `which.debianutils` rely on this.
+- `for i do … done` (omitted `in` list, i.e. `for i in "$@"`) parses.
+  `/usr/bin/zforce` uses it.
+- A function definition may put `{` on the next line after `name()`.
+  Five Debian scripts declare functions that way.
+- Differential QA harness in `qa/` (docker): parses 55 sh/bash scripts
+  shipped by a real Debian and diffs 201 hermetic snippets against dash
+  and bash, comparing stdout and exit status separately. It found all
+  four bugs above. See `qa/report.md`.
+
+### Fixed
 - `test -t fd` (POSIX): was rejected as an unknown operator, so every
   `[ -t 0 ]` tty guard errored — including this repo's own `install.sh`.
   A closed fd is now false; a non-numeric operand is an error.

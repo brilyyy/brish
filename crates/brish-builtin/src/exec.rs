@@ -1524,6 +1524,9 @@ impl Engine {
         if name == "relconf" {
             return apply_plan(plan, || self.relconf_cmd(argv));
         }
+        if name == "exec" {
+            return self.exec_cmd(argv, plan);
+        }
         if let Some(b) = BuiltIn::from_name(&name) {
             if b == BuiltIn::Command {
                 // Keep the original plan: `command ls > f` redirects the
@@ -1543,6 +1546,41 @@ impl Engine {
             return self.flow(res?);
         }
         self.spawn_external(argv, plan)
+    }
+
+    /// `exec [cmd [args…]]` (POSIX special builtin).
+    ///
+    /// With a command: replace the shell — fork, exec, and exit with the
+    /// child's status so the rest of the script does not run. A bare
+    /// `exec` (no command) applies its redirections to the *current*
+    /// shell and returns, which is the standard fd-juggling idiom
+    /// (`exec 3>&1` … `exec 3>&-`). Previously `exec` was not a builtin
+    /// at all and fell through to the PATH search, so `exec 3>&1` died
+    /// with "command not found".
+    fn exec_cmd(&mut self, argv: &[String], plan: Plan) -> R<()> {
+        if argv.len() == 1 {
+            // Redirections only: make them permanent for this shell.
+            // `apply_bare` dup2s without the save/restore that
+            // `apply_plan` would undo on scope exit.
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            brish_platform::apply_bare(plan_setups(plan_clone(&plan)?)).map_err(platform_err)?;
+            self.env.status = 0;
+            return Ok(());
+        }
+        // With a command: the shell is replaced. fork+exec+wait keeps the
+        // Rust process alive to flush and run EXIT traps; the observable
+        // behaviour (no further script lines, same status) matches.
+        let child_argv = argv[1..].to_vec();
+        // `plan_clone` deep-copies the redirection sources (a File can be
+        // handed to the child, the saved copy stays for this shell).
+        let exec_plan = plan_clone(&plan)?;
+        // A failure to even spawn leaves the status set (127 for a
+        // missing command, 126 for a bad redirection); `exec` still
+        // exits, per POSIX.
+        let _ = apply_plan(plan, || self.spawn_external(&child_argv, exec_plan));
+        let code = self.env.status;
+        // `exec` never returns to the script.
+        Err(Stop::Exit(code))
     }
 
     /// `theme [name]`: list registered themes (current marked `*`) or
@@ -2118,6 +2156,43 @@ mod tests {
         // Short-circuit: right side never runs.
         assert_eq!(status("false && nosuchcmd123"), 1);
         assert_eq!(status("true || nosuchcmd123"), 0);
+    }
+
+    #[test]
+    fn exec_replaces_the_shell_or_redirects_it() {
+        // `exec cmd` replaces the shell: no further script lines run and
+        // the child's status becomes the shell's.
+        assert_eq!(status("exec true; printf NOT-REACHED"), 0);
+        assert_eq!(status("exec false; printf NOT-REACHED"), 1);
+        // `exec` with only redirections applies them to THIS shell, the
+        // standard fd-juggling idiom. It used to fall through to the PATH
+        // search and die with "command not found".
+        //
+        // Redirect to a file rather than doing bare `exec 3>&1` juggling:
+        // that mutates the *test process's* descriptors, and a leaked fd
+        // trips Rust's IO-safety check when a parallel test closes the
+        // same number. (The fd form is covered by tests/posix.rs, which
+        // runs the real binary.)
+        let mut e = Engine::new();
+        let d = tempfile::tempdir().expect("tmp");
+        let f = d.path().join("x");
+        // `exec > f` makes the redirection PERMANENT for this shell, so
+        // output on a LATER command lands in the file. printf, not echo:
+        // builtin echo output is captured by libtest and never reaches a
+        // redirected file under test.
+        assert_eq!(run_src(&mut e, &format!("exec > {}", f.display())), 0);
+        assert_eq!(run_src(&mut e, "printf kept"), 0);
+        assert!(
+            std::fs::read_to_string(&f)
+                .expect("captured")
+                .contains("kept"),
+            "permanent exec redirect should route later output to the file"
+        );
+        // The exec'd command's status propagates (dash-compatible).
+        let prog = brish_core::parser::parse("exec sh -c 'exit 42'").unwrap();
+        assert_eq!(e.run(&prog).unwrap(), Outcome::Exit(42));
+        // A missing command still exits (POSIX), never continuing.
+        assert_eq!(status("exec nosuchcmd-xyz; printf NOT-REACHED"), 127);
     }
 
     #[test]

@@ -156,7 +156,7 @@ Examples live in `examples/plugins/`, authoring guide in
 - Builtins: `cd pwd echo printf test [ true false : exit return eval .
   source unset export readonly shift set type command break continue
   alias unalias trap umask times history ls relconf wait jobs kill
-  fg bg` (+ PATH externals).
+  fg bg exec` (+ PATH externals).
 - `cd` uses zoxide for frecent jumps when installed (`[cd] zoxide`);
   `ls` uses eza when installed (`[ls] backend`), builtin fallback
   with icons otherwise. Syntax highlighting and muted completion
@@ -173,7 +173,8 @@ Examples live in `examples/plugins/`, authoring guide in
   `wait`/`jobs`/`kill %n` with POSIX statuses (`128+signal`); in
   interactive tty shells also `fg`/`bg`, `%n` job specs, Ctrl-Z
   suspend, and terminal handoff (`tcsetpgrp`).
-- Extension crates: `brish-plugin` (traits + `Registry` + `announce`),
+- `exec` (bare: permanent redirections; with a command: replaces the
+shell). Extension crates: `brish-plugin` (traits + `Registry` + `announce`),
   `brish-theme` (themes + prompt segments). Catalogs gated by
   `config.toml`, never crash on bad config.
 
@@ -201,7 +202,9 @@ never panic on arbitrary input.
 
 ## Extending
 
-Write a plugin: [`docs/PLUGINS.md`](docs/PLUGINS.md) — traits, config
+Write a plugin: Differential QA against `dash`/`bash` on real Debian scripts:
+[`qa/report.md`](qa/report.md) (harness in `qa/`).
+[`docs/PLUGINS.md`](docs/PLUGINS.md) — traits, config
 gate, worked examples (hooks, themes, completion, keymaps). The design
 record is [`docs/archive/PLUGIN-PLAN.md`](docs/archive/PLUGIN-PLAN.md);
 the engineering

@@ -294,6 +294,11 @@ impl Parser {
                 if !self.eat_op(Op::RParen) {
                     return Err(self.err("expected `)' after function name"));
                 }
+                // POSIX puts no_newlines between `name()`, `do`/`{` and
+                // the command word, but real scripts still write
+                // `name()\n{` (Debian's hwclock.sh, dpkg-realpath, ldd all
+                // do). Skip the newlines before the body.
+                self.skip_newlines();
                 let body = self.parse_command()?;
                 let ok = matches!(body, Cmd::Group(_) | Cmd::Subshell(_));
                 let body = Cmd::FuncDef {
@@ -425,6 +430,11 @@ impl Parser {
                 }
             }
             Some(ws)
+        } else if self.peek_word_literal().as_deref() == Some("do") {
+            // `for i do … done` — POSIX lets the `in` list and its
+            // separator be omitted entirely; the loop then runs over
+            // "$@" (dash and bash accept this, /usr/bin/zforce uses it).
+            None
         } else {
             if !matches!(
                 self.peek_tok(),
@@ -433,7 +443,7 @@ impl Parser {
                 if self.at_eof() {
                     return Err(Error::Incomplete);
                 }
-                return Err(self.err("expected `;' or newline"));
+                return Err(self.err("expected `;', newline, or `do'"));
             }
             self.idx += 1;
             self.skip_newlines();
@@ -469,6 +479,13 @@ impl Parser {
             }
             // Patterns: word ('|' word)* ')'
             let mut pats = Vec::new();
+            // POSIX 2.6.4 case_pattern: `'(' pattern` — a leading `(`
+            // opens a *group*, and the parens themselves are NOT part of
+            // the pattern. So `case ab in (ab) …` matches the plain
+            // string `ab`. /usr/bin/zgrep and which.debianutils write
+            // `case $x in (*[!:]:) …` and expect exactly that.
+            // (`set -n` on those files failed before this was allowed.)
+            let mut grouping = false;
             loop {
                 match self.peek_tok() {
                     Some(Tok::Word(_)) => {
@@ -479,6 +496,13 @@ impl Parser {
                         self.idx += 1;
                     }
                     Some(Tok::Op(Op::Pipe)) => {
+                        self.idx += 1;
+                    }
+                    Some(Tok::Op(Op::LParen)) if pats.is_empty() && !grouping => {
+                        // Only legal as the first character of a pattern;
+                        // `a(b` is a syntax error in dash too, so stay
+                        // strict about the mid-pattern case.
+                        grouping = true;
                         self.idx += 1;
                     }
                     Some(Tok::Op(Op::RParen)) => {

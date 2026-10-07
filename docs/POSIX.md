@@ -9,14 +9,15 @@ with expected stdout + exit status. Every case is:
 2. When `dash` is on PATH (the POSIX reference shell), run against
    `dash -c` too — a wrong expectation cannot pass.
 
-Current corpus: **~137 cases** covering parameter expansion (`${#}`,
+Current corpus: **~152 cases** covering parameter expansion (`${#}`,
 `#`/`%` trims, `:+`/`-`/`=`/`?`), arithmetic, quoting, redirections
 (`> >| >> < << <<-`, heredoc expansions quoting), subshell isolation,
 functions, `test`/`[`, pipelines, `&&`/`||`, `set`/`unset`, command
 substitution, `trap EXIT`, `getopts`, alias-off-in-batch, globbing,
 `read`, `printf` (`%s %b %d %x %o %5s %-5s %.3s`, format cycling), `test`
-string/file/access predicates and `-t`, and `&&`/`||` list
-short-circuiting.
+string/file/access predicates and `-t`, `&&`/`||` list short-circuiting,
+`exec`, case-pattern groups, `for … do` without `in`, and
+newline-separated function bodies.
 
 ### Documented deviations from dash
 
@@ -25,6 +26,7 @@ short-circuiting.
 | `echo 'a\tb'` | literal backslash | XSI: tab | POSIX leaves `echo` escapes undefined; `-e` opt-in like bash |
 | readonly reassign in a program | continues, `$?=1` | fatal exit | bash-compatible choice; POSIX allows either |
 | not-found diagnostics | `brish: …` to stderr | `…: not found` (stderr) | message text, same exit 127 |
+| expansion errors | exit 1 | exit 2 | POSIX only requires non-zero; briSH is uniform, dash uses 2 for every expansion failure |
 | `test -nt` / `-ot` | full-precision mtime | whole seconds | briSH compares sub-second differences; dash truncates, so the two disagree on files written within the same second. Deliberate: the stricter answer is the accurate one. |
 
 Growth: add cases to the `CASES` table; they must pass both `cargo test`

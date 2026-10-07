@@ -258,6 +258,43 @@ const CASES: &[(&str, &str, i32)] = &[
         "no\n",
         0,
     ),
+    // --- exec (POSIX special builtin) ---
+    // Was not a builtin at all: `exec 3>&1` fell through to the PATH
+    // search and died with "command not found", which is the standard
+    // fd-juggling idiom.
+    (
+        "exec 3>&1; printf via-fd3 >&3; exec 3>&-; printf done",
+        "via-fd3done",
+        0,
+    ),
+    // `exec cmd` replaces the shell: no later line runs, child's status wins.
+    ("exec printf replaced; printf NOT-REACHED", "replaced", 0),
+    ("exec false; printf NOT-REACHED", "", 1),
+    // --- case patterns may open with a group `( pattern` ---
+    // POSIX 2.6.4: the parens are grouping delimiters, NOT part of the
+    // pattern, so `(ab)` matches the string `ab`. /usr/bin/zgrep and
+    // which.debianutils both rely on this.
+    ("case a in (a) printf m ;; esac", "m", 0),
+    ("case ab in (ab) printf m ;; esac", "m", 0),
+    ("case a in (*) printf any ;; esac", "any", 0),
+    ("case a in (a|b) printf alt ;; esac", "alt", 0),
+    (
+        "case '(a)' in (a) printf m ;; *) printf nomatch ;; esac",
+        "nomatch",
+        0,
+    ),
+    // mid-pattern `(` is still a syntax error (dash agrees)
+    ("case a in a(b) printf m ;; esac", "", 2),
+    // --- for with the `in` list omitted ---
+    // `for i do … done` == `for i in "$@"`; /usr/bin/zforce uses it.
+    ("set -- x y z; for i do printf %s $i; done", "xyz", 0),
+    ("set -- x; for i do printf %s $i; done", "x", 0),
+    // --- function definition with the brace on the next line ---
+    // `name()` newline `{` is valid; Debian's hwclock.sh/dpkg-realpath/ldd
+    // all declare functions this way.
+    ("f()\n{\n printf hi\n}\nf", "hi", 0),
+    ("f() { printf hi; }; f", "hi", 0),
+    ("f()\n(\n printf sub\n)\nf", "sub", 0),
     // --- && / || equal precedence, left-to-right (POSIX 2.9.4) ---
     // A short-circuit skips only the NEXT command, never the rest of the
     // list. These were silently broken: the engine returned on the first
