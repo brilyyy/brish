@@ -174,8 +174,9 @@ Examples live in `examples/plugins/`, authoring guide in
   interactive tty shells also `fg`/`bg`, `%n` job specs, Ctrl-Z
   suspend, and terminal handoff (`tcsetpgrp`).
 - `exec` (bare: permanent redirections; with a command: replaces the
-shell). Extension crates: `brish-plugin` (traits + `Registry` + `announce`),
-  `brish-theme` (themes + prompt segments). Catalogs gated by
+shell). Extension crates: `brish-plugin-api` (traits + `Registry`),
+  `brish-plugin` (every bundled plugin), `brish-theme` (themes +
+  prompt segments). Catalogs gated by
   `config.toml`, never crash on bad config.
 
 - `command not found` (interactive only) prints a `did you mean '…'?`

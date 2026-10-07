@@ -42,8 +42,10 @@ Run before touching the lexer/parser/expander.
   `refactor(test|docs):`).
 - Terse `ponytail:` comments name a deliberate simplification and its
   upgrade path (never delete a shortcut silently).
-- Keep `brish-plugin`/`brish-theme` engine-free; add catalog entries to
-  `catalog()` with config-gating.
+- Keep `brish-plugin-api`/`brish-theme` engine-free; add catalog
+  entries to `catalog()` with config-gating. Bundled plugin
+  implementations belong in `brish-plugin`, which sits above
+  `brish-engine`.
 
 ## Docs
 
