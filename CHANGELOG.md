@@ -2,6 +2,47 @@
 
 ## 1.0.0 — stable (unreleased)
 
+### Changed
+- Crate layering (NOTES.md 1). `brish-plugin` → `brish-plugin-api` (the
+  trait + `Registry` layer, engine-free), and `brish-engine` split out
+  of `brish-builtin`. A new `brish-plugin` crate now holds every
+  bundled plugin — `config`, `completion`, `highlight`, `hinter`,
+  `edit_mode`, `packs`, `prompt`, `keymap`, `hist` and the announce
+  builtin — so plugins needing engine types no longer live in the
+  binary. The split direction is forced: the engine dispatches plugins
+  through the Registry, so the traits must sit below it. The store
+  (`store`/`store_cmd`/`helper`) stays in `brish-builtin`, since the
+  engine calls `store_cmd::dispatch` and the prompt calls
+  `store::expand_template`. A third-party Rust plugin compiles against
+  `brish-plugin-api` alone. No behaviour change; workspace test count
+  unchanged.
+- Removed `docs/bsh-technical-plan.md` and fixed the references to it.
+  Its load-bearing decisions are recorded where they are enforced:
+  deviations in `docs/ARCHITECTURE.md`, WASM deferral in the new
+  `docs/PLUGIN-WASM.md`, ceilings in `docs/SECURITY.md`.
+
+### Fixed
+- The unit-test suite was silently truncating.
+  `exec_replaces_the_shell_or_redirects_it` ran `exec > f` in-process,
+  and because a bare redirection is applied with `apply_bare` it
+  permanently `dup2`'d a temp file onto fd 1 — the descriptor libtest
+  shares. Every later `... ok` line vanished into a file the tempdir
+  then deleted: the binary exited 0 with **no result line at all**, so
+  the suite always under-reported and any failure after that point was
+  invisible. `brish-builtin` now reports all 134 tests.
+- `and_or_equal_precedence_skips_only_the_next_command` asserted on
+  bare single letters in a file that parallel tests can write to during
+  the dup2 window; a concurrent libtest line containing `a` or `c` made
+  it fail roughly one run in three. Now uses distinctive markers.
+
+### Added
+- `examples/plugins/words/` — a zero-compile plugin written as a POSIX
+  shell script, supplying per-command completion wordlists. Companion
+  docs in `PLUGINS.md` now lead with the zero-compile route.
+- `docs/PLUGIN-WASM.md` — why WASM plugins are deferred, the seam
+  capability split a WASM backend would face, and a build order if it
+  is ever picked up.
+
 Hardening close-out from the beta: stability proofs, missing POSIX
 builtins, mid-command traps, quote-aware completion, docs.
 

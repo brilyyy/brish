@@ -1,7 +1,7 @@
-//! Core shell functionality: lexer, parser, AST, expander, execution engine.
+//! Core shell functionality: lexer, parser, AST, expander, environment.
 //!
-//! Modules grow in lockstep with the plan (`docs/briSH-technical-plan.md`
-//! phases 1-4): reader/lexer/parser first, then expander and engine.
+//! Zero dependencies by design — everything else in the workspace is
+//! allowed to depend on this crate, never the reverse.
 
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used)]

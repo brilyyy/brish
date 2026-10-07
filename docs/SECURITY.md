@@ -44,12 +44,10 @@ signal handler. `KILL`/`STOP` cannot be trapped.
 
 | Ceiling | Upgrade path |
 |---|---|
-| Signal traps do not interrupt a foreground wait (`sleep 100` finishes) | Self-pipe + EINTR-aware wait |
 | No restricted mode (`bsh -r`) | Wire `ModePolicy::strict_posix` into exec |
 | No secret redaction in history/debug traces | Opt-in filter over history writes + `BRISH_DEBUG` |
 | TOCTOU on path checks (`stat` vs `open`) | `openat`/`execveat` where available |
-| Plugin helpers unsandboxed | WASM or OS sandbox (Phase 7+ non-goal for beta) |
-| No fuzz targets in CI | `cargo-fuzz` nightly job |
+| Plugin helpers unsandboxed | WASM or OS sandbox — see [`PLUGIN-WASM.md`](PLUGIN-WASM.md) |
 
 ## Reporting
 

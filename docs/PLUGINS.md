@@ -1,23 +1,25 @@
 # Writing briSH plugins
 
 Everything non-core is a plugin: themes, the git prompt segment, cd
-announcements, completion providers, keymaps. This guide is the
-authoritative API reference; `docs/archive/PLUGIN-PLAN.md` is the
-design record.
+announcements, completion providers, keymaps, edit modes, highlighting
+and autosuggest. This guide is the authoritative reference; the crate
+map is in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-## Where plugins live
+## The two plugin crates
 
-In-tree plugins go in `crates/brish-plugin/src/builtin/` and are listed
-in `builtin::catalog()` (one `CatalogEntry { default_enabled, plugin }`
-per plugin). The binary installs each catalog entry at startup after
-filtering it through `~/.config/brish/config.toml`.
+| Crate | Contains |
+|---|---|
+| `brish-plugin-api` | the traits + `Registry`, and nothing else. Engine-free leaf — **this is what a third-party Rust plugin compiles against**. |
+| `brish-plugin` | every bundled implementation: `config`, `completion`, `highlight`, `hinter`, `edit_mode`, `packs`, `prompt`, `keymap`, `hist`, plus `builtin/` (announce-cd). |
 
-Plugins that need engine types (like the built-in `default-completion`
-provider) live in `crates/brish/src/` instead — `brish-plugin` itself
-stays zero-dependency and engine-free.
+`brish-plugin` sits above `brish-engine` because several plugins need
+engine types (builtin names for completion, the lexer for highlighting).
+`brish-theme` is a separate catalog so theme authors need not pull the
+behavioral plugins. The binary (`brish`) owns `build_registry()` and
+the REPL, and filters every catalog through `~/.config/brish/config.toml`.
 
-Third-party plugins install into `~/.config/brish/plugins/<name>/`
-via the `plugin` builtin (see [Installing](#installing-store-plugins)
+Third-party plugins install into `~/.config/brish/plugins/<name>/` via
+the `plugin` builtin (see [Installing](#installing-store-plugins)
 below); each is a directory with a `plugin.toml` manifest.
 
 ## Config gate
@@ -37,10 +39,11 @@ enabled = ["brish-themes"]  # exact list; replaces defaults
 - Unknown plugin names: warning, never a crash.
 - Bad TOML: warning, defaults used.
 - `plugin` builtin lists every catalog entry and its on/off state.
-- Engine plugins (`main.rs::engine_plugins()`, installed at startup) use
-  the same keys: `syntax-highlight`, `autosuggest`, `emacs-mode`,
-  `vi-mode` (off by default), `default-menus`, `history-search`,
-  `history`, `validator`. `plugin` lists them with their on/off state.
+- Engine plugins (`brish_plugin::engine_plugins()`, installed at
+  startup) use the same keys: `syntax-highlight`, `autosuggest`,
+  `emacs-mode`, `vi-mode` (off by default), `default-menus`,
+  `history-search`, `history`, `validator`. `plugin` lists them with
+  their on/off state.
 
 ```toml
 # ~/.config/brish/config.toml — optional store settings
@@ -63,7 +66,7 @@ index = "https://github.com/brilyyy/brish"   # git repo of index/*.toml
 A `Plugin` bundles any of the above:
 
 ```rust
-use brish_plugin::{ChdirHook, HookAction, Plugin, Registry};
+use brish_plugin_api::{ChdirHook, HookAction, Plugin, Registry};
 use std::path::Path;
 
 struct AnnounceCd;
@@ -80,8 +83,11 @@ impl Plugin for AnnounceCd {
 }
 ```
 
-Add it to `catalog()` with `default_enabled: false`, rebuild, then the
-user enables it in `config.toml`. That is the whole lifecycle.
+Add it to `builtin::catalog()` with `default_enabled: false`, rebuild,
+then the user enables it in `config.toml`. That is the whole lifecycle.
+
+Prefer the zero-compile route unless you genuinely need in-process
+speed or a Rust type — see [Helper protocol](#helper-protocol).
 
 ## Hook semantics
 
@@ -259,7 +265,8 @@ brish -c 'plugin rm --purge starter'   # disable + delete files (no flag: keep f
 ## Distributing a plugin
 
 1. Ship a directory with `plugin.toml` (schema above). Working
-   examples: `examples/plugins/starter/` (declarative only) and
+   examples: `examples/plugins/words/` (shell script, zero compile),
+   `examples/plugins/starter/` (declarative only, no executable) and
    `examples/plugins/sentinel/` (helper binary + guard hook).
 2. For the index: add `index/<name>.toml`:
 
@@ -279,6 +286,17 @@ brish -c 'plugin rm --purge starter'   # disable + delete files (no flag: keep f
    when installing from a git URL.
 
 ## Helper protocol
+
+This is the **zero-compile path**. A plugin is a directory with a
+`plugin.toml`, and every seam is answered by an ordinary executable —
+a shell script is a perfectly good plugin. Nothing is built, nothing is
+linked: `plugin add` copies the directory and restarts the shell.
+
+Start with `examples/plugins/words/` — a ~40-line POSIX shell script
+that supplies per-command completion wordlists. Then
+`examples/plugins/sentinel/` for a hook + guard, and
+`examples/plugins/starter/` for the fully declarative form (no
+executable at all).
 
 `[helper] path` is a `PATH`-adjacent executable (relative to the
 plugin dir), invoked with `BRISH_PLUGIN_DIR` set to that dir and cwd

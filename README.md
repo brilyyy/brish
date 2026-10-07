@@ -202,23 +202,24 @@ never panic on arbitrary input.
 
 ## Extending
 
-Write a plugin: Differential QA against `dash`/`bash` on real Debian scripts:
-[`qa/report.md`](qa/report.md) (harness in `qa/`).
-[`docs/PLUGINS.md`](docs/PLUGINS.md) — traits, config
-gate, worked examples (hooks, themes, completion, keymaps). The design
-record is [`docs/archive/PLUGIN-PLAN.md`](docs/archive/PLUGIN-PLAN.md);
-the engineering
-roadmap is [`docs/bsh-technical-plan.md`](docs/bsh-technical-plan.md)
-(original project name; still the source of truth for phases).
-Trust boundaries and file-permission policy:
+[`docs/PLUGINS.md`](docs/PLUGINS.md) — traits, config gate, worked
+examples (hooks, themes, completion, keymaps), the zero-compile helper
+protocol, and the plugin store. No compilation required: drop a
+`plugin.toml` plus any executable in `~/.config/brish/plugins/<name>/`
+and `plugin add` it. Trust boundaries and file-permission policy:
 [`docs/SECURITY.md`](docs/SECURITY.md). More:
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (component map),
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (crate map),
+[`docs/PLUGIN-WASM.md`](docs/PLUGIN-WASM.md) (why WASM is deferred),
 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) (config reference),
 [`docs/POSIX.md`](docs/POSIX.md) (conformance + stability numbers),
 [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) (dev gates).
 
-Crate split: depend on `brish-plugin` for behavioral plugins (hooks,
-completion, keymaps), `brish-theme` for prompt themes/segments.
+Differential QA against `dash`/`bash` on real Debian scripts:
+[`qa/report.md`](qa/report.md) (harness in `qa/`).
+
+Crate split: a Rust plugin compiles against `brish-plugin-api` alone
+(traits + `Registry`, no engine dependency); the bundled plugins live
+in `brish-plugin`, and prompt themes/segments in `brish-theme`.
 
 ## Deliberately not yet implemented
 

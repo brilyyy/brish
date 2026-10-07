@@ -1,0 +1,54 @@
+# Zero-compile example: a wordlist plugin written in POSIX shell.
+#
+# `plugin add` runs this directly — there is nothing to build. Drop this
+# directory into ~/.config/brish/plugins/<name>/ (or `plugin add` it from
+# a local path) and it is live after a restart.
+#
+# Protocol: one `complete` argv per Tab, described in docs/PLUGINS.md.
+# Output is `value<TAB>description<TAB>drop` per line; a 3rd field of 1
+# drops the entry. Exit 0 with no output means "no suggestions".
+
+case "$1" in
+complete)
+    # Wordlists per parent command, so `git <Tab>` and `docker <Tab>`
+    # each get their own set. Anything after the last unquoted space in
+    # --before is the word under the cursor; before that is the parent.
+    before=""
+    for arg in "$@"; do
+        case "$arg" in
+        --before) seen_before=1 ;;
+        *)
+            if [ "${seen_before:-0}" = 1 ]; then
+                before="$arg"
+                seen_before=0
+            fi
+            ;;
+        esac
+    done
+    # Last whitespace-separated token of `before` is the parent command.
+    parent=$(printf '%s\n' "$before" | tr -s ' \t\n' '\n' | grep -v '^$' | tail -n 1)
+
+    emit() { printf '%s\t%s\t\n' "$1" "$2"; }
+
+    case "$parent" in
+    git)
+        emit status "working tree status"
+        emit switch "checkout another branch"
+        emit rebase "replay commits onto another branch"
+        emit --amend "rewrite the last commit"
+        ;;
+    docker)
+        emit ps "list running containers"
+        emit images "list local images"
+        emit compose "run a compose stack"
+        emit logs "container output"
+        ;;
+    *)
+        emit yes "say yes"
+        emit no "say no"
+        ;;
+    esac
+    ;;
+esac
+
+exit 0

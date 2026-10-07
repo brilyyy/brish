@@ -1,7 +1,8 @@
-//! Built-in shell commands.
+//! Built-in shell commands and the plugin store.
 //!
-//! Dispatch table first; individual built-in implementations land with
-//! the plan's phase 3 (`docs/briSH-technical-plan.md`).
+//! POSIX builtins (`BuiltIn` + `run`), the `plugin` store
+//! (`store`/`store_cmd`) and the shared `~/.config/brish` path family.
+//! Execution lives in `brish-engine`, which depends on this crate.
 
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used)]

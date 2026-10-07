@@ -1,0 +1,11 @@
+name = "words"
+version = "1.0.0"
+description = "Zero-compile example: wordlists from a POSIX shell script"
+
+# A plugin is a directory with a plugin.toml. Nothing here is compiled:
+# bin/words is an ordinary executable that answers the helper protocol
+# (docs/PLUGINS.md). This is the fastest path from idea to working
+# plugin — start here before reaching for Rust.
+[helper]
+path = "bin/words"
+timeout_ms = 200
