@@ -1,7 +1,10 @@
-//! brish-words: the pure, dependency-free word-processing layer of briSH.
+//! brish-words: the pure word-processing layer of briSH.
 //!
 //! POSIX arithmetic evaluation, `test`/`[` predicate evaluation, IFS field
-//! splitting and pathname globbing. Zero dependencies.
+//! splitting and pathname globbing. No third-party dependencies: the only
+//! crate dependency is the in-tree `brish-platform`, and only for the
+//! `access(2)`/`isatty` calls that `test -r/-w/-x` and `-t` cannot answer
+//! by inspecting mode bits. `unsafe` stays confined to that crate.
 
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used)]

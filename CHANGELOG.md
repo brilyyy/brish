@@ -6,6 +6,24 @@ Hardening close-out from the beta: stability proofs, missing POSIX
 builtins, mid-command traps, quote-aware completion, docs.
 
 ### Fixed
+- `test -t fd` (POSIX): was rejected as an unknown operator, so every
+  `[ -t 0 ]` tty guard errored — including this repo's own `install.sh`.
+  A closed fd is now false; a non-numeric operand is an error.
+- `test -r/-w/-x` now use `access(2)` instead of reading raw mode bits:
+  a root-owned `0644` file no longer reports writable, and the answer
+  respects uid/gid and read-only mounts.
+- `test` with a single argument follows POSIX 2.6.1 (true iff the
+  argument is non-empty). `test -z`, `test -t`, `test !` exited 2 where
+  dash and bash exit 0.
+- `&&` and `||` have equal precedence and associate left-to-right: a
+  short-circuit now skips only the *next* command, so
+  `false && a || b` still runs `b`. The engine used to abandon the rest
+  of the list, silently dropping `b`.
+- POSIX corpus 115 -> 137 cases: `-t`, `-r`/`-w`/`-x`, single-argument
+  `test`, and mixed `&&`/`||` lists are all cross-checked against `dash`
+  now. The gaps were why the four bugs above survived.
+
+### Fixed
 - Trapped signals now interrupt a foreground wait even when the signal
   is delivered to a different thread: `wait_pid`/`wait_untraced` poll
   `WNOHANG` while another thread is alive and check the pending-trap

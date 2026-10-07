@@ -9,3 +9,6 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+# access(2)/isatty for `test -r/-w/-x` and `-t`. First-party only —
+# no third-party dependency (nix stays confined to brish-platform).
+brish-platform = { path = "../brish-platform" }

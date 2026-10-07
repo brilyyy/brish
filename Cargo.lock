@@ -164,6 +164,9 @@ dependencies = [
 [[package]]
 name = "brish-words"
 version = "0.1.0"
+dependencies = [
+ "brish-platform",
+]
 
 [[package]]
 name = "bumpalo"

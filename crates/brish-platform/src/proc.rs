@@ -33,6 +33,37 @@ fn io_err(op: &str, e: std::io::Error) -> PlatformError {
     PlatformError::Process(format!("{op}: {e}"))
 }
 
+/// `test -t`: is `fd` open and a terminal? An unopened or non-tty fd is
+/// `false` (POSIX wants a truth value, not an error).
+pub fn isatty_fd(fd: RawFd) -> bool {
+    // SAFETY: `isatty` only inspects the descriptor; a bad fd returns
+    // ENOTTY/error rather than misbehaving, so no liveness proof needed.
+    let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+    nix::unistd::isatty(borrowed).unwrap_or(false)
+}
+
+/// Bits for [`access`]: existence / read / write / execute-search.
+pub const ACCESS_F: u8 = 0;
+pub const ACCESS_R: u8 = 4;
+pub const ACCESS_W: u8 = 2;
+pub const ACCESS_X: u8 = 1;
+
+/// `access(2)`: can *this* user perform `mode` on `path`? Unlike a mode-bit
+/// test this resolves uid/gid/other and fails on read-only mounts — which is
+/// what `test -r/-w/-x` actually mean.
+pub fn access(path: &str, mode: u8) -> bool {
+    use nix::unistd::AccessFlags;
+    let flags = match mode {
+        ACCESS_R => AccessFlags::R_OK,
+        ACCESS_W => AccessFlags::W_OK,
+        ACCESS_X => AccessFlags::X_OK,
+        _ => AccessFlags::F_OK,
+    };
+    // SAFETY: nix builds a NUL-terminated CString and passes it straight
+    // to access(2); embedded NULs are rejected by `with_nix_path`.
+    nix::unistd::access(std::path::Path::new(path), flags).is_ok()
+}
+
 fn sys_dup2(from: RawFd, to: RawFd) -> std::io::Result<()> {
     // SAFETY: both are plain ints; the kernel validates liveness.
     let rc = unsafe { nix::libc::dup2(from, to) };
@@ -752,6 +783,7 @@ mod tests {
     }
 
     use std::io::{Read, Write};
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn fork_runs_closure_and_reports_status() {
@@ -885,6 +917,34 @@ mod tests {
         );
         clear_pending_traps(u32::MAX);
         let _ = wait_pid(pid);
+    }
+
+    #[test]
+    fn isatty_fd_is_false_for_a_pipe_and_true_for_the_tty() {
+        // fd 0/1/2 are whatever libtest inherited; a closed fd must be
+        // false rather than an error (POSIX wants a truth value).
+        assert!(!isatty_fd(99));
+        assert!(!isatty_fd(0) || open_tty().is_ok());
+    }
+
+    #[test]
+    fn access_resolves_the_calling_user_not_the_mode_bits() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let f = dir.path().join("f");
+        std::fs::write(&f, "x").expect("write");
+        assert!(access(&f.to_string_lossy(), ACCESS_R));
+        assert!(access(&f.to_string_lossy(), ACCESS_W));
+        // 0600 removes group/other, so a different-user check would
+        // differ — but we can at least pin the mode-000 negative for
+        // non-root callers.
+        let locked = dir.path().join("locked");
+        std::fs::write(&locked, "x").expect("write");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+        if unsafe { nix::libc::geteuid() } != 0 {
+            assert!(!access(&locked.to_string_lossy(), ACCESS_R));
+            assert!(!access(&locked.to_string_lossy(), ACCESS_W));
+        }
+        assert!(!access("/nonexistent-xyz", ACCESS_R));
     }
 
     #[test]

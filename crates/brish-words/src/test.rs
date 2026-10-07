@@ -25,7 +25,7 @@ impl std::error::Error for TestError {}
 /// One-argument (unary) operators.
 const UNARY: &[&str] = &[
     "-e", "-f", "-d", "-r", "-w", "-x", "-s", "-z", "-n", "-h", "-L", "-b", "-c", "-p", "-S", "-g",
-    "-u", "-k",
+    "-u", "-k", "-t",
 ];
 
 /// Two-operand operators.
@@ -62,6 +62,14 @@ fn go(args: &[String], depth: usize) -> Result<bool, TestError> {
     // No arguments: false (POSIX `test` with no operands, status 1).
     if args.is_empty() {
         return Ok(false);
+    }
+    // POSIX 2.6.1: with exactly one argument the expression is true iff
+    // the argument is not the null string — even when it looks like an
+    // operator or a negation. dash and bash both exit 0 for `test -z`,
+    // `test -t` and `test !`; only the 2-argument form needs an operand.
+    // Checked before `!` stripping so a lone `!` is the string "!".
+    if args.len() == 1 {
+        return Ok(!args[0].is_empty());
     }
     // `! expr` (may be chained).
     let mut start = 0;
@@ -141,11 +149,8 @@ fn go_body(args: &[String], depth: usize) -> Result<bool, TestError> {
         return Err(TestError::BadOperator);
     }
 
-    // A lone word.
+    // A lone word (reached after `!` stripping, e.g. `test ! x`).
     if args.len() == 1 {
-        if UNARY.contains(&args[0].as_str()) || BINARY.contains(&args[0].as_str()) {
-            return Err(TestError::MissingOperand);
-        }
         return Ok(!args[0].is_empty());
     }
     if args.iter().any(|a| UNARY.contains(&a.as_str())) {
@@ -237,8 +242,18 @@ fn is_integer_literal(s: &str) -> bool {
     rest.chars().all(|c| c.is_ascii_digit())
 }
 
-/// POSIX mode-bit test (`0o444` readable, `0o222` writable, `0o111`
-/// executable; set/sticky bits pass their own masks).
+/// `access(2)` flag for an access operator, or `None` for the rest.
+fn access_flag(op: &str) -> Option<u8> {
+    match op {
+        "-r" => Some(brish_platform::ACCESS_R),
+        "-w" => Some(brish_platform::ACCESS_W),
+        "-x" => Some(brish_platform::ACCESS_X),
+        _ => None,
+    }
+}
+
+/// POSIX mode-bit test — for the set/sticky bits only, never for
+/// `-r`/`-w`/`-x` (those need [`brish_platform::access`]).
 fn mode_has(m: &std::fs::Metadata, mask: u32) -> bool {
     use std::os::unix::fs::MetadataExt;
     m.mode() & mask != 0
@@ -281,7 +296,21 @@ fn unary(arg: &str, op: &str) -> Result<bool, TestError> {
         "-h" | "-L" => Ok(std::fs::symlink_metadata(arg)
             .map(|m| m.is_symlink())
             .unwrap_or(false)),
+        // `-t fd`: the operand is a descriptor, not a path. A closed or
+        // non-tty fd is simply false (dash exits 1 silently); a
+        // non-numeric operand is an error (dash: "Illegal number", 2).
+        "-t" => match arg.parse::<i32>() {
+            Ok(fd) if fd >= 0 => Ok(brish_platform::isatty_fd(fd)),
+            _ => Err(TestError::BadArg),
+        },
         _ => {
+            // `-r`/`-w`/`-x` ask "can *this* user", which is access(2) —
+            // mode bits alone would say yes for a root-owned 0644 file
+            // that we may not write. Everything else is a type/bit query.
+            if let Some(flag) = access_flag(op) {
+                let path = arg.trim_end_matches('/');
+                return Ok(!path.is_empty() && brish_platform::access(path, flag));
+            }
             let Some(m) = fs_meta(arg)? else {
                 return Ok(false);
             };
@@ -289,9 +318,6 @@ fn unary(arg: &str, op: &str) -> Result<bool, TestError> {
                 "-e" => true,
                 "-f" => m.is_file(),
                 "-d" => m.is_dir(),
-                "-r" => mode_has(&m, 0o444),
-                "-w" => mode_has(&m, 0o222),
-                "-x" => mode_has(&m, 0o111),
                 "-s" => m.len() > 0,
                 _ => file_type_test(op, &m),
             })
@@ -306,6 +332,19 @@ mod tests {
     fn v(items: &[&str]) -> Result<bool, TestError> {
         let args: Vec<String> = items.iter().map(|s| (*s).to_string()).collect();
         eval(&args)
+    }
+
+    /// uid 0 bypasses every permission bit; the `-w`/`-r` negatives are
+    /// meaningless there.
+    fn is_root() -> bool {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("Uid:"))
+                    .and_then(|l| l.split_whitespace().nth(1).map(str::to_string))
+            })
+            .is_some_and(|uid| uid == "0")
     }
 
     struct Tmp(std::path::PathBuf);
@@ -412,11 +451,19 @@ mod tests {
 
     #[test]
     fn missing_operand() {
-        assert_eq!(v(&["-z"]).unwrap_err(), TestError::MissingOperand);
-        assert_eq!(v(&["-e"]).unwrap_err(), TestError::MissingOperand);
-        assert_eq!(v(&["-eq"]).unwrap_err(), TestError::MissingOperand);
+        // Two arguments with a binary operator but only one operand.
         assert_eq!(v(&["1", "-eq"]).unwrap_err(), TestError::MissingOperand);
-        assert_eq!(v(&["-a"]).unwrap_err(), TestError::MissingOperand);
+        assert_eq!(v(&["1", "-a"]).unwrap_err(), TestError::MissingOperand);
+        // One argument that merely LOOKS like an operator is not a
+        // missing operand: POSIX 2.6.1 makes it the string test. dash and
+        // bash both exit 0 — the old expectations here (exit 2) were a
+        // deviation that the POSIX corpus never caught.
+        assert!(v(&["-z"]).unwrap());
+        assert!(v(&["-e"]).unwrap());
+        assert!(v(&["-eq"]).unwrap());
+        assert!(v(&["-a"]).unwrap());
+        assert!(v(&["-t"]).unwrap());
+        assert!(!v(&[""]).unwrap(), "the null string is the only false case");
     }
 
     #[test]
@@ -472,6 +519,54 @@ mod tests {
         assert!(v(&[&f, "-ef", &lp]).unwrap());
         assert!(v(&[&f, "-nt", &empty]).unwrap());
         assert!(v(&[&empty, "-ot", &f]).unwrap());
+    }
+
+    #[test]
+    fn tty_predicate_answers_about_fds_not_paths() {
+        // `-t 0` in the test harness: libtest gives us pipes or a tty,
+        // so pin only what is certain (never a hard true/false) plus the
+        // error and arity contract.
+        let fd0 = v(&["0", "-t"]);
+        assert!(matches!(fd0, Ok(_) | Err(_)));
+        // Unopened descriptor is false, not an error (dash exits 1).
+        assert!(!v(&["99", "-t"]).unwrap());
+        // Non-numeric / negative operand → error (dash: "Illegal number").
+        assert_eq!(v(&["x", "-t"]).unwrap_err(), TestError::BadArg);
+        assert_eq!(v(&["-1", "-t"]).unwrap_err(), TestError::BadArg);
+        assert_eq!(v(&["0.5", "-t"]).unwrap_err(), TestError::BadArg);
+        // Lone `-t` is a non-empty string, not a missing operand.
+        assert!(v(&["-t"]).unwrap());
+    }
+
+    #[test]
+    fn access_predicates_use_access_not_mode_bits() {
+        let t = Tmp::new("access");
+        let f = t.file("f", "x");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        // 0600 → readable+writable by the owner, not executable.
+        assert!(v(&[&f, "-r"]).unwrap());
+        assert!(v(&[&f, "-w"]).unwrap());
+        assert!(!v(&[&f, "-x"]).unwrap());
+
+        // A 000 file: mode bits say "nobody can", access(2) says the
+        // owner still can unless the fs blocks it — either way the point
+        // is that we no longer read raw bits. Root bypasses everything.
+        let locked = t.file("locked", "x");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+        if !is_root() {
+            assert!(!v(&[&locked, "-r"]).unwrap(), "0600-owner vs 000 owner");
+            assert!(!v(&[&locked, "-w"]).unwrap());
+        }
+        // Directories need +x to be searchable, so `-x` on a 0600 dir is
+        // false even though we "own" it.
+        let d = t.sub("d");
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        assert!(!v(&[&d, "-x"]).unwrap());
+        // A missing path is simply not accessible.
+        assert!(!v(&["/definitely/not/here", "-r"]).unwrap());
+        assert!(!v(&["/definitely/not/here", "-w"]).unwrap());
+        assert!(!v(&["/definitely/not/here", "-x"]).unwrap());
     }
 
     #[test]

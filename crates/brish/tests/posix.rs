@@ -212,6 +212,71 @@ const CASES: &[(&str, &str, i32)] = &[
     // Format not reused once args run out; no trailing newline.
     ("printf '%s %s' only-one", "only-one ", 0),
     ("printf 'no-args %d\n'", "no-args 0\n", 0),
+    // --- test/-t: the operand is a descriptor, not a path ---
+    // The harness runs with pipes, so stdin is never a tty here.
+    ("test -t 0; echo $?", "1\n", 0),
+    ("[ -t 0 ] && echo tty || echo no", "no\n", 0),
+    // A closed descriptor is false, not an error.
+    ("test -t 99; echo $?", "1\n", 0),
+    // Non-numeric operand is an error (dash: "Illegal number"): `test`
+    // exits 2, then `echo $?` exits 0 — so the LIST status is 0.
+    ("test -t x 2>/dev/null; echo $?", "2\n", 0),
+    // POSIX 2.6.1: one argument → true iff non-empty, even when it
+    // looks like an operator. dash and bash both exit 0.
+    ("test -t; echo $?", "0\n", 0),
+    ("test -z; echo $?", "0\n", 0),
+    ("test -e; echo $?", "0\n", 0),
+    ("test !; echo $?", "0\n", 0),
+    ("test -eq; echo $?", "0\n", 0),
+    ("test \"\"; echo $?", "1\n", 0),
+    // --- test/-r/-w/-x: access(2), not raw mode bits ---
+    // Each case must be re-runnable: the harness runs every case twice in
+    // the same {dir} (briSH, then dash), so an unreadable file left behind
+    // by run #1 would break `: >` in run #2. Restore the mode first.
+    (
+        "d={dir}/acc; mkdir -p $d; chmod 700 $d 2>/dev/null; rm -f $d/f; : > $d/f; chmod 400 $d/f; test -r $d/f && echo r; chmod 700 $d 2>/dev/null",
+        "r\n",
+        0,
+    ),
+    (
+        "d={dir}/acc; mkdir -p $d; chmod 700 $d 2>/dev/null; rm -f $d/f; : > $d/f; chmod 600 $d/f; test -x $d/f || echo nox; chmod 700 $d 2>/dev/null",
+        "nox\n",
+        0,
+    ),
+    (
+        "d={dir}/acc; mkdir -p $d; chmod 700 $d 2>/dev/null; rm -f $d/f; : > $d/f; chmod 644 $d/f; test -w $d/f && echo w; chmod 700 $d 2>/dev/null",
+        "w\n",
+        0,
+    ),
+    (
+        "d={dir}/acc; mkdir -p $d; chmod 700 $d 2>/dev/null; rm -f $d/f; : > $d/f; chmod 000 $d/f; test -r $d/f || echo not-readable; chmod 700 $d 2>/dev/null",
+        "not-readable\n",
+        0,
+    ),
+    (
+        "test -r /no/such/file_xyz && echo yes || echo no",
+        "no\n",
+        0,
+    ),
+    // --- && / || equal precedence, left-to-right (POSIX 2.9.4) ---
+    // A short-circuit skips only the NEXT command, never the rest of the
+    // list. These were silently broken: the engine returned on the first
+    // skip, so `false && a || b` never reached `b`.
+    ("false && echo a || echo b", "b\n", 0),
+    ("true || echo a && echo b", "b\n", 0),
+    ("true && echo a || echo b", "a\n", 0),
+    ("false || echo a && echo b", "a\nb\n", 0),
+    ("true && false || echo c", "c\n", 0),
+    ("false && echo a || echo b || echo c", "b\n", 0),
+    ("true && echo a && echo b", "a\nb\n", 0),
+    // short-circuit still applies within one operator
+    ("false && echo a && echo b; echo $?", "1\n", 0),
+    // errexit must stay suspended inside the list
+    (
+        "set -e; false && echo a || echo b; echo survived",
+        "b\nsurvived\n",
+        0,
+    ),
 ];
 
 fn run(prog: &str, args: &[&str], cwd: &Path) -> (String, i32) {

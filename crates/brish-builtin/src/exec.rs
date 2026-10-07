@@ -1046,11 +1046,18 @@ impl Engine {
         if ao.rest.is_empty() {
             return self.check_errexit(errexit_ctx, ao.first.negated);
         }
+        // POSIX: `&&` and `||` have EQUAL precedence and associate
+        // left-to-right, so a short-circuit skips only the *next* command,
+        // never the rest of the list: `false && a || b` still runs `b`.
+        // `continue` (not `return`/`break`) is what makes that work — the
+        // skipped pipeline leaves the status untouched, so the next
+        // operator still judges a meaningful status. `true && a || b`
+        // runs `a` then stops, because `||` sees success.
         for (i, (op, pipe)) in ao.rest.iter().enumerate() {
             let failed = self.env.status != 0;
             match op {
-                AndOrOp::And if failed => return Ok(()),
-                AndOrOp::Or if !failed => return Ok(()),
+                AndOrOp::And if failed => continue,
+                AndOrOp::Or if !failed => continue,
                 _ => {}
             }
             self.pipeline(pipe)?;
@@ -2111,6 +2118,56 @@ mod tests {
         // Short-circuit: right side never runs.
         assert_eq!(status("false && nosuchcmd123"), 1);
         assert_eq!(status("true || nosuchcmd123"), 0);
+    }
+
+    #[test]
+    fn and_or_equal_precedence_skips_only_the_next_command() {
+        // POSIX 2.9.4: `&&` and `||` associate left-to-right at one
+        // level, so a short-circuit abandons the NEXT command only —
+        // `false && a || b` must still reach `b`.
+        let mut e = Engine::new();
+        let run = |e: &mut Engine, src: &str| {
+            let prog = brish_core::parser::parse(src).expect("parse");
+            e.run(&prog).expect("run")
+        };
+        // Capture via files: the skipped command must never write, so the
+        // file proves which side actually executed. Separate files per
+        // list — `>` truncates, so sharing one would lose the first half.
+        let d = tempfile::tempdir().expect("tmp");
+        let (f1, f2) = (d.path().join("o1"), d.path().join("o2"));
+        let src = format!(
+            "false && printf a > {f1} || printf b > {f1}; \
+             true || printf c > {f2} && printf d > {f2}",
+            f1 = f1.display(),
+            f2 = f2.display()
+        );
+        // `printf`, not `echo`: builtin echo output is captured by
+        // libtest and never reaches a redirected file under test (same
+        // trap as noclobber_refuses_overwrite above). Even so a parallel
+        // test can emit its own fd-1 lines into the file during the dup2
+        // window, so assert our byte arrived rather than exact content.
+        let out = run(&mut e, &src);
+        assert_eq!(out, Outcome::Status(0));
+        let one = std::fs::read_to_string(&f1).expect("o1");
+        let two = std::fs::read_to_string(&f2).expect("o2");
+        assert!(
+            one.contains('b'),
+            "b must have run (and a must not): {one:?}"
+        );
+        assert!(
+            !one.contains('a'),
+            "the short-circuited `a` must not run: {one:?}"
+        );
+        assert!(
+            two.contains('d'),
+            "d must have run (and c must not): {two:?}"
+        );
+        assert!(
+            !two.contains('c'),
+            "the short-circuited `c` must not run: {two:?}"
+        );
+        // within one operator, the short-circuit still stops the chain
+        assert_eq!(status("false && nosuchcmd123 && nosuchcmd123"), 1);
     }
 
     #[test]
