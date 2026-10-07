@@ -231,7 +231,10 @@ pub fn trap_off(sig: i32) -> Result<(), PlatformError> {
 /// Returns the previous mask either way.
 pub fn umask(mode: Option<u16>) -> u16 {
     use nix::sys::stat::Mode;
-    let prev = nix::sys::stat::umask(Mode::from_bits_truncate(u32::from(mode.unwrap_or(0o777))));
+    // ponytail: `as _` because mode_t is u32 on Linux, u16 on macOS.
+    let prev = nix::sys::stat::umask(Mode::from_bits_truncate(
+        u32::from(mode.unwrap_or(0o777)) as _
+    ));
     if mode.is_none() {
         // Query only: put the old mask back (single-threaded at call
         // site — engine builtins run before/after spawns, not during).
