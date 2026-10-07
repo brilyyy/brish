@@ -523,10 +523,16 @@ impl<'a> Lexer<'a> {
             }
             if c == '\\' {
                 let n = self.peek_next()?;
-                if matches!(n, Some('`') | Some('\\')) {
+                // POSIX: within backquotes the backslash is only special
+                // before `` ` ``, `$`, `\`. Phase 1 drops the backslash and
+                // keeps the literal char in the extracted command text, so
+                // a nested `` \` `` becomes a real backtick that phase 2
+                // evaluates; `` \$ `` becomes `$` (later expanded).
+                if let Some(nc) = n
+                    && (nc == '`' || nc == '\\' || nc == '$')
+                {
                     self.bump();
-                    s.push('\\');
-                    s.push(n.unwrap_or('\\'));
+                    s.push(nc);
                     self.bump();
                     continue;
                 }
