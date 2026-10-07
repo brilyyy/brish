@@ -213,8 +213,10 @@ pub(crate) fn other_threads_alive() -> bool {
             // Field 2 is `num_threads`; `comm` (field 2) may contain
             // spaces and parens, so start after the last ')'.
             let after = stat.rfind(')').map_or("", |i| &stat[i + 1..]);
-            match after.split_whitespace().nth(1) {
-                // `state` is field 3, so `num_threads` is the next token.
+            // After ")": state, ppid, pgrp, session, tty_nr, tpgid, flags,
+            // minflt, cminflt, majflt, cmajflt, utime, stime, cutime,
+            // cstime, priority, nice, num_threads → num_threads is index 17.
+            match after.split_whitespace().nth(17) {
                 Some(n) => n.parse::<u32>().is_ok_and(|n| n > 1),
                 None => true,
             }

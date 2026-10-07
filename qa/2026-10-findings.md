@@ -71,6 +71,25 @@ an inherited state. That is the first thing to profile.
 Startup and expansion are at parity, so the gap is not "Rust is slow at
 these workloads" in general — it is concentrated in the exec path.
 
+### Resolution: root cause was `other_threads_alive()` field drift
+
+The four exec-path findings were a **single bug**, not four.
+`crates/brish-platform/src/proc.rs::other_threads_alive()` parsed
+`/proc/self/stat` by reading token index 1 after the last `)` — that is
+**ppid**, not `num_threads` (which is index 17). So the function
+returned `ppid > 1`, i.e. true whenever brish had *any* parent other
+than PID 1. Under a forking wrapper (`timeout`, `sudo`, a non-exec
+`sh -c`) every external spawn fell into the 2 ms `WAIT_POLL` path in
+`wait_pid`/`wait_untraced`. Direct under the container init (ppid 1)
+used the blocking wait and looked fine, which masked it everywhere
+except `timeout`.
+
+One-line fix (`nth(1)` → `nth(17)`): all four findings collapse.
+Post-fix brish is the fastest of the five shells on every fixture
+(fork 1 ms vs dash 17 ms; parse_big 1 ms = dash; pipeline 1 ms vs dash
+23 ms). The interactive/multi-threaded poll path still engages correctly
+because reedline really does spawn helper threads.
+
 ## Non-findings (verified clean)
 
 - Layer 0: all 5 oracles execute.
