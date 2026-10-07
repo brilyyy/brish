@@ -99,6 +99,7 @@ dependencies = [
  "brish-core",
  "brish-engine",
  "brish-platform",
+ "brish-plugin",
  "brish-plugin-api",
  "brish-theme",
  "clap",
@@ -156,6 +157,23 @@ dependencies = [
  "nix",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "brish-plugin"
+version = "0.1.0"
+dependencies = [
+ "brish-builtin",
+ "brish-core",
+ "brish-engine",
+ "brish-plugin-api",
+ "brish-theme",
+ "dirs",
+ "nu-ansi-term",
+ "reedline",
+ "serde",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]

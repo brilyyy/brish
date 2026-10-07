@@ -1,7 +1,7 @@
-//! `announce-cd` — example [`ChdirHook`](crate::ChdirHook) plugin:
+//! `announce-cd` — example [`ChdirHook`](brish_plugin_api::ChdirHook) plugin:
 //! prints `old -> new` after every successful `cd`.
 
-use crate::{ChdirHook, Plugin};
+use brish_plugin_api::{ChdirHook, Plugin};
 use std::path::Path;
 
 pub struct AnnounceCd;
@@ -17,7 +17,7 @@ impl Plugin for AnnounceCd {
         "brish-announce-cd"
     }
 
-    fn install(&self, reg: &mut crate::Registry) {
+    fn install(&self, reg: &mut brish_plugin_api::Registry) {
         reg.on_chdir.push(Box::new(AnnounceCd));
     }
 }

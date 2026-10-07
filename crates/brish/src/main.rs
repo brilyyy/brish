@@ -1,26 +1,18 @@
 use std::io::{BufRead, IsTerminal, Read, Write};
 
 use brish_engine::{Engine, Outcome, Stop};
+use brish_plugin::engine_plugins;
+use brish_plugin::{completion, config, edit_mode, highlight, hist, keymap, packs, report};
 use brish_plugin_api::Plugin;
-mod completion;
-mod config;
-mod edit_mode;
-mod highlight;
-mod hinter;
-mod hist;
-mod keymap;
-mod packs;
-mod prompt;
-mod report;
 
+use brish_plugin::completion::BrishCompleter;
+use brish_plugin::prompt::BrishPrompt;
+use brish_plugin::report::Style;
 use clap::Parser;
-use completion::BrishCompleter;
-use prompt::BrishPrompt;
 use reedline::{
     ColumnarMenu, Emacs, FileBackedHistory, KeyCode, KeyModifiers, MenuBuilder, Reedline,
     ReedlineEvent, ReedlineMenu, Signal, default_emacs_keybindings,
 };
-use report::Style;
 use std::sync::{Arc, Mutex};
 
 /// briSH (brily SHell) — a memory-safe, crash-resistant POSIX shell.
@@ -65,26 +57,6 @@ struct Run {
     exited: bool,
 }
 
-/// Engine plugins wired into the REPL: (name, plugin, default enabled).
-/// `brish-vi` is opt-in — `enabled = ["brish-vi"]` (or `disabled`-minus
-/// emacs) selects it; `Registry::edit_mode_factory` takes the first.
-/// `brish-syntax-highlight` is NOT here: it carries runtime state
-/// (aliases + dynamic flag) and is built in `build_registry`.
-pub(crate) fn engine_plugins() -> [(&'static str, &'static dyn Plugin, bool); 6] {
-    [
-        ("brish-autosuggest", &hinter::AutosuggestPlugin, true),
-        ("brish-emacs", &edit_mode::EmacsModePlugin, true),
-        ("brish-vi", &edit_mode::ViModePlugin, false),
-        ("brish-menus", &edit_mode::DefaultMenusPlugin, true),
-        (
-            "brish-history-search",
-            &edit_mode::HistorySearchPlugin,
-            true,
-        ),
-        ("brish-validator", &edit_mode::ValidatorPlugin, true),
-    ]
-}
-
 /// Build the plugin registry from config + store + engine plugins.
 /// Shared by startup and `relconf`.
 fn build_registry(
@@ -99,7 +71,7 @@ fn build_registry(
     // then behavioral plugins (announce, ...).
     for entry in brish_theme::catalog()
         .into_iter()
-        .chain(brish_plugin_api::builtin::catalog())
+        .chain(brish_plugin::builtin::catalog())
     {
         let plugin = entry.plugin;
         let name = plugin.name().to_string();

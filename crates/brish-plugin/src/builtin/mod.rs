@@ -3,8 +3,8 @@
 
 pub mod announce;
 
-use crate::CatalogEntry;
 use announce::AnnounceCd;
+use brish_plugin_api::CatalogEntry;
 
 /// Behavioral catalog, in registration order.
 pub fn catalog() -> Vec<CatalogEntry> {

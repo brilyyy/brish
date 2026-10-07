@@ -5,7 +5,7 @@
 //! dir). A broken or unknown config never crashes: warn once, use
 //! defaults (plan P3).
 
-use brish_plugin_api::builtin;
+use crate::builtin;
 use std::io::ErrorKind;
 use std::path::Path;
 
