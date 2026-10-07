@@ -257,3 +257,8 @@ if ! false; then printf not-false; fi
 while :; do printf once; break; done
 v=1; while [ $v -le 3 ]; do printf %s $v; v=$((v+1)); done; printf '\n'
 case $(printf a) in (a) printf grouped ;; esac
+
+# --- POSIX: positional params ARE valid inside arithmetic $(( )) (bug) ---
+set -- 5; echo $(( $1 - 1 ))
+set -- 5; echo $(( $1 + $1 ))
+f() { echo $(( $1 * 2 )); }; f 7

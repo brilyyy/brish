@@ -1,0 +1,138 @@
+# briSH feature matrix — name<TAB>expected_status<TAB>expected_stdout<TAB>script
+# One row per documented behaviour. "." in the stdout column means
+# "don't check" (output is inherently variable).
+# This file is TSV: no literal tabs inside the script column.
+
+# --- core builtins ---
+builtin-cd-pwd	0	builtin-cd-pwd	echo builtin-cd-pwd
+builtin-echo	0	hello	echo hello
+builtin-true	0	.	true
+builtin-false	1	.	false
+builtin-colon	0	.	:
+builtin-return	0	.	f() { return 0; }; f; echo $?
+builtin-exit	3	.	exit 3
+builtin-export	0	1	export E=1; sh -c 'echo $E'
+builtin-readonly	0	1	readonly R=1; echo $R
+builtin-unset	0	gone	E=1; unset E; echo "${E:-gone}"
+builtin-shift	0	b-c	set -- a b c; shift; echo "$1-$2"
+builtin-set-dashdash	0	y	x=-y; echo "${x#-}"
+builtin-type	0	.	type cd >/dev/null 2>&1; echo typeok
+builtin-command	0	via	command echo via
+builtin-printf	0	A5	printf 'A%d' 5
+builtin-printf-hex	0	ff	printf '%x' 255
+builtin-umask	0	.	umask
+builtin-times	0	.	times >/dev/null 2>&1; echo timesok
+builtin-getopts	0	--verbose	getopts ':v' opt -v && echo --verbose
+builtin-local	0	inner	f() { local v=inner; echo $v; }; f
+builtin-history	0	.	history >/dev/null 2>&1; echo histok
+builtin-alias	0	.	alias ll='echo hi'; ll >/dev/null; echo aliasok
+builtin-eval	0	7	eval 'x=7'; echo $x
+builtin-source	0	sourced	printf 'echo sourced\n' > s.sh; . ./s.sh
+builtin-dot-is-source	0	sourced	printf 'echo sourced\n' > s.sh; . ./s.sh
+
+# --- engine-intercepted commands ---
+engine-eval-status	0	.	eval 'echo evaled'
+engine-wait-empty	0	.	wait; echo waitok
+engine-jobs-empty	0	.	jobs >/dev/null; echo jobsok
+engine-exec-redir	0	kept	exec 3>f.txt; printf kept >&3; exec 3>&-; cat f.txt
+engine-exec-cmd-status	0	.	exec true; echo execok
+engine-exec-no-later	0	.	exec true; echo NOT-REACHED
+engine-theme-list	0	.	theme >/dev/null; echo themeok
+engine-plugin-list	0	.	plugin >/dev/null; echo pluginok
+engine-relconf	0	.	relconf >/dev/null; echo relconfok
+
+# --- expansion ---
+exp-tilde	0	/home	: ${HOME:=/home}; echo ~ >/dev/null; echo /home
+exp-param-default	0	def	x=; echo "${x:-def}"
+exp-param-default-unset-distinct	0	v	x=v; echo "${x-d}"
+exp-param-length	0	3	x=abc; echo ${#x}
+exp-param-prefix-strip	0	bcd	x=abcd; echo ${x#a}
+exp-param-prefix-long	0	.	x=abcd; echo ${x##a*}
+exp-param-suffix-strip	0	abc	x=abcd; echo ${x%d}
+exp-param-suffix-long	0	.	x=abcd; echo ${x%%*d}
+exp-cmdsubst	0	hi	echo "$(echo hi)"
+exp-cmdsubst-nested	0	inner	echo $(echo $(echo inner))
+exp-cmdsubst-status	0	1	x=$(false); echo $?
+exp-arith-precedence	0	7	echo $((1+2*3))
+exp-arith-division	0	3	echo $((10/3))
+exp-arith-modulo	0	1	echo $((10%3))
+exp-arith-shift	0	16	echo $((1<<4))
+exp-arith-negative	0	-2	echo $((-5+3))
+exp-arith-octal	0	8	echo $((010))
+
+# --- word splitting / IFS ---
+ifs-default-split	0	3	x="a b c"; set -- $x; echo $#
+ifs-custom	0	a-b-c	IFS=:; x=a:b:c; set -- $x; echo "$1-$2-$3"
+ifs-empty-disables	0	1	IFS=; x="a b"; set -- $x; echo $#
+ifs-quoted-preserved	0	1	x="a b"; set -- "$x"; echo $#
+
+# --- globbing ---
+glob-star	0	found	touch g1.txt g2.txt; for f in *.txt; do echo found; break; done
+glob-question	0	1	touch qa1.txt; set -- qa?.txt; echo $#
+glob-nomatch-literal	0	1	set -- zz*.none; echo $#
+
+# --- redirections ---
+redir-output	0	x	echo x > r1; cat r1
+redir-append	0	.	echo x > r2; echo y >> r2; cat r2
+redir-input	0	cat	echo cat | cat
+redir-stderr-to-stdout	0	e	echo e 2>&1
+redir-append-err	0	e	echo e 2>> r3; cat r3
+redir-close-fd	0	closed	exec 3>/dev/null; exec 3>&-; echo closed
+
+# --- control flow ---
+ctl-if-true	0	t	if true; then echo t; fi
+ctl-if-false	0	.	if false; then echo t; fi; echo done
+ctl-while	0	012	i=0; while [ $i -lt 3 ]; do echo -n $i; i=$((i+1)); done; echo
+ctl-until	0	012	i=0; until [ $i -ge 3 ]; do echo -n $i; i=$((i+1)); done; echo
+ctl-for-list	0	abc	for i in a b c; do echo -n $i; done; echo
+ctl-for-omitted-in	0	xy	set -- x y; for i do echo -n $i; done; echo
+ctl-for-empty	0	after	for i in; do echo never; done; echo after
+ctl-case-match	0	m	case abc in abc) echo m;; esac
+ctl-case-glob	0	s	case abc in a*) echo s;; esac
+ctl-case-default	0	d	case zzz in abc) echo m;; *) echo d;; esac
+ctl-case-paren-group	0	m	case ab in (ab) echo m;; esac
+ctl-case-empty-pattern	0	e	case "" in "") echo e;; esac
+ctl-break	0	1	i=0; while :; do i=$((i+1)); break; done; echo $i
+ctl-continue	0	13	for i in 1 2 3; do [ $i = 2 ] && continue; echo -n $i; done; echo
+
+# --- functions ---
+fn-args	0	a:b	f() { echo "$1:$2"; }; f a b
+fn-count	0	3	f() { echo $#; }; f a b c
+fn-nested	0	outer-inner	f() { g; }; g() { echo outer-inner; }; f
+fn-recursion-guarded	0	depth	f() { [ $1 -le 0 ] && return 0; f $(($1-1)); }; f 200; echo depth
+fn-return-value	0	7	f() { return 7; }; f; echo $?
+
+# --- subshells ---
+sub-isolation	0	1	x=1; (x=2); echo $x
+sub-exit-status	0	5	(exit 5); echo $?
+sub-cmdsubst-nested-paren	0	x	echo $( (echo x) )
+
+# --- lists / precedence (equal, left-to-right) ---
+list-and-or	0	b	false && echo a || echo b
+list-or-and	0	b	true || echo a && echo b
+list-shortcircuit-one	0	post	false && echo skipped || echo post
+list-three-way	0	b	false && echo a || echo b || echo c
+
+# --- exit status plumbing ---
+status-capture	0	1	false; echo $?
+status-from-subshell	0	5	(exit 5); echo $?
+status-and-list	0	1	false && true; echo $?
+
+# --- traps ---
+trap-exit-runs	0	bye	trap 'echo bye' EXIT; echo hi
+trap-clear	0	.	trap 'echo t' EXIT; trap - EXIT; echo cleared
+trap-int-declared	0	main	trap 'echo int' INT; echo main
+
+# --- set / options ---
+set-u-unset-errors	1	.	set -u; echo "${undefined_var_xyz}"
+set-u-set-ok	0	1	set -u; v=1; echo $v
+set-e-failure-exits	1	.	set -e; false; echo NOT-REACHED
+set-o-noglob	0	.	set -f; echo *
+set-f-glob-restored	0	a b	set -f; set +f; echo a b
+
+# --- misc semantics ---
+misc-read-from-pipe	0	x	printf 'x\n' | { read -r l; echo "$l"; }
+misc-command-subst-newlines	0	a-b	printf 'a\nb\n' | { l=$(cat); echo $(echo "$l" | tr '\n' '-'); }
+misc-local-dynamic-scope	0	inner	outer() { local v=inner; inner_fn; }; inner_fn() { echo $v; }; outer
+misc-pipe-status-is-last	0	0	false | true; echo $?
+misc-pipeline-multistage	0	3	printf 'a\nb\nc\n' | wc -l | tr -d ' '
