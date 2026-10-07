@@ -231,13 +231,13 @@ pub fn trap_off(sig: i32) -> Result<(), PlatformError> {
 /// Returns the previous mask either way.
 pub fn umask(mode: Option<u16>) -> u16 {
     use nix::sys::stat::Mode;
-    let prev = nix::sys::stat::umask(Mode::from_bits_truncate(mode.unwrap_or(0o777)));
+    let prev = nix::sys::stat::umask(Mode::from_bits_truncate(u32::from(mode.unwrap_or(0o777))));
     if mode.is_none() {
         // Query only: put the old mask back (single-threaded at call
         // site — engine builtins run before/after spawns, not during).
         nix::sys::stat::umask(prev);
     }
-    prev.bits()
+    prev.bits() as u16
 }
 
 /// `times(3)`: seconds `[shell_user, shell_sys, child_user, child_sys]`.
