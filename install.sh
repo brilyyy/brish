@@ -9,8 +9,21 @@ set -eu
 
 REPO="${BRISH_REPO:-brilyyy/brish}"
 BIN=brish
-PREFIX="${PREFIX:-/usr/local/bin}"
+PREFIX="${PREFIX:-}"
 VERSION="${1:-${VERSION:-latest}}"
+
+if [ -z "$PREFIX" ]; then
+    if [ -t 0 ]; then
+        printf 'Install to /bin/brish (system shell)? [y/N] '
+        read -r ans
+        case "$ans" in
+            y|Y|yes|YES) PREFIX=/bin ;;
+            *) PREFIX=/usr/local/bin ;;
+        esac
+    else
+        PREFIX=/usr/local/bin
+    fi
+fi
 
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
 arch=$(uname -m)
@@ -75,3 +88,15 @@ case ":$PATH:" in
     *) echo "note: add $PREFIX to PATH" >&2 ;;
 esac
 "$PREFIX/$BIN" --version 2>/dev/null || true
+
+if [ -t 0 ]; then
+    printf 'Set brish as your login shell (chsh)? [y/N] '
+    read -r ans
+    case "$ans" in
+        y|Y|yes|YES)
+            grep -qxF "$PREFIX/$BIN" /etc/shells || echo "$PREFIX/$BIN" | sudo tee -a /etc/shells >/dev/null
+            chsh -s "$PREFIX/$BIN"
+            echo "login shell set to $PREFIX/$BIN (re-login to take effect)" >&2
+            ;;
+    esac
+fi
