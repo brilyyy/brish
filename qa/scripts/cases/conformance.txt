@@ -157,6 +157,10 @@ echo $((-5+3))
 echo $((2**3)) 2>/dev/null
 n=0; n=$((n+1)); echo $n
 echo $(( 07 + 1 ))
+set -- 10 20; echo $(($1+$2))
+set -- 10 20; echo $((${1}+5))
+n=7; echo $(($n*2))
+set -- ; echo $(($1+1))
 
 # --- redirections ---
 echo x > /tmp/qa_r1; cat /tmp/qa_r1; rm -f /tmp/qa_r1

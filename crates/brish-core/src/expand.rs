@@ -510,9 +510,64 @@ impl<'a> Ex<'a> {
     }
 
     fn arith(&mut self, src: &str) -> Result<String, Error> {
-        let v = eval_arith(src, &mut *self.env)
+        let expanded = self.expand_arith_params(src);
+        let v = eval_arith(&expanded, &mut *self.env)
             .map_err(|e| Error::expand(format!("arithmetic: {e}")))?;
         Ok(v.to_string())
+    }
+
+    /// Inline `$`-parameter references before the arithmetic parser
+    /// (which rejects `$` outright). Bare names already work because the
+    /// parser resolves them via `ArithEnv`; `$1`, `$n`, `${n}` do not, so
+    /// their values are spliced in. Unset/empty → `0`, matching the
+    /// bare-name path through `ArithEnv::get` (which the parser treats
+    /// as 0 for unset).
+    fn expand_arith_params(&mut self, src: &str) -> String {
+        let b = src.as_bytes();
+        let mut out = String::with_capacity(src.len());
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'$' && i + 1 < b.len() {
+                if b[i + 1] == b'{' {
+                    if let Some(rel) = src[i + 2..].find('}') {
+                        let inner = &src[i + 2..i + 2 + rel];
+                        out.push_str(&self.arith_param(inner));
+                        i += 3 + rel;
+                        continue;
+                    }
+                } else {
+                    let j = i + 1;
+                    let (len, name): (usize, &str) = if b[j].is_ascii_digit() {
+                        let mut k = j;
+                        while k < b.len() && b[k].is_ascii_digit() {
+                            k += 1;
+                        }
+                        (k - j, &src[j..k])
+                    } else if b[j].is_ascii_alphabetic() || b[j] == b'_' {
+                        let mut k = j;
+                        while k < b.len() && (b[k].is_ascii_alphanumeric() || b[k] == b'_') {
+                            k += 1;
+                        }
+                        (k - j, &src[j..k])
+                    } else {
+                        (1, &src[j..j + 1])
+                    };
+                    out.push_str(&self.arith_param(name));
+                    i = j + len;
+                    continue;
+                }
+            }
+            out.push(b[i] as char);
+            i += 1;
+        }
+        out
+    }
+
+    fn arith_param(&self, name: &str) -> String {
+        match self.param_value(name) {
+            Some(v) if !v.trim().is_empty() => v,
+            _ => "0".to_string(),
+        }
     }
 
     // ---- parameter expansion ----
@@ -1267,6 +1322,19 @@ mod tests {
             vec!["11"]
         );
         assert_eq!(e.get("n"), Some("11"));
+        e.set_positional(vec!["10".into(), "20".into()]);
+        assert_eq!(
+            expand(&mut e, vec![Part::Arith("$1 + $2".into())]),
+            vec!["30"]
+        );
+        assert_eq!(
+            expand(&mut e, vec![Part::Arith("${1} + 5".into())]),
+            vec!["15"]
+        );
+        assert_eq!(
+            expand(&mut e, vec![Part::Arith("$n * 2".into())]),
+            vec!["22"]
+        );
         let _ = w;
     }
 
