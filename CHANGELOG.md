@@ -1,8 +1,15 @@
 # Changelog
 
-## 1.0.0 — stable (unreleased)
+## 0.2.0 — unreleased
 
-### Added
+Everything shipped so far, folded from the per-batch `## 0.1.0` sections
+this file used to grow one commit at a time (plus a `## 1.0.0 — stable`
+header that never shipped). Batches are in commit order; the entries
+themselves are unchanged.
+
+### Hardening close-out, CI, and login shell
+
+#### Added
 - Login-shell support: `brish -l` (accepted, sets `l` in `$-`) and a
   startup chain — `/etc/profile`, then the first existing of
   `~/.brish_profile`, `~/.bash_profile`, `~/.bash_login`, `~/.profile`.
@@ -12,7 +19,7 @@
   `chsh` step silently when stdin is not a tty (`curl … | sh`); it
   prints the two commands instead.
 
-### Changed
+#### Changed
 - Crate layering (NOTES.md 1). `brish-plugin` → `brish-plugin-api` (the
   trait + `Registry` layer, engine-free), and `brish-engine` split out
   of `brish-builtin`. A new `brish-plugin` crate now holds every
@@ -31,7 +38,7 @@
   deviations in `docs/ARCHITECTURE.md`, WASM deferral in the new
   `docs/PLUGIN-WASM.md`, ceilings in `docs/SECURITY.md`.
 
-### Fixed
+#### Fixed
 - The unit-test suite was silently truncating.
   `exec_replaces_the_shell_or_redirects_it` ran `exec > f` in-process,
   and because a bare redirection is applied with `apply_bare` it
@@ -45,7 +52,7 @@
   the dup2 window; a concurrent libtest line containing `a` or `c` made
   it fail roughly one run in three. Now uses distinctive markers.
 
-### Added
+#### Added
 - `examples/plugins/words/` — a zero-compile plugin written as a POSIX
   shell script, supplying per-command completion wordlists. Companion
   docs in `PLUGINS.md` now lead with the zero-compile route.
@@ -56,7 +63,7 @@
 Hardening close-out from the beta: stability proofs, missing POSIX
 builtins, mid-command traps, quote-aware completion, docs.
 
-### Fixed
+#### Fixed
 - `exec` is now a builtin (POSIX special builtin). It was missing
   entirely, so `exec 3>&1` — the standard fd-juggling idiom — died with
   "command not found". Bare `exec` applies redirections permanently;
@@ -73,7 +80,7 @@ builtins, mid-command traps, quote-aware completion, docs.
   and bash, comparing stdout and exit status separately. It found all
   four bugs above. See `qa/report.md`.
 
-### Fixed
+#### Fixed
 - `test -t fd` (POSIX): was rejected as an unknown operator, so every
   `[ -t 0 ]` tty guard errored — including this repo's own `install.sh`.
   A closed fd is now false; a non-numeric operand is an error.
@@ -91,7 +98,7 @@ builtins, mid-command traps, quote-aware completion, docs.
   `test`, and mixed `&&`/`||` lists are all cross-checked against `dash`
   now. The gaps were why the four bugs above survived.
 
-### Fixed
+#### Fixed
 - Trapped signals now interrupt a foreground wait even when the signal
   is delivered to a different thread: `wait_pid`/`wait_untraced` poll
   `WNOHANG` while another thread is alive and check the pending-trap
@@ -100,13 +107,13 @@ builtins, mid-command traps, quote-aware completion, docs.
   `waitpid`, so the flag could be set while the wait never woke
   (flaky mid-wait trap test, and a real hang in a threaded shell).
 
-### Fixed
+#### Fixed
 - `brish-platform` umask call compiles on macOS (`mode_t` is `u16`
   there, `u32` on Linux).
 - Function-nesting guard lowered 200 → 128 so the chunky engine frames
   stay inside the 2MiB test/REPL stack.
 
-### Added
+#### Added
 - `command not found` aid (interactive only): a `did you mean '…'?`
   line for builtins, aliases and `$PATH` within edit distance 2, plus
   `[hooks] command_not_found` — a command line receiving the missing
@@ -141,19 +148,19 @@ builtins, mid-command traps, quote-aware completion, docs.
 - Measured: coverage 83.65% lines, 13µs/keystroke highlight render,
   800k+ fuzz execs panic-free. Numbers in `docs/POSIX.md`.
 
-### Added (docs)
+#### Added (docs)
 - `docs/ARCHITECTURE.md`, `docs/POSIX.md`, `docs/CONFIGURATION.md`,
   `docs/CONTRIBUTING.md`.
 
-### Stability promise (SemVer)
+#### Stability promise (SemVer)
 For 1.0+: `config.toml` schema, plugin trait/registry API, and builtin
 semantics are stable (additive changes only). Behavior tweaks that
 change script outcomes bump the minor version. Patch releases fix
 bugs without behavior change.
 
-## 0.1.0 — install + shift-tab (unreleased)
+### install.sh + shift-tab
 
-### Added
+#### Added
 - `install.sh`: prebuilt GitHub Release install (sha256-verified) into
   `/usr/local/bin` (`PREFIX` override; `VERSION`/arg pins a tag;
   fallback hint to `cargo install --git` when no asset).
@@ -164,14 +171,14 @@ bugs without behavior change.
   `cargo binstall --git`. Workspace gains `description`/`repository`.
 - crates.io deferred (name check + 7-crate publish chore).
 
-### Fixed
+#### Fixed
 - Shift-Tab now rolls the completion menu back: bound to `MenuPrevious`
   (reedline ships no `BackTab` default; both SHIFT and bare BackTab
   variants covered).
 
-## 0.1.0 — themes, prefixes, dynamic highlight (unreleased)
+### themes, prefixes, dynamic highlight
 
-### Added
+#### Added
 - Dynamic syntax highlighting (zsh-patina reference): missing commands
   render **red**, resolvable callables (builtin/alias/`$PATH`) cyan,
   existing files/dirs in argument position **underlined**; precommands
@@ -179,7 +186,7 @@ bugs without behavior change.
   (default `true`); skipped above 2000-byte lines; `$PATH` lookups
   cached per session; aliases snapshotted each prompt.
 
-### Changed
+#### Changed
 - **Themes**: builtin set is now exactly `briiish-minimal` (default),
   `briiish-plain`, `briiish-nerd-font`, `briiish-emoji`. Replaced
   `briiish`/`robbyrussell`/`minimal`/`plain`.
@@ -191,11 +198,11 @@ bugs without behavior change.
   `brish-pack-*`. Store (user-installed) plugin names unchanged.
   **Breaking**: update `[plugins] enabled/disabled` lists.
 
-## 0.1.0 — NOTES.md batch (unreleased)
+### NOTES.md customizability batch
 
 Daily-driver customizability pass (`NOTES.md`).
 
-### Added
+#### Added
 - `[cd] zoxide`: `cd <rel>` falls back to `zoxide query` when the
   operand is not a directory and zoxide is on PATH (link preferred).
 - `ls` builtin: `[ls] backend = auto|builtin|eza` — auto/eza exec
@@ -217,19 +224,19 @@ Daily-driver customizability pass (`NOTES.md`).
 - Syntax highlighting was already default-on (NOTES 8 satisfied by
   existing `syntax-highlight` plugin).
 
-### Changed
+#### Changed
 - Windows support fully removed (NOTES 11): `cfg(not(unix))` stubs
   dropped, CI target-gate removed, README scrubbed. Unix-only.
 - Design docs archived: `docs/archive/PLUGIN-PLAN.md`,
   `docs/archive/BRISH-EXTENSIBILITY-PLAN.md` (NOTES 12);
   `bsh-technical-plan.md`/`PLUGINS.md`/`SECURITY.md` remain current.
 
-## 0.1.0 — beta prep (unreleased)
+### beta prep
 
 Daily-driver close-out: missing POSIX builtins, plugin/theme crate
 split, file-permission hardening.
 
-### Added
+#### Added
 - `alias` / `unalias`: interactive-only expansion (POSIX batch safe),
   cycle guard, `command` suppression. Aliases ride `Env` (subshell
   inheritance) and are never exported.
@@ -248,7 +255,7 @@ split, file-permission hardening.
   `MmSS.ss` format.
 - `docs/SECURITY.md`: trust model, permission policy, ceilings.
 
-### Changed
+#### Changed
 - Crate split: `brish-plugin` is now API-only (traits, `Registry`,
   `CatalogEntry`, `announce`); new `brish-theme` crate holds the
   prompt catalog (briiish/robbyrussell/minimal/plain + git/venv/aws/
@@ -260,19 +267,19 @@ split, file-permission hardening.
 - `engine_plugins()` table: shared by startup + config validation;
   `vi-mode` default off (`[plugins] enabled = ["vi-mode"]`).
 
-## 0.1.0 — unreleased
+### first working core
 
 First working core: POSIX execution engine (pipelines, redirections,
 heredocs, subshells, functions, expansions), 40+ builtins, background
 jobs with `wait`/`jobs`/`kill`, batch + reedline interactive REPL,
 dash-checked POSIX subset tests, property tests, Windows build gate.
 
-### Renamed
+#### Renamed
 - Project renamed **bsh → briSH (brily SHell)**; binary `brish`,
   workspace crates `brish-*`, env `BRISH_DEBUG`, history
   `~/.brish_history`. Error prefix `brish:`.
 
-### Added
+#### Added
 - Added `briiish` theme: `❯` arrow (green/red by status) + cyan cwd
   basename + segments. New default interactive theme.
 - robbyrussell theme kept in catalog; selectable via `theme robbyrussell`,
@@ -321,13 +328,13 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
   opt-in engine plugin (off by default): `[plugins] enabled = ["vi-mode"]`
   activates vi editing, `plugin` lists it, no dead-code lint.
 
-### Fixed
+#### Fixed
 - `[plugins] enabled` no longer warns `brish: unknown plugin: <name>` for
   engine plugin names (`syntax-highlight`, `autosuggest`, `emacs-mode`,
   `vi-mode`, `default-menus`, `history-search`, `history`, `validator`);
   the known-name list is derived from the same registration table.
 
-## 0.1.0 — plugin store (unreleased)
+### plugin store
 
 - Store plugin manifests: `~/.config/brish/plugins/<name>/plugin.toml`
   declares any subset of seams (theme, keymap, completion wordlists,
@@ -365,7 +372,7 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
   format, helper protocol table, trust model (no sandbox). README
   plugin store section; parse tests pin examples/index to the schema.
 
-## 0.1.0 — job control (unreleased)
+### job control
 
 - Full job control in interactive (tty) shells: `fg [%n]`, `bg [%n]`,
   `jobs` states (`Running`/`Stopped`/`Done`), `kill %n` group-kills
@@ -388,7 +395,7 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
   notification-once, and group-safety; interactive TTY path (real
   Ctrl-Z, `tcsetpgrp` handoff) verified manually.
 
-## 0.1.0 — bash-isms: (( )), $'…', <<< (unreleased)
+### bash-isms: (( )), $'…', <<<
 
 - `((expr))` arithmetic command: lexed as its own token (never two
   subshells, matching bash), evaluated against shell variables with
@@ -407,7 +414,7 @@ dash-checked POSIX subset tests, property tests, Windows build gate.
   batch end-to-end cases; not added to the `dash`-checked POSIX
   corpus (all three are bashisms).
 
-## 0.1.0 — brace expansion, globstar, ~user, echo -e, pipefail (unreleased)
+### brace expansion, globstar, ~user, echo -e, pipefail
 
 - Brace expansion: `{a,b}` lists (nested, empty variants; quoted and
   escaped braces stay literal), `{1..3}` / `{01..03}` (zero-padded) /
