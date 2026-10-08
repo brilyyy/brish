@@ -15,3 +15,4 @@ brish-platform = { path = "../brish-platform" }
 brish-builtin = { path = "../brish-builtin" }
 brish-plugin-api = { path = "../brish-plugin-api" }
 tempfile.workspace = true
+nu-ansi-term.workspace = true

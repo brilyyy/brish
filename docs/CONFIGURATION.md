@@ -36,6 +36,12 @@ match_description = false
 style = "fancy"            # fancy (source excerpt + caret) | short | plain
                            # default: fancy on a tty, short in batch
 
+[not_found]
+style = "fancy"            # fancy (colored + `did you mean`) | short | plain
+                           # default: fancy on a tty, short in batch; batch
+                           # output never changes (POSIX line, status 127)
+suggest = true             # `did you mean …` hint (+ edit-distance scan)
+
 [plugins]
 # enabled = ["brish-vi"]    # exact list (replaces defaults)
 disabled = []              # defaults minus these
@@ -73,8 +79,10 @@ command_not_found = "command-not-found"   # Debian/Ubuntu, Arch (pkgfile)
 ```
 
 Interactive only (batch keeps plain POSIX `name: command not found`,
-status 127). A `did you mean '…'?` line is printed first when a
-builtin, alias or `$PATH` command is within edit distance 2.
+status 127). A `did you mean '…'?` line (with the candidate's
+origin: `builtin`, `alias` or `$PATH`) is printed first when a
+builtin, alias or `$PATH` command is within edit distance 2 —
+controlled by `[not_found] suggest`.
 
 ## Completion matching
 
@@ -115,6 +123,32 @@ Themes `brish-themes`; segments `brish-git`, `brish-venv`, `brish-aws`,
 `brish-history-search`, `brish-history`, `brish-validator`;
 completion packs `brish-pack-git`, `brish-pack-docker`, …
 Store-installed plugins keep their own names.
+
+## Command-not-found report
+
+`[not_found]` styles the interactive `command not found`
+report. Batch, scripts and pipes always keep the plain POSIX
+line (`brish: name: command not found`, status 127) so the
+`dash` cross-check and anything parsing stderr see nothing new.
+
+| Key | Values | Default |
+|---|---|---|
+| `style` | `fancy`, `short`, `plain` | `fancy` on a tty, `short` otherwise |
+| `suggest` | bool — `did you mean …` hint | `true` |
+
+`fancy` colors the report and hints where the candidate lives:
+
+```console
+brish ❯ nvm
+brish: nvm: command not found
+  ❯ did you mean 'nv' ($PATH)?
+```
+
+`short` is the classic two-line text (with the origin label),
+`plain` drops the `brish:` prefix. ANSI is emitted only when
+stderr is a terminal and `NO_COLOR` is unset/empty. `suggest =
+false` also skips the edit-distance scan (a `read_dir` per
+`$PATH` entry when no builtin/alias matched).
 
 ## Error reports
 

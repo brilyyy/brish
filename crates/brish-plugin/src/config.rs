@@ -22,6 +22,7 @@ pub struct ConfigFile {
     pub prompt: Option<PromptSection>,
     pub highlight: Option<HighlightSection>,
     pub errors: Option<ErrorsSection>,
+    pub not_found: Option<NotFoundSection>,
     pub hooks: Option<HooksSection>,
     pub completion: Option<CompletionSection>,
 }
@@ -56,6 +57,18 @@ pub struct ErrorsSection {
     /// `fancy` (source excerpt + caret), `short`, or `plain`. Absent =
     /// mode default (fancy on a tty, short in batch).
     pub style: Option<String>,
+}
+
+/// `[not_found]` — interactive command-not-found report.
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+pub struct NotFoundSection {
+    /// `fancy` (colored report + `did you mean` hint), `short`, or
+    /// `plain`. Absent = mode default (fancy on a tty, short in batch).
+    pub style: Option<String>,
+    /// `did you mean` hint (default true). `false` also skips the
+    /// edit-distance scan.
+    pub suggest: Option<bool>,
 }
 
 /// `[highlight]` — zsh-patina-style dynamic highlighting knobs.
@@ -124,6 +137,10 @@ pub struct Config {
     pub dynamic_highlight: bool,
     /// `[errors] style` override, if any.
     pub error_style: Option<String>,
+    /// `[not_found] style` override, if any.
+    pub not_found_style: Option<String>,
+    /// `[not_found] suggest` (default true).
+    pub not_found_suggest: bool,
     /// `[hooks] command_not_found` line, if any.
     pub command_not_found: Option<String>,
     /// `[completion] algorithm`, if any.
@@ -146,6 +163,8 @@ impl Default for Config {
             prompt: PromptChrome::default(),
             dynamic_highlight: true,
             error_style: None,
+            not_found_style: None,
+            not_found_suggest: true,
             command_not_found: None,
             completion_algorithm: None,
             completion_sort: None,
@@ -271,6 +290,10 @@ pub fn load_from(path: &Path, known: &[&str]) -> Config {
         disabled = None;
     }
     let dynamic_highlight = file.highlight.and_then(|h| h.dynamic).unwrap_or(true);
+    let (not_found_style, not_found_suggest) = match file.not_found {
+        Some(n) => (n.style, n.suggest.unwrap_or(true)),
+        None => (None, true),
+    };
     let cfg = Config {
         theme,
         theme_prompt,
@@ -279,6 +302,8 @@ pub fn load_from(path: &Path, known: &[&str]) -> Config {
         prompt,
         dynamic_highlight,
         error_style: file.errors.and_then(|e| e.style),
+        not_found_style,
+        not_found_suggest,
         command_not_found: file
             .hooks
             .and_then(|h| h.command_not_found)

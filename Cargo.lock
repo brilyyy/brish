@@ -148,6 +148,7 @@ dependencies = [
  "brish-platform",
  "brish-plugin-api",
  "brish-words",
+ "nu-ansi-term",
  "tempfile",
 ]
 

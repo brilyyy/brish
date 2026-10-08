@@ -502,6 +502,18 @@ fn errors_style_plain_drops_the_program_prefix() {
 }
 
 #[test]
+fn not_found_config_never_touches_batch_output() {
+    // Batch keeps the POSIX line even when config asks for fancy:
+    // scripts, pipes and the dash cross-check must not see extras.
+    let o = run_with_config(
+        &["-c", "no_such_command_xyzzy"],
+        "[not_found]\nstyle = \"fancy\"\nsuggest = false\n",
+    );
+    assert_eq!(code(&o), 127);
+    assert_eq!(err(&o), "brish: no_such_command_xyzzy: command not found\n");
+}
+
+#[test]
 fn relconf_e_runs_the_editor_then_reloads() {
     // `EDITOR` is set per-spawn, so no env mutation in-process.
     let home = tempfile::tempdir().expect("home");
