@@ -8,7 +8,21 @@ permissions:
   contents: write
 
 jobs:
+  # A tag push must not ship binaries that do not pass CI. Runs once,
+  # on the same job the build matrix needs.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+
   build:
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -20,7 +34,8 @@ jobs:
             cross: true
           - os: macos-latest
             target: aarch64-apple-darwin
-          - os: macos-13
+          # Intel runner label: `macos-13` was retired by GitHub.
+          - os: macos-15-intel
             target: x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
@@ -29,8 +44,6 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
       - name: Install cross (linux aarch64)
         if: matrix.cross
         run: cargo install cross --locked
