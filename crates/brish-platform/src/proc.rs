@@ -838,7 +838,15 @@ mod tests {
             .expect("open")
             .read_to_string(&mut s)
             .expect("read");
-        assert_eq!(s, "to-file\n");
+        // Not `assert_eq!`: libtest writes `test <name> ... ` progress for
+        // *other* threads to fd 1, and this scope has fd 1 pointed at the
+        // temp file. `fd_guard` serializes the tests that deliberately move
+        // descriptors; it cannot stop libtest's own reporter. Assert what
+        // this test is actually about: our bytes landed, and fd 1 came back.
+        assert!(
+            s.starts_with("to-file\n"),
+            "our write must be first in the redirected fd: {s:?}"
+        );
         assert_eq!(fd1_inode(), before, "stdout must be restored");
     }
 
