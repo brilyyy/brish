@@ -32,6 +32,11 @@ struct Cli {
     #[arg(short = 'i', conflicts_with = "command")]
     interactive: bool,
 
+    /// Login shell: read /etc/profile, then the first of ~/.bash_profile,
+    /// ~/.bash_login, ~/.profile (bash order)
+    #[arg(short = 'l', long)]
+    login: bool,
+
     /// Skip loading startup files
     #[arg(long)]
     norc: bool,
@@ -192,6 +197,11 @@ fn main() {
     brish_platform::reset_sigpipe();
     let cli = Cli::parse();
     let mut engine = Engine::new();
+    // `$-` reports `l` on every path, including `-lc` (profiles are only
+    // read on the REPL path — see repl).
+    if cli.login && !engine.env.flags.contains('l') {
+        engine.env.flags.push('l');
+    }
 
     // Startup plugins: catalog filtered through config.toml (plan P3).
     // The var-name snapshot is shared between the REPL (writer) and the
@@ -355,6 +365,28 @@ fn resolve_rc(cli_rcfile: Option<std::path::PathBuf>) -> std::path::PathBuf {
     resolve_rc_from(cli_rcfile, &cfg_rc, &home_rc)
 }
 
+/// Login startup files: `/etc/profile`, then the *first* of
+/// `~/.brish_profile`, `~/.bash_profile`, `~/.bash_login`, `~/.profile`.
+/// Native name first; the bash names are fallbacks so an existing setup
+/// carries over. `.bashrc` is not implied (bash requires the profile to
+/// source it) — chain the rc from `~/.brish_profile` if you want it.
+fn resolve_login_rcs_from(home: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut rcs = vec![std::path::PathBuf::from("/etc/profile")];
+    for name in [".brish_profile", ".bash_profile", ".bash_login", ".profile"] {
+        let p = home.join(name);
+        if p.exists() {
+            rcs.push(p);
+            break;
+        }
+    }
+    rcs
+}
+
+fn resolve_login_rcs() -> Vec<std::path::PathBuf> {
+    let home = dirs::home_dir().unwrap_or_default();
+    resolve_login_rcs_from(&home)
+}
+
 fn repl(
     engine: &mut Engine,
     cli: &Cli,
@@ -364,25 +396,35 @@ fn repl(
     cfg: &config::Config,
     err_style: Style,
 ) -> i32 {
-    // Set `$-`'s `i` before rc loads: aliases defined in `.brishrc`
-    // expand for later lines in the same rc and the REPL.
+    // Set `$-`'s `i` before rc loads: aliases defined in the rc expand
+    // for later lines in the same rc and the REPL. `l` is set in main().
     let interactive = cli.interactive || std::io::stdin().is_terminal();
     if interactive && !engine.env.flags.contains('i') {
         engine.env.flags.push('i');
     }
     if !cli.norc {
-        let rc = resolve_rc(cli.rcfile.clone());
-        match std::fs::read_to_string(&rc) {
-            Ok(src) => {
-                let run = run_src(engine, &src, err_style);
-                if run.exited {
-                    return run.code;
+        // ponytail: rc loads only on the REPL path, so `brish -lc 'cmd'`
+        // skips profiles (matches the reported need). Hoist into main()
+        // if ssh remote commands ever need them.
+        let explicit = cli.rcfile.is_some();
+        let rcs: Vec<std::path::PathBuf> = match cli.rcfile.clone() {
+            Some(p) => vec![p],
+            None if cli.login => resolve_login_rcs(),
+            None => vec![resolve_rc(None)],
+        };
+        for rc in rcs {
+            match std::fs::read_to_string(&rc) {
+                Ok(src) => {
+                    let run = run_src(engine, &src, err_style);
+                    if run.exited {
+                        return run.code;
+                    }
                 }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound && cli.rcfile.is_none() => {}
-            Err(e) => {
-                eprintln!("brish: {}: {e}", rc.display());
-                return 1;
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && !explicit => {}
+                Err(e) => {
+                    eprintln!("brish: {}: {e}", rc.display());
+                    return 1;
+                }
             }
         }
     }
@@ -657,5 +699,41 @@ mod tests {
         // config missing → home fallback
         std::fs::remove_file(&cfg_rc).expect("rm");
         assert_eq!(resolve_rc_from(None, &cfg_rc, &home_rc), home_rc);
+    }
+
+    #[test]
+    fn login_rcs_are_etc_profile_plus_first_home_profile() {
+        let d = tempfile::tempdir().expect("tmpdir");
+        let home = d.path();
+        let bash_login = home.join(".bash_login");
+        let bash_profile = home.join(".bash_profile");
+
+        // nothing in $HOME → /etc/profile only
+        assert_eq!(
+            resolve_login_rcs_from(home),
+            vec![std::path::PathBuf::from("/etc/profile")]
+        );
+        // .bash_login only → it wins over .profile
+        std::fs::write(&bash_login, "").expect("w");
+        assert_eq!(
+            resolve_login_rcs_from(home),
+            vec![std::path::PathBuf::from("/etc/profile"), bash_login.clone()]
+        );
+        // .bash_profile beats .bash_login (bash order)
+        std::fs::write(&bash_profile, "").expect("w");
+        assert_eq!(
+            resolve_login_rcs_from(home),
+            vec![
+                std::path::PathBuf::from("/etc/profile"),
+                bash_profile.clone()
+            ]
+        );
+        // native name beats every bash fallback
+        let brish_profile = home.join(".brish_profile");
+        std::fs::write(&brish_profile, "").expect("w");
+        assert_eq!(
+            resolve_login_rcs_from(home),
+            vec![std::path::PathBuf::from("/etc/profile"), brish_profile]
+        );
     }
 }

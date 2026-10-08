@@ -2,6 +2,16 @@
 
 ## 1.0.0 — stable (unreleased)
 
+### Added
+- Login-shell support: `brish -l` (accepted, sets `l` in `$-`) and a
+  startup chain — `/etc/profile`, then the first existing of
+  `~/.brish_profile`, `~/.bash_profile`, `~/.bash_login`, `~/.profile`.
+  Native name first, bash names as fallback; `.bashrc`/`.brishrc` are
+  not implied on the login path (bash-exact), so chain them from
+  `~/.brish_profile`. `install.sh` no longer skips the `/etc/shells` +
+  `chsh` step silently when stdin is not a tty (`curl … | sh`); it
+  prints the two commands instead.
+
 ### Changed
 - Crate layering (NOTES.md 1). `brish-plugin` → `brish-plugin-api` (the
   trait + `Registry` layer, engine-free), and `brish-engine` split out

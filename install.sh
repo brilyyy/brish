@@ -99,4 +99,10 @@ if [ -t 0 ]; then
             echo "login shell set to $PREFIX/$BIN (re-login to take effect)" >&2
             ;;
     esac
+else
+    # Non-interactive (`curl … | sh`): tell, don't silently skip — an
+    # unregistered shell can't be chsh'd.
+    echo "note: to set brish as your login shell:" >&2
+    echo "  echo $PREFIX/$BIN | sudo tee -a /etc/shells" >&2
+    echo "  chsh -s $PREFIX/$BIN" >&2
 fi

@@ -55,6 +55,24 @@ verified, installs to `/usr/local/bin`. Set `PREFIX` to override:
 curl -fsSL https://raw.githubusercontent.com/brilyyy/brish/main/install.sh | PREFIX=$HOME/.local/bin sh
 ```
 
+briSH is a valid login shell. Register it in `/etc/shells`, then `chsh`:
+
+```sh
+echo /usr/local/bin/brish | sudo tee -a /etc/shells
+chsh -s /usr/local/bin/brish
+```
+
+As a login shell it reads `/etc/profile`, then the first of
+`~/.brish_profile`, `~/.bash_profile`, `~/.bash_login`, `~/.profile` —
+native name first, the bash names as fallback so an existing setup keeps
+working. Like bash, it does not read `.bashrc`/`.brishrc` on its own;
+chain it:
+
+```sh
+# ~/.brish_profile
+[ -f ~/.config/brish/.brishrc ] && . ~/.config/brish/.brishrc
+```
+
 ## Sixty seconds
 
 ```console
