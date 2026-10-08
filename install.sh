@@ -12,8 +12,17 @@ BIN=brish
 PREFIX="${PREFIX:-}"
 VERSION="${1:-${VERSION:-latest}}"
 
+os=$(uname -s | tr '[:upper:]' '[:lower:]')
+
 if [ -z "$PREFIX" ]; then
-    if [ -t 0 ]; then
+    # /bin is writable on linux; on macOS the root volume is sealed
+    # (SIP), so /bin/brish is impossible and offering it only aborts the
+    # install with "Read-only file system". /usr/local/bin is already
+    # ahead of /bin in the default PATH, and chsh does not care where a
+    # shell lives — /etc/shells holds the path.
+    if [ "$os" = darwin ]; then
+        PREFIX=/usr/local/bin
+    elif [ -t 0 ]; then
         printf 'Install to /bin/brish (system shell)? [y/N] '
         read -r ans
         case "$ans" in
@@ -25,7 +34,6 @@ if [ -z "$PREFIX" ]; then
     fi
 fi
 
-os=$(uname -s | tr '[:upper:]' '[:lower:]')
 arch=$(uname -m)
 case "$arch" in
     arm64) arch=aarch64 ;;
