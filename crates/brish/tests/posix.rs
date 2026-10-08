@@ -158,7 +158,9 @@ const CASES: &[(&str, &str, i32)] = &[
     ("[ -z \"$unsetvar\" ] && echo z", "z\n", 0),
     ("test 1 -eq 1 -a 2 -eq 2 && echo conj", "conj\n", 0),
     // --- pipelines & lists ---
-    ("echo one two | wc -w", "       2\n", 0),
+    // `tr -d ' '`: BSD wc pads its counts ("       2"), GNU wc does not,
+    // so the bare output is not a portable expectation.
+    ("echo one two | wc -w | tr -d ' '", "2\n", 0),
     ("false || false || echo third", "third\n", 0),
     ("true && true && echo chain", "chain\n", 0),
     (
