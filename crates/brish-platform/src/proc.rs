@@ -696,6 +696,14 @@ pub fn ignore_jobctl_signals() {
 /// not one already), become the foreground group, ignore job-control
 /// signals. Call only when stdin is a tty.
 pub fn claim_terminal() -> Result<(), PlatformError> {
+    // Before ANY process-group work. `login(1)` (how Terminal.app starts
+    // a login shell) leaves us in a background group, so the `setpgid`
+    // below hands us a non-foreground group and `tcsetpgrp` then raises
+    // SIGTTOU — whose default action is to STOP. Ignoring it afterwards
+    // is too late: the shell freezes before the first prompt and never
+    // wakes. sh/zsh set these before touching process groups for the
+    // same reason.
+    ignore_jobctl_signals();
     let pid = nix::unistd::getpid();
     if nix::unistd::getpgrp() != pid {
         // SAFETY: setpgid(0,0) puts ourselves in a new group we lead;
@@ -705,7 +713,6 @@ pub fn claim_terminal() -> Result<(), PlatformError> {
     }
     let tty = open_tty().map_err(|e| PlatformError::Job(format!("open /dev/tty: {e}")))?;
     tcsetpgrp_fd(tty.as_raw_fd(), nix::unistd::getpgrp().as_raw())?;
-    ignore_jobctl_signals();
     Ok(())
 }
 

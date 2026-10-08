@@ -65,6 +65,26 @@ alive() {
 # --- the REPL comes up at all ------------------------------------------------
 alive repl-starts --settle 1.0 --teardown ''
 
+# --- a shell started OUTSIDE the foreground process group must not hang ------
+# Terminal.app starts the login shell through login(1), which leaves it in a
+# process group that is not the terminal's foreground group. brish used to
+# call tcsetpgrp() before ignoring SIGTTOU, whose default action is to STOP:
+# the shell froze before the first prompt, forever, and Ctrl-C did nothing.
+# The plain pty.fork() above cannot reproduce that (its child is the session
+# leader, so its group is already foreground), hence --bg-pgrp.
+#
+# Asserted on a command's OUTPUT, not on the shell merely being quiet: the
+# tty echoes whatever we type, so `--expect` on the command text would pass
+# for a dead shell. `echo BG$((1+1))` prints BG2 while the line that was
+# typed contains no "BG2", so only a shell that actually ran it matches.
+if "$PTY" --shell "brish -i" --bg-pgrp --timeout 12 --settle 1.0 \
+    --send 'echo BG$((1+1))' --expect 'BG2' --teardown '' >/dev/null 2>&1; then
+    qa_pass "$LAYER" "bg-pgrp-no-sigttou-stop" brish "ran a command"
+else
+    qa_fail "$LAYER" "bg-pgrp-no-sigttou-stop" brish \
+        "no command output (shell stopped itself on SIGTTOU)"
+fi
+
 # --- input is accepted and commands run -------------------------------------
 # The typed line is echoed back by the terminal, so the command text
 # itself appearing proves the line editor is live.

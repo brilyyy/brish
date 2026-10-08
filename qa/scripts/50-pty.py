@@ -12,7 +12,7 @@ prompt between keystrokes, so every assertion becomes a timing guess.
 Here we can type, wait for a sentinel to appear, and keep going.
 
 Usage:
-  pty.py --shell 'brish -i' [--cwd DIR] [--rows N] [--cols N]
+   pty.py --shell 'brish -i' [--cwd DIR] [--rows N] [--cols N]
          [--send TEXT]...        type TEXT (+Enter by default)
          [--raw TEXT]...         type TEXT verbatim, no Enter
          [--settle SECONDS]      wait after each send (default 0.35)
@@ -20,6 +20,8 @@ Usage:
          [--measure TEXT]        also report seconds until TEXT appears
          [--timeout SECONDS]     overall budget (default 10)
          [--env K=V]...          extra env for the child
+         [--bg-pgrp]             run the shell in a process group that is
+                                  NOT the terminal's foreground group
 
 Exit codes: 0 ok, 1 expectation not met / child failed, 124 timeout.
 Transcript (CR/LF normalised) goes to stdout; measurement to stderr.
@@ -56,6 +58,9 @@ def build_parser():
                    help="measure seconds until the first output byte")
     p.add_argument("--timeout", type=float, default=10.0)
     p.add_argument("--env", action="append", default=[])
+    p.add_argument("--bg-pgrp", action="store_true",
+                   help="start the shell in a background process group "
+                        "(how login(1)/Terminal.app launches a login shell)")
     p.add_argument("--teardown", default="\x03exit\n",
                    help="keys sent before killing; empty to skip")
     return p
@@ -112,6 +117,32 @@ def terminal_replies(seen):
     return reply
 
 
+def exec_shell(args, env):
+    """Replace this process with the shell under test."""
+    if args.cwd:
+        os.chdir(args.cwd)
+    os.environ.clear()
+    os.environ.update(env)
+    if args.bg_pgrp:
+        # Become a fresh process group, leaving the terminal's foreground
+        # group with the session leader. Done here, before exec, so there
+        # is no race with the parent's setpgid — if the shell execs first
+        # it is still in the foreground group and the shape is not tested.
+        os.setpgid(0, 0)
+        # POSIX: exec preserves ignored signals, and /bin/sh ignores the
+        # job-control trio for its own job control. Without this reset the
+        # shell under test inherits SIGTTOU=SIG_IGN and cannot possibly
+        # reproduce the bug. login(1) (the real launcher) starts the shell
+        # with default dispositions, so default is the faithful state.
+        for s in (signal.SIGTTOU, signal.SIGTTIN, signal.SIGTSTP):
+            signal.signal(s, signal.SIG_DFL)
+        # ...and exec the shell DIRECTLY. An intermediate /bin/sh ignores
+        # the job-control trio for its own sake, so it would hand the shell
+        # under test SIGTTOU=SIG_IGN and mask the bug a second time.
+        os.execvp(args.shell.split()[0], shlex.split(args.shell))
+    os.execvp("/bin/sh", ["/bin/sh", "-c", args.shell])
+
+
 def main():
     global ROWS, COLS
     args = build_parser().parse_args()
@@ -123,20 +154,40 @@ def main():
             k, v = kv.split("=", 1)
             env[k] = v
 
+    # `--bg-pgrp` puts the shell in a process group that is NOT the
+    # terminal's foreground group. That is how Terminal.app starts a login
+    # shell (via login(1)), and it is the one startup shape a plain
+    # pty.fork() never produces: the fork child IS the session leader, so
+    # its group is already foreground and a shell calling setpgid(0,0) +
+    # tcsetpgrp() cannot stop itself. Needs an extra fork (to own a
+    # different group) plus a pipe to hand the shell's pid back, since
+    # the session leader — not the shell — is what pty.fork() returns.
+    pid_r, pid_w = os.pipe()
     pid, fd = pty.fork()
     if pid == 0:
         # child
         try:
-            if args.cwd:
-                os.chdir(args.cwd)
-            os.environ.clear()
-            os.environ.update(env)
-            os.execvp("/bin/sh", ["/bin/sh", "-c", args.shell])
+            os.close(pid_r)
+            if args.bg_pgrp:
+                g = os.fork()
+                if g == 0:
+                    exec_shell(args, env)
+                os.setpgid(g, g)      # new group, terminal stays with `pid`
+                os.write(pid_w, b"%d" % g)
+                os.close(pid_w)
+                os.waitpid(g, 0)      # hold the foreground group open
+                os._exit(0)
+            exec_shell(args, env)
         except Exception as exc:  # pragma: no cover - child bail-out
             sys.stderr.write(str(exc))
             os._exit(127)
 
     # parent
+    os.close(pid_w)
+    shell_pid = pid
+    if args.bg_pgrp:
+        shell_pid = int(os.read(pid_r, 32) or b"0") or pid
+        os.close(pid_r)
     import fcntl
     import struct
     import termios
@@ -197,23 +248,30 @@ def main():
             pass
 
     # Reap without hanging: a shell that ignored Ctrl-C would otherwise
-    # wedge the whole suite.
+    # wedge the whole suite. `--bg-pgrp` watches the shell, not the
+    # session leader that pty.fork() handed us.
     status = None
     end = time.monotonic() + 2.0
     while time.monotonic() < end:
         try:
-            done, st = os.waitpid(pid, os.WNOHANG)
+            done, st = os.waitpid(shell_pid, os.WNOHANG)
         except ChildProcessError:
             break
-        if done == pid:
+        if done == shell_pid:
             status = st
             break
         drain(fd, 0.05, sink)
     if status is None:
         try:
-            os.kill(pid, signal.SIGKILL)
-            os.waitpid(pid, 0)
+            os.kill(shell_pid, signal.SIGKILL)
+            os.waitpid(shell_pid, 0)
         except (ProcessLookupError, ChildProcessError):
+            pass
+    if shell_pid != pid:
+        # The session leader exits once its shell is reaped.
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
             pass
 
     transcript = b"".join(sink).replace(b"\r\n", b"\n").replace(b"\r", b"\n")
