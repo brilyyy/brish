@@ -1,7 +1,4 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.svg">
-  <img alt="briSH — a memory-safe POSIX shell" src="assets/banner.svg">
-</picture>
+<img alt="briSH — a memory-safe POSIX shell" src="assets/banner.svg" width="100%">
 
 ![license](https://img.shields.io/badge/license-MIT-1e66f5?style=flat-square)
 ![rust](https://img.shields.io/badge/rust-2024%20edition-179299?style=flat-square)
@@ -127,6 +124,10 @@ No compiler, no crate to publish, no ABI to track. See
 | [`docs/PLUGIN-WASM.md`](docs/PLUGIN-WASM.md) | Why WASM plugins are deferred |
 | [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) | Dev gates every change must pass |
 | [`qa/report.md`](qa/report.md) | Differential QA against `dash`/`bash` on real Debian scripts |
+
+<p align="center">
+  <img src="assets/mascot-logo.png" alt="briSH mascot" width="160">
+</p>
 
 ## Build from source
 
