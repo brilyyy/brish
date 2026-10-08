@@ -1,13 +1,22 @@
 # briSH QA findings — 2026-10-08
 
+> **Status: all findings below are FIXED.** The suites are green (448 pass /
+> 0 fail). This file is kept as the record of the 2026-10-08 run, so the
+> sections read *pre-fix*: each bug keeps its original symptom because that
+> is what the run observed. Resolutions, commit refs and the current
+> benchmark table are in [Status after fix pass](#status-after-fix-pass-2026-10)
+> at the bottom. Do not read the tables in the middle of this file as the
+> current state of briSH.
+
 Harness: `qa/Dockerfile` + `qa/scripts/run-all.sh`, all layers green
 except the findings below. Every finding is reproducible from the
 corpus case named. Harness bugs found during the run were fixed; these
-are the bugs that remain **in briSH itself**.
+are the bugs that remain **in briSH itself** (as of that run — all since
+fixed, see the status note above).
 
 ## Real bugs (correctness)
 
-### 1. Positional parameters (`$1`..`$9`) are not expanded inside `$(( ))`
+### 1. [FIXED `7406e36`] Positional parameters (`$1`..`$9`) are not expanded inside `$(( ))`
 
 - **Case:** `conformance.txt` — `set -- 5; echo $(( $1 - 1 ))`
 - **brish:** `brish: expansion error: arithmetic: bad expression`
@@ -18,7 +27,7 @@ are the bugs that remain **in briSH itself**.
   argument-processing function that counts down breaks.
 - **Repro:** `brish -c 'f() { n=$(($1-1)); echo $n; }; f 5'`
 
-### 2. Quoted here-doc delimiters still expand"
+### 2. [FIXED `677b605`] Quoted here-doc delimiters still expand"
 
 - **Case:** `cases/multiline/quoted-heredoc-noexpand.sh`
 - **brish:** `cat <<"X"` expands `$var`, printing ` `
@@ -29,7 +38,7 @@ are the bugs that remain **in briSH itself**.
   for literal is a correctness and a security (injection) hazard.
 - **Repro:** `printf 'cat <<"X"\n$HOME\nX\n' | brish` (brish prints your home dir; dash prints `$HOME`)
 
-### 3. Nested backticks are not evaluated
+### 3. [FIXED `d2632c9`] Nested backticks are not evaluated
 
 - **Case:** `cases/multiline/nested-backticks.sh`
 - **brish:** `` b=`echo \`echo inner\`` `` leaves the inner backtick
@@ -41,6 +50,13 @@ are the bugs that remain **in briSH itself**.
 - **Repro:** `brish -c 'x=\`echo \`echo inner\`\`; echo $x'`
 
 ## Performance gaps (versus dash / mksh / busybox / bash)
+
+> **[SUPERSEDED]** Every number in this section is pre-fix. All of them
+> traced back to two bugs (`other_threads_alive()` field drift, and a
+> full `Env` clone per expansion) that are resolved — see
+> [Status after fix pass](#status-after-fix-pass-2026-10) for the current
+> table. The `parse_big 45x`, `subshell 34x`, `fork 21x` and `pipeline
+> 20x` rows below are **not** what brish does today.
 
 min-of-15 on a shared container, CPU-pinned. "—" = brish equals or beats
 the others. These are real and reproducible; they are the kind of thing
@@ -171,3 +187,29 @@ oracles); the gate allows 2x the slowest oracle and brish now meets it
 throughout. `qa-out/bench/gate.txt` is empty.
 
 Repro: `qa/scripts/run-all.sh bench`, then read `qa-out/bench/gate.txt`.
+
+### Independent re-check (2026-10-08, after the fix pass)
+
+The three correctness repros, run on a linux release build (ubuntu 24.04)
+against both brish and the dash oracle — they agree on all three now:
+
+| repro | brish | dash |
+|---|---|---|
+| `f() { n=$(($1-1)); echo $n; }; f 5` | `4` | `4` |
+| `cat <<"X"` with `$HOME` in the body | `$HOME` | `$HOME` |
+| nested `` echo `echo inner` `` | `inner` | `inner` |
+
+Fork and assignment cost, measured outside the harness on that same
+release build (min of 5, seconds) — independent of `qa-out/bench`:
+
+| workload | brish | dash | bash |
+|---|---|---|---|
+| 200 × `/bin/true` | 0.05 | 0.04 | 0.06 |
+| 2000 × `xN=N` | 0.02 | 0.02 | 0.47 |
+
+~1.25x dash on forks, parity on assignments: consistent with the 1.3x
+post-fix `fork` row above. Two measurement traps are worth remembering
+before quoting any number from this file: quote **release** builds
+(`target/debug` brish is ~2x slower on these workloads), and do not
+cross-measure a binary from one platform against oracles on another —
+that mistake is recorded under "Resolution" above.
