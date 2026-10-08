@@ -1,6 +1,6 @@
 use std::io::{BufRead, IsTerminal, Read, Write};
 
-use brish_engine::{Engine, Outcome, Stop};
+use brish_engine::{Engine, NotFoundStyle, Outcome, Stop};
 use brish_plugin::engine_plugins;
 use brish_plugin::{completion, config, edit_mode, highlight, hist, keymap, packs, report};
 use brish_plugin_api::Plugin;
@@ -249,6 +249,20 @@ fn main() {
     apply_theme(&mut engine, &cli, &config, &registry);
     engine.set_hooks(Arc::new(registry));
     engine.set_command_not_found(config.command_not_found.clone());
+    // Interactive command-not-found report: fancy on a terminal,
+    // short otherwise; `[not_found] style` overrides either way.
+    // Batch output never changes (POSIX line, status 127).
+    let nf_mode =
+        if (cli.interactive || std::io::stdin().is_terminal()) && std::io::stderr().is_terminal() {
+            NotFoundStyle::Fancy
+        } else {
+            NotFoundStyle::Short
+        };
+    let not_found_style = config
+        .not_found_style
+        .as_deref()
+        .map_or(nf_mode, |s| NotFoundStyle::from_name(s, nf_mode));
+    engine.set_not_found_style(not_found_style, config.not_found_suggest);
     // `relconf` re-runs the same pipeline (config reload + registry
     // rebuild + theme re-apply). Reedline-owned pieces (highlighter,
     // menus, edit mode, completer box) still need a restart.
@@ -271,6 +285,11 @@ fn main() {
                 registry: reg,
                 theme,
                 command_not_found: cfg.command_not_found.clone(),
+                not_found_style: cfg
+                    .not_found_style
+                    .as_deref()
+                    .map_or(nf_mode, |s| NotFoundStyle::from_name(s, nf_mode)),
+                not_found_suggest: cfg.not_found_suggest,
             }
         }));
     }

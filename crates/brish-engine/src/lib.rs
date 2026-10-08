@@ -9,7 +9,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-pub use exec::{Engine, Outcome, Reload, Stop};
+pub use exec::{Engine, NotFoundStyle, Outcome, Reload, Stop};
 
 mod exec;
 

@@ -34,7 +34,7 @@ use brish_platform::proc::{
 use brish_platform::RawFd;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{IsTerminal, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command as Proc, Stdio};
@@ -60,6 +60,32 @@ pub type R<T> = Result<T, Stop>;
 impl From<Error> for Stop {
     fn from(e: Error) -> Self {
         Stop::Fail(e)
+    }
+}
+
+/// How the interactive `command not found` report reads.
+/// Batch (and forked children) always print the POSIX
+/// `brish: name: command not found` line, whatever this says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NotFoundStyle {
+    /// `name: command not found` — no `brish:` prefix.
+    Plain,
+    /// `brish: name: command not found` (batch-safe default).
+    #[default]
+    Short,
+    /// Colored report with a `❯ did you mean …` hint.
+    Fancy,
+}
+
+impl NotFoundStyle {
+    /// `[not_found] style` value; unknown names keep `default`.
+    pub fn from_name(name: &str, default: NotFoundStyle) -> NotFoundStyle {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "fancy" => NotFoundStyle::Fancy,
+            "short" => NotFoundStyle::Short,
+            "plain" => NotFoundStyle::Plain,
+            _ => default,
+        }
     }
 }
 
@@ -145,6 +171,12 @@ pub struct Engine {
     /// `[hooks] command_not_found` command line (binary passes it from
     /// config; `relconf` refreshes it). Interactive only.
     not_found_hook: Option<String>,
+    /// `[not_found] style` (interactive aid; batch keeps POSIX
+    /// output). `relconf` refreshes it.
+    not_found_style: NotFoundStyle,
+    /// `[not_found] suggest`: `did you mean` hint (and its
+    /// edit-distance scan).
+    not_found_suggest: bool,
     /// `relconf` rebuild hook (binary builds it): re-reads config,
     /// returns (fresh registry, resolved theme). `None` in tests/batch.
     relconf_fn: Option<Arc<dyn Fn() -> Reload + Send + Sync>>,
@@ -352,6 +384,8 @@ fn run_subst(src: &str, env: &Env, funcs: &HashMap<String, Cmd>) -> Result<(Stri
             in_child: true,
             theme: DEFAULT_THEME.to_string(),
             not_found_hook: None,
+            not_found_style: NotFoundStyle::default(),
+            not_found_suggest: true,
             relconf_fn: None,
         };
         match child.program(&prog, true) {
@@ -434,12 +468,14 @@ fn path_executables(path: Option<&str>) -> Vec<String> {
     out
 }
 
-/// What `relconf` rebuilds: plugin registry, resolved theme, and the
-/// `[hooks] command_not_found` line.
+/// What `relconf` rebuilds: plugin registry, resolved theme, the
+/// `[hooks] command_not_found` line and the `[not_found]` settings.
 pub struct Reload {
     pub registry: Registry,
     pub theme: String,
     pub command_not_found: Option<String>,
+    pub not_found_style: NotFoundStyle,
+    pub not_found_suggest: bool,
 }
 
 /// Saved state per temp assignment: name -> (value, exported).
@@ -462,6 +498,8 @@ impl Engine {
             in_child: false,
             theme: DEFAULT_THEME.to_string(),
             not_found_hook: None,
+            not_found_style: NotFoundStyle::default(),
+            not_found_suggest: true,
             relconf_fn: None,
         }
     }
@@ -480,6 +518,13 @@ impl Engine {
     /// POSIX output so scripts do not see extra text).
     pub fn set_command_not_found(&mut self, hook: Option<String>) {
         self.not_found_hook = hook;
+    }
+
+    /// `[not_found] style` and `suggest` (interactive aid; batch
+    /// output never changes).
+    pub fn set_not_found_style(&mut self, style: NotFoundStyle, suggest: bool) {
+        self.not_found_style = style;
+        self.not_found_suggest = suggest;
     }
 
     /// Install the `relconf` rebuild hook (binary only).
@@ -1638,10 +1683,14 @@ impl Engine {
             registry,
             theme,
             command_not_found,
+            not_found_style,
+            not_found_suggest,
         } = build();
         self.hooks = Arc::new(registry);
         self.theme = theme;
         self.not_found_hook = command_not_found;
+        self.not_found_style = not_found_style;
+        self.not_found_suggest = not_found_suggest;
         self.env.status = 0;
     }
 
@@ -1785,17 +1834,83 @@ impl Engine {
 
     // ---- command not found (interactive aid) ----
 
-    /// `command not found` extras: a `did you mean` line and the
-    /// `[hooks] command_not_found` command. Interactive only — batch
-    /// keeps POSIX output (`name: command not found`, status 127) so
-    /// scripts and the dash cross-check see nothing new.
+    /// Interactive `command not found` report. `sugg` is the
+    /// `(command, origin)` pair from [`Engine::suggest_command`].
+    /// `color` wraps the text in ANSI (stderr is a terminal and
+    /// `NO_COLOR` unset/empty); the text is identical either way.
+    fn render_not_found(
+        style: NotFoundStyle,
+        name: &str,
+        sugg: Option<(&str, &str)>,
+        color: bool,
+    ) -> String {
+        let head = match style {
+            NotFoundStyle::Plain => format!("{name}: command not found"),
+            _ => format!("brish: {name}: command not found"),
+        };
+        let mut out = if style == NotFoundStyle::Fancy && color {
+            nu_ansi_term::Style::new()
+                .bold()
+                .fg(nu_ansi_term::Color::Red)
+                .paint(head)
+                .to_string()
+        } else {
+            head
+        };
+        let Some((best, origin)) = sugg else {
+            out.push('\n');
+            return out;
+        };
+        out.push('\n');
+        let hint = match style {
+            NotFoundStyle::Fancy => format!("  ❯ did you mean '{best}' ({origin})?"),
+            NotFoundStyle::Plain => format!("did you mean '{best}' ({origin})?"),
+            NotFoundStyle::Short => format!("brish: did you mean '{best}' ({origin})?"),
+        };
+        if style == NotFoundStyle::Fancy && color {
+            out.push_str(
+                &nu_ansi_term::Style::new()
+                    .fg(nu_ansi_term::Color::Yellow)
+                    .paint(hint)
+                    .to_string(),
+            );
+        } else {
+            out.push_str(&hint);
+        }
+        out.push('\n');
+        out
+    }
+
+    /// ANSI for the fancy report: stderr is a terminal and
+    /// `NO_COLOR` is unset/empty.
+    fn not_found_colors(&self) -> bool {
+        std::io::stderr().is_terminal() && brish_plugin_api::color_enabled()
+    }
+
+    /// `command not found` extras: the styled POSIX line, a
+    /// `did you mean` hint, and the `[hooks] command_not_found`
+    /// command. Batch and forked children keep POSIX output
+    /// (`brish: name: command not found`, status 127) so scripts
+    /// and the dash cross-check see nothing new.
     fn report_not_found(&mut self, name: &str) {
         if self.in_child || !self.env.flags.contains('i') {
+            eprintln!("brish: {name}: command not found");
             return;
         }
-        if let Some(best) = self.suggest_command(name) {
-            eprintln!("brish: did you mean '{best}'?");
-        }
+        let sugg = if self.not_found_suggest {
+            self.suggest_command(name)
+        } else {
+            None
+        };
+        eprint!(
+            "{}",
+            Self::render_not_found(
+                self.not_found_style,
+                name,
+                sugg.as_ref().map(|(c, o)| (c.as_str(), *o)),
+                self.not_found_colors(),
+            )
+        );
         let Some(hook) = self.not_found_hook.clone() else {
             return;
         };
@@ -1813,37 +1928,39 @@ impl Engine {
     }
 
     /// Closest known command within edit distance 2 (builtins, then
-    /// aliases, then `$PATH`). `None` when nothing is close enough.
-    fn suggest_command(&self, name: &str) -> Option<String> {
+    /// aliases, then `$PATH`), with its origin for the fancy hint.
+    /// `None` when nothing is close enough.
+    fn suggest_command(&self, name: &str) -> Option<(String, &'static str)> {
         if name.len() < 3 {
             return None;
         }
         let budget = if name.len() <= 4 { 1 } else { 2 };
-        let mut best: Option<(usize, String)> = None;
-        let consider = |cand: &str, best: &mut Option<(usize, String)>| {
-            let d = edit_distance(name, cand);
-            if d > budget || d == 0 {
-                return;
-            }
-            match best {
-                Some((bd, _)) if *bd <= d => {}
-                _ => *best = Some((d, cand.to_string())),
-            }
-        };
+        let mut best: Option<(usize, String, &'static str)> = None;
+        let consider =
+            |cand: &str, origin: &'static str, best: &mut Option<(usize, String, &'static str)>| {
+                let d = edit_distance(name, cand);
+                if d > budget || d == 0 {
+                    return;
+                }
+                match best {
+                    Some((bd, _, _)) if *bd <= d => {}
+                    _ => *best = Some((d, cand.to_string(), origin)),
+                }
+            };
         for c in BuiltIn::names() {
-            consider(c, &mut best);
+            consider(c, "builtin", &mut best);
         }
         for c in self.env.aliases.keys() {
-            consider(c, &mut best);
+            consider(c, "alias", &mut best);
         }
         // The `$PATH` scan is a read_dir per entry — do it only when no
         // builtin/alias was close enough (common typo case stays free).
         if best.is_none() {
             for c in path_executables(self.env.get("PATH")) {
-                consider(&c, &mut best);
+                consider(&c, "$PATH", &mut best);
             }
         }
-        best.map(|(_, c)| c)
+        best.map(|(_, c, o)| (c, o))
     }
 
     // ---- externals ----
@@ -1856,7 +1973,6 @@ impl Engine {
             match find_in_path(name, self.env.get("PATH")) {
                 Some(p) => p,
                 None => {
-                    eprintln!("brish: {name}: command not found");
                     self.env.status = 127;
                     self.report_not_found(name);
                     return Ok(());
@@ -2630,11 +2746,62 @@ mod tests {
     #[test]
     fn suggest_command_finds_close_builtins() {
         let e = interactive_engine();
-        assert_eq!(e.suggest_command("ech").as_deref(), Some("echo"));
-        assert_eq!(e.suggest_command("exprt").as_deref(), Some("export"));
+        assert_eq!(
+            e.suggest_command("ech"),
+            Some(("echo".to_string(), "builtin"))
+        );
+        assert_eq!(
+            e.suggest_command("exprt"),
+            Some(("export".to_string(), "builtin"))
+        );
         // too short / nothing close → no advice
         assert_eq!(e.suggest_command("x"), None);
         assert_eq!(e.suggest_command("zzzzzzzz"), None);
+    }
+
+    #[test]
+    fn not_found_style_names_parse_and_fall_back() {
+        use NotFoundStyle::{Fancy, Plain, Short};
+        assert_eq!(NotFoundStyle::from_name("fancy", Short), Fancy);
+        assert_eq!(NotFoundStyle::from_name(" plain ", Fancy), Plain);
+        assert_eq!(NotFoundStyle::from_name("nope", Short), Short);
+    }
+
+    #[test]
+    fn render_not_found_styles_the_interactive_report() {
+        // short: the classic two lines, now with the origin
+        assert_eq!(
+            Engine::render_not_found(NotFoundStyle::Short, "nvm", Some(("nv", "$PATH")), false),
+            "brish: nvm: command not found\nbrish: did you mean 'nv' ($PATH)?\n"
+        );
+        // plain drops the program prefix
+        assert_eq!(
+            Engine::render_not_found(NotFoundStyle::Plain, "nvm", None, false),
+            "nvm: command not found\n"
+        );
+        // no candidate close enough → single line
+        assert_eq!(
+            Engine::render_not_found(NotFoundStyle::Short, "nvm", None, false),
+            "brish: nvm: command not found\n"
+        );
+        // fancy: arrow hint; color wraps the same text in ANSI
+        let plain =
+            Engine::render_not_found(NotFoundStyle::Fancy, "nvm", Some(("nv", "builtin")), false);
+        assert_eq!(
+            plain,
+            "brish: nvm: command not found\n  ❯ did you mean 'nv' (builtin)?\n"
+        );
+        let colored =
+            Engine::render_not_found(NotFoundStyle::Fancy, "nvm", Some(("nv", "builtin")), true);
+        assert!(
+            colored.contains("brish: nvm: command not found"),
+            "{colored}"
+        );
+        assert!(
+            colored.contains("did you mean 'nv' (builtin)?"),
+            "{colored}"
+        );
+        assert_ne!(plain, colored, "color mode must emit ANSI");
     }
 
     #[test]
@@ -3084,6 +3251,8 @@ mod tests {
                 registry: reg,
                 theme: "t2".into(),
                 command_not_found: Some("echo reloaded".into()),
+                not_found_style: NotFoundStyle::Fancy,
+                not_found_suggest: false,
             }
         }));
         assert_eq!(run_src(&mut e, "relconf"), 0);
@@ -3091,6 +3260,9 @@ mod tests {
         assert_eq!(e.hooks.themes.len(), 1);
         // the reload also refreshes `[hooks] command_not_found`
         assert_eq!(e.not_found_hook.as_deref(), Some("echo reloaded"));
+        // and the `[not_found]` settings
+        assert_eq!(e.not_found_style, NotFoundStyle::Fancy);
+        assert!(!e.not_found_suggest);
         // usage error
         assert_eq!(run_src(&mut e, "relconf now"), 2);
         // `-e` edits first, then reloads (editor behaviour itself is
