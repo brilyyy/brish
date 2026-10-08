@@ -999,8 +999,18 @@ fn is_assign_target(name: &str) -> bool {
     crate::env::is_name(name)
 }
 
+/// Glob metacharacters present. A `[` only counts when a `]` follows it:
+/// an unterminated bracket expression cannot match anything, so it is
+/// literal. Without this, every `[ ... ]` test command globs the command
+/// word `[` and read_dir's the cwd — 6 syscalls per loop iteration.
 fn has_meta(s: &str) -> bool {
-    s.contains(['*', '?', '['])
+    if s.contains('*') || s.contains('?') {
+        return true;
+    }
+    match s.find('[') {
+        Some(i) => s[i + 1..].contains(']'),
+        None => false,
+    }
 }
 
 enum Form<'a> {
@@ -1280,6 +1290,26 @@ mod tests {
             expand(&mut e, vec![raw("/definitely/not/a/file")]),
             vec!["/definitely/not/a/file"]
         );
+    }
+
+    #[test]
+    fn unterminated_bracket_is_literal_not_meta() {
+        // `[` alone is the `test` builtin name, not a bracket expression:
+        // it must not be globbed (that read_dir'd the cwd every `[` test).
+        assert!(!has_meta("["));
+        assert!(!has_meta("[a"));
+        assert!(!has_meta("foo[bar"));
+        // A real bracket expression still globs.
+        assert!(has_meta("[abc]"));
+        assert!(has_meta("[a-c]*"));
+        // ...even when the `[` is not the first character.
+        assert!(has_meta("x[abc]"));
+        assert!(has_meta("a*"));
+        assert!(has_meta("a?"));
+        assert!(!has_meta(""));
+        // And the `[` command word survives expansion unchanged.
+        let mut e = env_with(&[]);
+        assert_eq!(expand(&mut e, vec![raw("[")]), vec!["["]);
     }
 
     #[test]

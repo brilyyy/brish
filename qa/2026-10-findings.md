@@ -84,11 +84,23 @@ than PID 1. Under a forking wrapper (`timeout`, `sudo`, a non-exec
 used the blocking wait and looked fine, which masked it everywhere
 except `timeout`.
 
-One-line fix (`nth(1)` → `nth(17)`): all four findings collapse.
-Post-fix brish is the fastest of the five shells on every fixture
-(fork 1 ms vs dash 17 ms; parse_big 1 ms = dash; pipeline 1 ms vs dash
-23 ms). The interactive/multi-threaded poll path still engages correctly
-because reedline really does spawn helper threads.
+One-line fix (`nth(1)` → `nth(17)`): the spawn-path findings collapse from
+~20-34x to 1.3-1.6x. Post-fix brish vs dash (ms, min of 15):
+
+| fixture | dash | brish | ratio |
+|---|---|---|---|
+| fork | 18 | 24 | 1.3x |
+| pipeline | 19 | 31 | 1.6x |
+| subshell | 13 | 21 | 1.6x |
+
+The interactive/multi-threaded poll path still engages correctly because
+reedline really does spawn helper threads.
+
+An earlier revision of this file claimed brish was *faster* than dash on
+every fixture, including `parse_big 1 ms = dash`. That was measured
+against a macOS (Mach-O) binary bind-mounted into the Linux QA image,
+which failed to exec — the fast numbers were exec-failure latency, not
+work done. Corrected above against `qa-out/bench/results.tsv`.
 
 ## Non-findings (verified clean)
 
@@ -121,8 +133,7 @@ because reedline really does spawn helper threads.
 - **[FIXED]** `other_threads_alive()` parsed token 1 (ppid) as `num_threads`
   (index 17) after `)`. Under any forking wrapper (`timeout`, `sudo`,
   non-exec `sh -c`) every external spawn paid the 2ms `WAIT_POLL` path.
-  All exec-path findings (fork/pipeline/subshell) now at parity with dash.
-  Commit `78c440f`.
+  Exec-path findings dropped from ~20-34x to 1.3-1.6x. Commit `78c440f`.
 - **[FIXED]** `$1`/`$n`/`${n}` inside `$(( ))`: arith rejected `$`. Expander
   now inlines param values. Commit `7406e36`.
 - **[FIXED]** quoted heredoc delim (`<<"E"OF`, backslash) still expanded the
@@ -131,9 +142,32 @@ because reedline really does spawn helper threads.
 - **[FIXED]** nested backticks / escaped `\$` inside backticks kept the
   backslash, so inner didn't evaluate. `read_backtick` now strips the escape
   for `` ` ``, `$`, `\` per POSIX phase 1. Commit `d2632c9`.
+- **[FIXED]** `xexpand` deep-cloned the whole `Env` on *every* expansion to
+  have a snapshot available for `$(...)`. That made each expansion O(vars):
+  one `xN=N` assignment cost 16us at 0 vars but 126us at 1600 vars — quadratic
+  over a script. The clone now happens only when the word actually contains a
+  command substitution (`word_has_subst`). **parse_big 93ms → 2ms** (dash 1ms).
+- **[FIXED]** `has_meta` treated a bare `[` as a glob metacharacter, so the
+  command word `[` in every `[ ... ]` test ran a `read_dir` of the cwd —
+  6 syscalls per loop iteration (`builtins` fixture). An unterminated bracket
+  expression cannot match, so it is literal. **builtins 9ms → 5ms**
+  (dash 2ms); `function` 12ms → 8ms (dash 3ms).
 
-Remaining gate-fails (interpreter overhead, not a one-liner):
-- parse_big 46x: 2000 separate statements parse ~62ms; the same work as a
-  while-loop runs 14ms → per-statement parse path looks ~O(n^2). Needs a
-  parser profile, not a one-line fix.
-- function 16ms vs 7ms, builtins 11ms vs 4ms: ~2-3x per-command overhead.
+All bench gate-fails now clear; suite is 448 pass / 0 fail.
+
+### Final bench (ms, min of 15; brish vs dash)
+
+| fixture | dash | brish | ratio |
+|---|---|---|---|
+| parse_big | 1 | 2 | 2x |
+| builtins | 2 | 5 | 2.5x |
+| function | 3 | 8 | 2.7x |
+| subshell | 13 | 19 | 1.5x |
+| fork | 18 | 23 | 1.3x |
+| pipeline | 19 | 31 | 1.6x |
+
+The residual 1.3-2.7x is ordinary interpreter overhead (Rust vs the C
+oracles); the gate allows 2x the slowest oracle and brish now meets it
+throughout. `qa-out/bench/gate.txt` is empty.
+
+Repro: `qa/scripts/run-all.sh bench`, then read `qa-out/bench/gate.txt`.

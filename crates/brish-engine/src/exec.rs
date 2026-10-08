@@ -19,7 +19,7 @@ use brish_core::ast::{self, CaseArm, Cmd, Program, Redir, Simple};
 use brish_core::env::Env;
 use brish_core::error::Error;
 use brish_core::expand::{self, CmdSubst};
-use brish_core::lexer::Word;
+use brish_core::lexer::{self, Word};
 use brish_core::path::find_in_path;
 
 use brish_plugin_api::{CmdCtx, DEFAULT_THEME, HookAction, Registry};
@@ -2073,12 +2073,25 @@ impl Engine {
     /// Run one expansion with command substitution wired in: every
     /// substitution updates `st`, which lands in `env.status` (and
     /// `cs_seen`) afterwards — `x=$(false)` keeps status 1.
-    fn xexpand<T>(&mut self, f: impl FnOnce(&mut Env, CmdSubst) -> Result<T, Error>) -> R<T> {
-        let (env_c, funcs_c) = (self.env.clone(), self.funcs.clone());
+    ///
+    /// `has_subst` must be true iff the words being expanded contain a
+    /// command substitution (see [`word_has_subst`]). The `Env` snapshot
+    /// exists only so `run_subst` can execute it against the state at
+    /// expansion start, and cloning it is O(vars) — so we only take it
+    /// when there is actually something to run.
+    fn xexpand<T>(
+        &mut self,
+        has_subst: bool,
+        f: impl FnOnce(&mut Env, CmdSubst) -> Result<T, Error>,
+    ) -> R<T> {
+        let snapshot = has_subst.then(|| (self.env.clone(), self.funcs.clone()));
         let mut st: Option<i32> = None;
         let r = {
             let mut cs = |src: &str| -> Result<String, Error> {
-                let (out, code) = run_subst(src, &env_c, &funcs_c)?;
+                let (env_c, funcs_c) = snapshot
+                    .as_ref()
+                    .ok_or_else(|| Error::expand("command substitution without env snapshot"))?;
+                let (out, code) = run_subst(src, env_c, funcs_c)?;
                 st = Some(code);
                 Ok(out)
             };
@@ -2097,19 +2110,43 @@ impl Engine {
     }
 
     fn xwords(&mut self, ws: &[Word]) -> R<Vec<String>> {
-        self.xexpand(|env, cs| expand::expand_words(env, ws, cs))
+        let sub = ws.iter().any(word_has_subst);
+        self.xexpand(sub, |env, cs| expand::expand_words(env, ws, cs))
     }
 
     fn xvalue(&mut self, w: &Word) -> R<String> {
-        self.xexpand(|env, cs| expand::expand_value(env, w, cs))
+        let sub = word_has_subst(w);
+        self.xexpand(sub, |env, cs| expand::expand_value(env, w, cs))
     }
 
     fn xvalue_assign(&mut self, w: &Word) -> R<String> {
-        self.xexpand(|env, cs| expand::expand_assign_value(env, w, cs))
+        let sub = word_has_subst(w);
+        self.xexpand(sub, |env, cs| expand::expand_assign_value(env, w, cs))
     }
 
     fn xtext(&mut self, src: &str) -> R<String> {
-        self.xexpand(|env, cs| expand::expand_text(env, src, cs))
+        // `expand_text` re-lexes here-doc bodies, so a `$(...)` can be
+        // anywhere in the text.
+        let sub = src.contains("$(") || src.contains('`');
+        self.xexpand(sub, |env, cs| expand::expand_text(env, src, cs))
+    }
+}
+
+/// True when expanding `w` can invoke command substitution, so `xexpand`
+/// must snapshot the env. `Part::Subst` is the backtick case; `$(...)`
+/// and `` ` `` inside a double-quoted part are re-lexed as a `Subst`
+/// part too, hence the textual check.
+fn word_has_subst(w: &Word) -> bool {
+    w.parts.iter().any(part_has_subst)
+}
+
+/// Recursive: a `$(...)` can sit inside a double-quoted part's parts.
+fn part_has_subst(p: &lexer::Part) -> bool {
+    match p {
+        lexer::Part::Subst(_) => true,
+        lexer::Part::Double(inner) => inner.iter().any(part_has_subst),
+        lexer::Part::Raw(t) => t.contains("$(") || t.contains('`'),
+        _ => false,
     }
 }
 
@@ -2376,6 +2413,32 @@ mod tests {
         assert_eq!(status("[ \"$(printf 'a b')\" = 'a b' ]"), 0);
         // Substitution output splits like normal words when unquoted.
         assert_eq!(status("set -- $(printf 'a b'); [ $# -eq 2 ]"), 0);
+        // `xexpand` skips the O(vars) env snapshot unless the word really
+        // has a substitution. `word_has_subst` must catch every spelling
+        // the expander can route through `cs`, or these go stale.
+        let has = |src: &str| {
+            let p = brish_core::parser::parse(src).unwrap();
+            let mut out = false;
+            for item in &p.items {
+                if let Some(ast::Cmd::Simple(s)) = item.andor.first.cmds.first()
+                    && (s.words.iter().any(word_has_subst)
+                        || s.assigns.iter().any(|a| word_has_subst(&a.value)))
+                {
+                    out = true;
+                }
+            }
+            out
+        };
+        assert!(has("x=$(true)"), "$() in word");
+        assert!(has("x=`true`"), "backtick in word");
+        assert!(has("x=\"$(true)\""), "$() inside double quotes");
+        assert!(!has("x=\"\\$(true)\""), "escaped $() is literal");
+        assert!(!has("x=1"), "plain assignment");
+        assert!(!has("echo hello"), "plain word");
+        assert!(!has("x=$y"), "parameter expansion is not subst");
+        assert!(!has("x=${y}"), "braced parameter is not subst");
+        // And a word that reports no subst must not reach `cs` at all.
+        assert_eq!(status("x=1; y=$x; [ \"$y\" = 1 ]"), 0);
     }
 
     #[test]
