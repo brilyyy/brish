@@ -40,9 +40,27 @@ decimal status code and the cwd there. `render` returns
 guest returns has control characters and ESC stripped, so a plugin cannot
 inject escapes or newlines into the prompt line.
 
-A working guest: `examples/wasm/segment-guest/` (build with
-`--target wasm32-unknown-unknown`; the built module is checked in as
-`examples/plugins/wasm-status/plugin.wasm`).
+A working guest: `examples/wasm/segment-guest/` — `./build.sh` compiles
+it and installs it as `examples/plugins/wasm-status/plugin.wasm`. The
+build is reproducible, so the committed module is diffable.
+
+### Trying the limits
+
+`examples/plugins/wasm-misbehaving/` has two plugins that are broken on
+purpose, so the guarantees above can be seen rather than believed:
+
+| plugin | misbehavior | observed |
+|---|---|---|
+| `fuel-burner` | `(loop $l (br $l))` | `brish: segment \`wasm-fuel-burner\` (wasm-fuel-burner) trapped or ran out of fuel` |
+| `oversized` | returns 200 bytes, `max_output = 32` | `brish: segment \`wasm-oversized\` (wasm-oversized) returned 200 bytes, over the 32-byte cap` |
+
+In both cases the segment is dropped, the warning prints once per
+session, and the prompt keeps working. Note the segments are only
+reached by a theme that renders them — `briiish-minimal` and
+`briiish-plain` ignore the segment list entirely, so a misbehaving guest
+under those themes produces no warning and no fuel burn. Use
+`briiish-nerd-font`, `briiish-emoji`, or a template theme with
+`{segments}`.
 
 ### What a guest cannot do
 

@@ -1,0 +1,12 @@
+name = "wasm-oversized"
+version = "0.2.0"
+description = "Deliberately misbehaving WASM segment: returns more text than the cap allows"
+
+# A guest that returns 200 bytes while `max_output` is 32. The host
+# rejects it before reading, prints one warning, and renders nothing.
+# The cap exists so a guest cannot repaint the prompt line with
+# megabytes of text.
+[wasm]
+path = "oversized.wasm"
+fuel = 1000000
+max_output = 32

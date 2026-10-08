@@ -332,7 +332,9 @@ max_output = 4096
 
 The shell must be built with `--features wasm`; a default build ignores
 `[wasm]` manifests. `examples/plugins/wasm-status/` is a working plugin
-(built from `examples/wasm/segment-guest/`).
+(built from `examples/wasm/segment-guest/` with `./build.sh`), and
+`examples/plugins/wasm-misbehaving/` has two guests that violate the
+fuel and output limits on purpose.
 
 ## Rules
 

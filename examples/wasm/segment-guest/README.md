@@ -18,11 +18,13 @@ and can do anything the user can. See
 ## Build
 
 ```sh
-rustup target add wasm32-unknown-unknown
-cargo build --release --target wasm32-unknown-unknown
-cp target/wasm32-unknown-unknown/release/brish_wasm_example_guest.wasm \
-   ../../plugins/wasm-status/plugin.wasm
+rustup target add wasm32-unknown-unknown   # once
+./build.sh                                 # builds + installs into ../../plugins/wasm-status
 ```
+
+The build is reproducible: `./build.sh` on a clean checkout produces the
+same bytes as the committed `plugin.wasm`, so a rebuild that shows up in
+`git status` means something actually changed.
 
 Then install the plugin and run a shell built with the feature:
 

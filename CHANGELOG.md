@@ -21,8 +21,10 @@ themselves are unchanged.
   wit-bindgen and no component model. +2.9 MiB on a 3.7 MiB binary.
   wasmi over wasmtime deliberately: an interpreter, not a JIT, so there
   is no W^X surface and no Cranelift `unsafe` tree. Example guest and a
-  built module in `examples/`. Documented in `docs/PLUGIN-WASM.md`, which
-  is no longer a "deferred" note.
+  built module in `examples/`, plus `examples/plugins/wasm-misbehaving/`
+  — a fuel burner and an oversized-output guest — so the limits are
+  demonstrable rather than claimed. Documented in `docs/PLUGIN-WASM.md`,
+  which is no longer a "deferred" note.
 - Login-shell support: `brish -l` (accepted, sets `l` in `$-`) and a
   startup chain — `/etc/profile`, then the first existing of
   `~/.brish_profile`, `~/.bash_profile`, `~/.bash_login`, `~/.profile`.

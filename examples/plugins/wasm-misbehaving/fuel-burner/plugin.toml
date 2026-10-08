@@ -1,0 +1,14 @@
+name = "wasm-fuel-burner"
+version = "0.2.0"
+description = "Deliberately misbehaving WASM segment: loops forever, cut off by the fuel budget"
+
+# A guest with no deadline of its own. briSH sets `fuel` operations
+# before every render, so this spends the budget, traps, and yields no
+# segment. The prompt stays usable — the failure is one warning.
+#
+# Fuel is small on purpose (the default is 1 MiB) so the cutoff is
+# immediate rather than something you wait for.
+[wasm]
+path = "fuel-burner.wasm"
+fuel = 50000
+max_output = 4096
