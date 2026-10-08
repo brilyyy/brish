@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/brish",
+    "crates/brish-plugin-wasm",
     "crates/brish-core",
     "crates/brish-builtin",
     "crates/brish-engine",

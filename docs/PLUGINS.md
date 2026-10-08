@@ -314,11 +314,34 @@ wedge the shell.
 | `hook chdir --cwd D --old O` | ignored |
 | `keymap` | `key<TAB>event` lines (event vocab: `menu-next`, `history-next`, `enter`, …) |
 
+## WASM segments
+
+The zero-compile path above is still the right answer for anything that
+needs a process. But a segment that only *formats* its input does not
+need one, and for that case a WebAssembly module runs in the `wasmi`
+interpreter with **no host imports at all** — no filesystem, no network,
+no spawn, no clock. See [`PLUGIN-WASM.md`](PLUGIN-WASM.md) for the ABI
+and the ceilings.
+
+```toml
+[wasm]
+path = "plugin.wasm"
+fuel = 1000000      # per render
+max_output = 4096
+```
+
+The shell must be built with `--features wasm`; a default build ignores
+`[wasm]` manifests. `examples/plugins/wasm-status/` is a working plugin
+(built from `examples/wasm/segment-guest/`).
+
 ## Rules
 
 - **No panics**: the workspace denies `clippy::unwrap_used` /
   `expect_used` outside tests. Plugin output is data; the shell never
   unwraps it.
+- **Bad plugin output is data, never a crash**: a WASM guest that traps,
+  runs out of fuel, returns an out-of-range pointer or exceeds
+  `max_output` yields no segment and one warning.
 - **Registry is immutable after startup** — build it once in `main`.
 - **Cheap prompt code**: the git segment pre-checks `.git` with an
   ancestor walk and caches per cwd for 1s. Prompt plugins run on every

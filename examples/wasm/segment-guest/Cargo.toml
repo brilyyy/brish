@@ -1,0 +1,22 @@
+[package]
+name = "brish-wasm-example-guest"
+version = "0.2.0"
+edition = "2024"
+description = "Example WASM prompt segment guest for briSH"
+license = "MIT"
+publish = false
+
+# NOT a workspace member: this builds for wasm32-unknown-unknown, not
+# for the host. It is excluded in the root Cargo.toml.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+# No allocator: brish hands the guest memory through `alloc`, and a
+# bump allocator is all the ABI needs.
+strip = true

@@ -25,4 +25,7 @@ jobs:
       - run: cargo build --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      # The wasm segment wiring is cfg'd out of the default build, so
+      # nothing else compiles it.
+      - run: cargo check -p brish --features wasm --locked
       - run: cargo fmt --all --check

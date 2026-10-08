@@ -10,6 +10,19 @@ themselves are unchanged.
 ### Hardening close-out, CI, and login shell
 
 #### Added
+- WASM prompt segments, behind `--features wasm` (off by default, so the
+  default build and the released binary are unchanged). A store plugin
+  with a `[wasm]` section runs a WebAssembly module in the `wasmi`
+  interpreter and uses its return value as segment text. The guest gets
+  **no** host imports — no filesystem, no network, no spawn, no clock —
+  so the boundary is genuinely the interpreter; fuel bounds its work per
+  render and `max_output` bounds its output, which is stripped of control
+  characters and ESC. Hand-written ABI (`memory`/`alloc`/`render`), no
+  wit-bindgen and no component model. +2.9 MiB on a 3.7 MiB binary.
+  wasmi over wasmtime deliberately: an interpreter, not a JIT, so there
+  is no W^X surface and no Cranelift `unsafe` tree. Example guest and a
+  built module in `examples/`. Documented in `docs/PLUGIN-WASM.md`, which
+  is no longer a "deferred" note.
 - Login-shell support: `brish -l` (accepted, sets `l` in `$-`) and a
   startup chain — `/etc/profile`, then the first existing of
   `~/.brish_profile`, `~/.bash_profile`, `~/.bash_login`, `~/.profile`.

@@ -1,0 +1,19 @@
+[package]
+name = "brish-plugin-wasm"
+description = "WASM prompt-segment plugins for briSH (wasmi interpreter)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+brish-plugin-api = { path = "../brish-plugin-api" }
+brish-builtin = { path = "../brish-builtin" }
+wasmi = "2.0"
+
+[dev-dependencies]
+wat = "1"
+tempfile.workspace = true

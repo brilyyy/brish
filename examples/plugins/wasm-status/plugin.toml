@@ -1,0 +1,14 @@
+name = "wasm-status"
+version = "0.2.0"
+description = "WASM prompt segment: last exit status on failure, cwd basename otherwise"
+
+# Interpreted by the wasmi interpreter. No host imports: this guest
+# cannot read files, spawn processes, or reach the network — only the
+# bytes the host writes into its memory. Requires a brish built with
+# `--features wasm`.
+[wasm]
+path = "plugin.wasm"
+# Fuel per prompt render. The guest is cut off when it runs out.
+fuel = 1000000
+# Hard cap on the returned string.
+max_output = 4096

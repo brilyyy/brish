@@ -11,6 +11,7 @@ and the ceilings deliberately left for later.
 | Commands you type / scripts you source | Trusted — same as `sh` |
 | `~/.config/brish/.brishrc`, `config.toml` | Trusted — read and executed as your user |
 | Store plugin helpers, segments, hooks | **PATH trust** — running one is running an executable as you. There is **no sandbox** |
+| WASM segments (`[wasm]`) | **Sandboxed** — interpreted by wasmi with *no* host imports: no filesystem, no network, no spawn, no clock, no env. A guest that asks for an import fails to instantiate. Bounded by fuel per render and `max_output`; output is stripped of control characters and ESC so it cannot inject prompt escapes |
 | Index installs | Commit-pinned when the index entry pins `commit`; mismatch fails closed |
 | Completion packs (compiled in) | Data only — no subprocess |
 
@@ -18,6 +19,13 @@ Review third-party plugins before `plugin add`. Prefer commit-pinned
 index entries. Helper subprocesses are deadline-killed (default
 250ms completion / 500ms segment / 1000ms hook) and their stderr is
 discarded, but they are not isolated.
+
+A `[wasm]` segment is the one plugin kind that *is* isolated. The
+boundary is the interpreter, so it also costs: it sees only the status
+code and cwd the host writes for it, which is why the built-in segments
+that need `git` are helpers and not WASM. See
+[`PLUGIN-WASM.md`](PLUGIN-WASM.md). Note this is an interpreter, not a
+JIT — no host code generation, so no W^X surface.
 
 ## File permissions
 

@@ -44,6 +44,30 @@ pub struct Manifest {
     /// Helper executable for completion/keymap seams.
     #[serde(default)]
     pub helper: Option<HelperDecl>,
+    /// WASM prompt segment. Interpreted, default-deny: no host imports,
+    /// no fs/net/spawn. Needs a `brish` built with `--features wasm`.
+    #[serde(default)]
+    pub wasm: Option<WasmDecl>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WasmDecl {
+    /// Module path relative to the plugin directory.
+    pub path: PathBuf,
+    /// Fuel per render; the guest is cut off when it runs out.
+    #[serde(default = "default_wasm_fuel")]
+    pub fuel: u64,
+    /// Hard cap on the returned string, in bytes.
+    #[serde(default = "default_wasm_max_output")]
+    pub max_output: usize,
+}
+
+fn default_wasm_fuel() -> u64 {
+    1_000_000
+}
+
+fn default_wasm_max_output() -> usize {
+    4096
 }
 
 #[derive(Debug, Clone, Deserialize)]

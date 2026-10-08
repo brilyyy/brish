@@ -144,6 +144,17 @@ fn build_registry(
     for p in stored {
         let name = p.manifest.name.clone();
         if config.plugin_enabled(&name, true) {
+            // A `[wasm]` manifest is an interpreter-backed prompt
+            // segment, not a seam StorePlugin knows about. Installed
+            // before `p` moves into `into_plugin`; a bad module is a
+            // warning, never a startup failure.
+            #[cfg(feature = "wasm")]
+            if let Some(decl) = p.manifest.wasm.as_ref()
+                && let Some(warning) =
+                    brish_plugin_wasm::install(&mut registry, &name, &p.dir, decl)
+            {
+                eprintln!("brish: {warning}");
+            }
             registry.install(&p.into_plugin());
         } else {
             registry.record(&name, false);
