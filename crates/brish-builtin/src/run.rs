@@ -571,8 +571,10 @@ fn fmt_t(secs: f64) -> String {
 // ---- trap ----
 
 /// Trappable signals (beta set — ponytail: USR1/USR2/CHLD added when
-/// scripts pass them; ERR/DEBUG are not POSIX signals).
-const TRAP_SIGNALS: [&str; 5] = ["EXIT", "INT", "TERM", "HUP", "QUIT"];
+/// scripts pass them). `ERR` is synthetic: no real signal, the engine
+/// fires it when a pipeline fails (see `check_errexit`), so
+/// `signal_by_name("ERR")` is `None` and no OS handler is installed.
+const TRAP_SIGNALS: [&str; 6] = ["EXIT", "INT", "TERM", "HUP", "QUIT", "ERR"];
 
 /// `trap` / `trap -p` lists; `trap - SIG...` resets; `trap ACTION
 /// SIG...` sets. `ACTION` of `-` also resets (POSIX). Accepts `SIGINT`
@@ -706,6 +708,10 @@ fn history_cmd(args: &[String]) -> Flow {
 /// ponytail: plain `<visits>\t<epoch>\t<path>` file, no concurrent-writer
 /// merge and no age-window config. Add when two shells visibly clobber.
 fn z_cmd(args: &[String], env: &mut Env) -> Flow {
+    if env.opts.restricted {
+        eprintln!("z: restricted");
+        return Flow::Status(1);
+    }
     let db = crate::paths::z_path();
     if args.get(1).map(String::as_str) == Some("-c") {
         let _ = crate::paths::write_private(&db, b"");
@@ -751,6 +757,11 @@ fn z_cmd(args: &[String], env: &mut Env) -> Flow {
 fn local_cmd(args: &[String], env: &mut Env) -> Flow {
     let mut status = 0;
     for a in &args[1..] {
+        // `local -a name` declares an array local; the attribute applies
+        // to the name that follows it.
+        if a == "-a" {
+            continue;
+        }
         let (name, val) = match a.split_once('=') {
             Some((n, v)) => (n, Some(v)),
             None => (a.as_str(), None),
@@ -1117,6 +1128,10 @@ fn echo(args: &[String]) -> Flow {
 // ---- cd / pwd ----
 
 fn cd(args: &[String], env: &mut Env) -> Flow {
+    if env.opts.restricted {
+        eprintln!("cd: restricted");
+        return Flow::Status(1);
+    }
     let target = if args.len() == 1 {
         match env.get("HOME") {
             Some(h) => h.to_string(),
@@ -1382,13 +1397,40 @@ fn unset(args: &[String], env: &mut Env) -> Flow {
             // no-op success (POSIX).
             continue;
         }
+        // `unset a[2]` drops one element; the subscript is arithmetic and
+        // the gap closes, matching bash.
+        if let Some(bracket) = a.find('[')
+            && a.ends_with(']')
+            && brish_core::env::is_name(&a[..bracket])
+        {
+            let sub = &a[bracket + 1..a.len() - 1];
+            match sub.parse::<usize>() {
+                Ok(idx) => {
+                    let name = &a[..bracket];
+                    // `unset x[0]` on a scalar leaves `x` alone (bash warns
+                    // "not an array variable"); an out-of-range index is a
+                    // no-op. Neither is an error for an unset name.
+                    if env.is_array(name) {
+                        env.unset_index(name, idx);
+                    } else if env.get_var(name).is_some() {
+                        eprintln!("unset: {name}: not an array variable");
+                        status = 1;
+                    }
+                }
+                Err(_) => {
+                    eprintln!("unset: {a}: bad array subscript");
+                    status = 1;
+                }
+            }
+            continue;
+        }
         if !brish_core::env::is_name(a) {
             eprintln!("unset: {a}: not a valid identifier");
             status = 1;
             continue;
         }
-        if env.unset(a).is_err() {
-            eprintln!("unset: {a}: readonly variable");
+        if let Err(e) = env.unset(a) {
+            eprintln!("unset: {e}");
             status = 1;
         }
     }
@@ -1402,6 +1444,15 @@ fn set(args: &[String], env: &mut Env) -> Flow {
         list_vars(env);
         return Flow::Status(0);
     }
+    // Restricted mode is sticky: once on, cannot be turned off.
+    if env.opts.restricted {
+        for a in &args[1..] {
+            if a == "+o" || a.starts_with('+') {
+                eprintln!("set: restricted: cannot turn off restricted mode");
+                return Flow::Status(1);
+            }
+        }
+    }
     let mut i = 1;
     let mut assign = false;
     while i < args.len() {
@@ -1413,6 +1464,10 @@ fn set(args: &[String], env: &mut Env) -> Flow {
         }
         if a == "-o" || a == "+o" {
             let on = a.starts_with('-');
+            if !on && env.opts.restricted {
+                eprintln!("set: restricted: cannot turn off restricted mode");
+                return Flow::Status(1);
+            }
             if i + 1 >= args.len() {
                 list_opts(env);
                 return Flow::Status(0);
@@ -1436,6 +1491,10 @@ fn set(args: &[String], env: &mut Env) -> Flow {
             continue;
         }
         if a.starts_with('+') && a.len() > 1 {
+            if env.opts.restricted {
+                eprintln!("set: restricted: cannot turn off restricted mode");
+                return Flow::Status(1);
+            }
             for c in a[1..].chars() {
                 if !env.opts.set_letter(c, false) {
                     eprintln!("set: +{c}: invalid option");
@@ -1479,6 +1538,8 @@ fn list_opts(env: &Env) {
         ("ignoreeof", env.opts.ignore_eof),
         ("globstar", env.opts.globstar),
         ("pipefail", env.opts.pipefail),
+        ("errtrace", env.opts.errtrace),
+        ("restricted", env.opts.restricted),
     ];
     for (n, on) in names {
         println!("{n} {}", if on { "on" } else { "off" });
@@ -1514,12 +1575,28 @@ fn shift(args: &[String], env: &mut Env) -> Flow {
 fn read(args: &[String], env: &mut Env) -> Result<Flow, Error> {
     let mut i = 1;
     let mut raw = false;
+    let mut into_array: Option<String> = None;
     while i < args.len() {
         match args[i].as_str() {
             "-r" => {
                 raw = true;
                 i += 1;
             }
+            // `-a` with no operand (bare `read -a`) is a usage error.
+            "-a" => {
+                let Some(name) = args.get(i + 1) else {
+                    eprintln!("read: -a: argument required");
+                    return Ok(Flow::Status(2));
+                };
+                if !brish_core::env::is_name(name) {
+                    eprintln!("read: {name}: not a valid identifier");
+                    return Ok(Flow::Status(2));
+                }
+                into_array = Some(name.clone());
+                i += 2;
+            }
+            // Anything else starts the operand list, as before: `read -r
+            // line` must not treat `line` as an option.
             _ => break,
         }
     }
@@ -1563,6 +1640,16 @@ fn read(args: &[String], env: &mut Env) -> Result<Flow, Error> {
     }
     let processed = if raw { line } else { unescape_line(&line) };
     let ifs = env.ifs().to_string();
+    if let Some(name) = into_array {
+        // `-a`: every field becomes an element; a single var name in the
+        // operand list is ignored (bash behaves the same).
+        let items = brish_words::fields(&processed, &ifs);
+        env.set_array(&name, items).map_err(|e| {
+            eprintln!("read: {e}");
+            Error::Exec(e.to_string())
+        })?;
+        return Ok(Flow::Status(0));
+    }
     assign_read(&vars, &ifs, &processed, env).map_err(|e| {
         eprintln!("read: {e}");
         Error::Exec(e.to_string())

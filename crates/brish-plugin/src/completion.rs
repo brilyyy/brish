@@ -181,7 +181,7 @@ pub struct FilesProvider;
 
 fn completions_for(ctx: &CompletionCtx<'_>, base: &Path) -> Vec<Completion> {
     let word = ctx.word;
-    let (dir_part, _name_part) = match word.rfind('/') {
+    let (dir_part, name_part) = match word.rfind('/') {
         Some(i) => (&word[..=i], &word[i + 1..]),
         None => ("", word),
     };
@@ -202,7 +202,10 @@ fn completions_for(ctx: &CompletionCtx<'_>, base: &Path) -> Vec<Completion> {
         .flatten()
         .filter_map(|e| {
             let n = e.file_name().to_str()?.to_string();
-            ctx.matches(&n)
+            // Match on the filename part only — `ctx.word` still carries the
+            // `dir_part` prefix, so `src/fo` would never match `foo`.
+            ctx.algorithm
+                .matches(name_part, &n)
                 .then(|| (n, e.file_type().is_ok_and(|t| t.is_dir())))
         })
         .collect();
@@ -307,7 +310,10 @@ impl BrishCompleter {
         let (quote, word) = strip_open_quote(raw_word);
         let after_dollar = word.starts_with('$');
         let w = word.strip_prefix('$').unwrap_or(word);
-        let is_command = !after_dollar && command_position(&line[..start]);
+        // A word containing `/` is a path, never a command name —
+        // `./t`, `../x`, `/usr/bi` must route to the file provider
+        // even when they sit at the start of the line.
+        let is_command = !after_dollar && !w.contains('/') && command_position(&line[..start]);
         let ctx = CompletionCtx {
             word: w,
             is_command,
@@ -489,6 +495,43 @@ mod tests {
                 .complete(&ctx("al", false, true, dir.path()))
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn files_provider_matches_on_filename_part_not_whole_word() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/alpha.txt"), "x").unwrap();
+
+        // `src/al`: the dir prefix must not be part of the match
+        let out = FilesProvider.complete(&ctx("src/al", false, false, dir.path()));
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].value, "src/alpha.txt");
+
+        // trailing slash: empty name part matches every entry
+        let out = FilesProvider.complete(&ctx("src/", false, false, dir.path()));
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].value, "src/alpha.txt");
+    }
+
+    #[test]
+    fn path_word_at_command_position_completes_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("test-script.sh"), "x").unwrap();
+
+        let mut reg = Registry::default();
+        reg.completion_providers.push(Box::new(FilesProvider));
+        let c = BrishCompleter::new(Arc::new(reg), MatchOpts::default());
+
+        // `./t` is the first word of the line (a command position)
+        // but contains `/`, so it is a path, not a command name.
+        for line in ["./t", "./test-script.sh"] {
+            let out = c.suggestions_in(line, line.len(), dir.path());
+            assert!(
+                out.iter().any(|s| s.value == "./test-script.sh"),
+                "{line} → {out:?}"
+            );
+        }
     }
 
     struct Dup(&'static str);

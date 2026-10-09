@@ -37,6 +37,10 @@ struct Cli {
     #[arg(short = 'l', long)]
     login: bool,
 
+    /// Restricted shell mode (POSIX `sh -r`)
+    #[arg(short = 'r')]
+    restricted: bool,
+
     /// Skip loading startup files
     #[arg(long)]
     norc: bool,
@@ -214,6 +218,10 @@ fn main() {
     // read on the REPL path — see repl).
     if cli.login && !engine.env.flags.contains('l') {
         engine.env.flags.push('l');
+    }
+    // Restricted mode: set before any code runs (RC, command, etc.)
+    if cli.restricted {
+        engine.env.opts.restricted = true;
     }
 
     // Startup plugins: catalog filtered through config.toml (plan P3).

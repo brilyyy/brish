@@ -8,9 +8,20 @@ use std::collections::HashMap;
 use crate::error::Error;
 
 /// A shell variable.
+///
+/// A variable holds either a scalar `value` or, when it was assigned an
+/// array literal, `array`. `array` is additive on purpose: every existing
+/// reader keeps using `value`, so the scalar path is unchanged.
+///
+/// `ponytail:` indices are dense — `a[5]=x` fills 0..4 with empty
+/// elements rather than leaving a sparse array, and negative indices are
+/// unsupported. Both are documented deviations in docs/POSIX.md; switch
+/// to `BTreeMap<usize, String>` when a script needs sparse or negative.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Var {
     pub value: String,
+    /// Array elements, when this variable is an array.
+    pub array: Option<Vec<String>>,
     pub exported: bool,
     pub readonly: bool,
 }
@@ -19,8 +30,18 @@ impl Var {
     fn new(value: String) -> Self {
         Var {
             value,
+            array: None,
             exported: false,
             readonly: false,
+        }
+    }
+
+    /// Scalar view of a variable: element 0 for an array (bash `$a` is
+    /// `${a[0]}`), else the plain value.
+    pub fn scalar(&self) -> &str {
+        match &self.array {
+            Some(items) => items.first().map_or("", String::as_str),
+            None => &self.value,
         }
     }
 }
@@ -46,6 +67,13 @@ pub struct Opts {
     pub ignore_eof: bool,
     pub globstar: bool,
     pub pipefail: bool,
+    /// `errtrace`: if set, `ERR` trap fires in subshells/functions/
+    /// command substitution too (bash's `set -o errtrace`).
+    pub errtrace: bool,
+    /// `restricted`: POSIX restricted shell mode (`sh -r`). Once set,
+    /// cannot be unset. Disables `cd`, absolute-path commands, output
+    /// redirections, `exec` replacement, and setting `SHELL`/`PATH`/`ENV`/`BASH_ENV`.
+    pub restricted: bool,
 }
 
 impl Opts {
@@ -64,6 +92,8 @@ impl Opts {
             "ignoreeof" => &mut self.ignore_eof,
             "globstar" => &mut self.globstar,
             "pipefail" => &mut self.pipefail,
+            "errtrace" => &mut self.errtrace,
+            "restricted" => &mut self.restricted,
             _ => return false,
         };
         *slot = on;
@@ -82,6 +112,7 @@ impl Opts {
             'u' => "nounset",
             'v' => "verbose",
             'x' => "xtrace",
+            'E' => "errtrace",
             _ => return false,
         };
         self.set_opt(name, on)
@@ -99,6 +130,7 @@ impl Opts {
             ('u', self.nounset),
             ('v', self.verbose),
             ('x', self.xtrace),
+            ('E', self.errtrace),
         ];
         pairs
             .iter()
@@ -180,6 +212,7 @@ impl Env {
                     k,
                     Var {
                         value: v,
+                        array: None,
                         exported: true,
                         readonly: false,
                     },
@@ -190,8 +223,9 @@ impl Env {
     }
 
     /// Value of `name`, or `None` when unset (set-but-empty is `Some("")`).
+    /// For an array this is element 0 (bash: `$a` is `${a[0]}`).
     pub fn get(&self, name: &str) -> Option<&str> {
-        self.vars.get(name).map(|v| v.value.as_str())
+        self.vars.get(name).map(Var::scalar)
     }
 
     pub fn get_var(&self, name: &str) -> Option<&Var> {
@@ -213,10 +247,16 @@ impl Env {
         if !is_name(name) {
             return Err(Error::expand(format!("bad variable name: {name}")));
         }
+        if self.opts.restricted && matches!(name, "SHELL" | "PATH" | "ENV" | "BASH_ENV") {
+            return Err(Error::expand(format!("{name}: restricted")));
+        }
         match self.vars.get_mut(name) {
             Some(v) if v.readonly => Err(Error::expand(format!("{name}: readonly variable"))),
             Some(v) => {
                 v.value = value.into();
+                // A plain assignment replaces an array wholesale (bash:
+                // `a=(x y); a=z` leaves `a` scalar with value `z`).
+                v.array = None;
                 if self.opts.allexport {
                     v.exported = true;
                 }
@@ -231,6 +271,103 @@ impl Env {
                 Ok(())
             }
         }
+    }
+
+    // ---- arrays (bash extension; dense, never exported) ----
+
+    /// Bind `name` to `items`, replacing any scalar or previous array.
+    pub fn set_array<I, S>(&mut self, name: &str, items: I) -> Result<(), Error>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        if !is_name(name) {
+            return Err(Error::expand(format!("bad variable name: {name}")));
+        }
+        let items: Vec<String> = items.into_iter().map(Into::into).collect();
+        match self.vars.get_mut(name) {
+            Some(v) if v.readonly => Err(Error::expand(format!("{name}: readonly variable"))),
+            Some(v) => {
+                v.array = Some(items.clone());
+                // Keep `value` in step so scalar readers and `child_env`
+                // still see something sensible.
+                v.value = items.first().cloned().unwrap_or_default();
+                Ok(())
+            }
+            None => {
+                let value = items.first().cloned().unwrap_or_default();
+                self.vars.insert(
+                    name.to_string(),
+                    Var {
+                        value,
+                        array: Some(items),
+                        exported: false,
+                        readonly: false,
+                    },
+                );
+                Ok(())
+            }
+        }
+    }
+
+    /// Elements of `name`, or `None` if unset or not an array.
+    pub fn array(&self, name: &str) -> Option<&[String]> {
+        self.vars.get(name)?.array.as_deref()
+    }
+
+    /// True when `name` is bound to an array (even an empty one).
+    pub fn is_array(&self, name: &str) -> bool {
+        self.vars.get(name).is_some_and(|v| v.array.is_some())
+    }
+
+    /// Element `idx`, growing the array with empty strings if needed.
+    pub fn set_index(
+        &mut self,
+        name: &str,
+        idx: usize,
+        value: impl Into<String>,
+    ) -> Result<(), Error> {
+        if !is_name(name) {
+            return Err(Error::expand(format!("bad variable name: {name}")));
+        }
+        if self
+            .vars
+            .get(name)
+            .is_some_and(|v| v.readonly && v.array.is_none())
+        {
+            return Err(Error::expand(format!("{name}: readonly variable")));
+        }
+        let v = self
+            .vars
+            .entry(name.to_string())
+            .or_insert_with(|| Var::new(String::new()));
+        let items = v.array.get_or_insert_with(Vec::new);
+        if items.len() <= idx {
+            items.resize(idx + 1, String::new());
+        }
+        items[idx] = value.into();
+        // Keep element 0 mirrored into `value` for scalar readers.
+        if idx == 0 {
+            v.value = items[0].clone();
+        }
+        Ok(())
+    }
+
+    /// Drop element `idx`, closing the gap (bash compacts on `unset`).
+    /// Returns whether the array changed.
+    pub fn unset_index(&mut self, name: &str, idx: usize) -> bool {
+        let Some(v) = self.vars.get_mut(name) else {
+            return false;
+        };
+        let Some(items) = v.array.as_mut() else {
+            return false;
+        };
+        if idx >= items.len() {
+            return false;
+        }
+        items.remove(idx);
+        v.value = items.first().cloned().unwrap_or_default();
+        true
     }
 
     /// Set (creating if needed) without readonly check — shell bookkeeping
@@ -273,6 +410,9 @@ impl Env {
 
     /// Remove a variable; errors on readonly.
     pub fn unset(&mut self, name: &str) -> Result<(), Error> {
+        if self.opts.restricted && matches!(name, "SHELL" | "PATH" | "ENV" | "BASH_ENV") {
+            return Err(Error::expand(format!("{name}: restricted")));
+        }
         match self.vars.get(name) {
             Some(v) if v.readonly => Err(Error::expand(format!("{name}: readonly variable"))),
             _ => {
@@ -349,7 +489,9 @@ impl Env {
     /// Exported variables as child-process environment pairs.
     /// Snapshot `(value, exported)` for a temp assignment window.
     pub fn snapshot(&self, name: &str) -> Option<(String, bool)> {
-        self.vars.get(name).map(|v| (v.value.clone(), v.exported))
+        self.vars
+            .get(name)
+            .map(|v| (v.scalar().to_string(), v.exported))
     }
 
     /// Restore a `snapshot`; `None` removes the variable.
@@ -367,12 +509,28 @@ impl Env {
         }
     }
 
+    /// Restore a whole `Var` (array included); `None` removes it. Used to
+    /// roll back a temporary array assignment after its command.
+    pub fn restore_var(&mut self, name: &str, prev: Option<Var>) {
+        match prev {
+            Some(v) => {
+                self.vars.insert(name.to_string(), v);
+            }
+            None => {
+                self.vars.remove(name);
+            }
+        }
+    }
+
     pub fn child_env(&self) -> Vec<(String, String)> {
         let mut pairs: Vec<(String, String)> = self
             .vars
             .iter()
-            .filter(|(_, v)| v.exported)
-            .map(|(k, v)| (k.clone(), v.value.clone()))
+            // Arrays are not exported: there is no portable way to pass
+            // them through `environ`, and bash does not either. A child
+            // sees element 0 under the plain name if it was exported.
+            .filter(|(_, v)| v.exported && v.array.is_none())
+            .map(|(k, v)| (k.clone(), v.scalar().to_string()))
             .collect();
         pairs.sort();
         pairs

@@ -144,13 +144,19 @@ Or install the binary directly from the repo:
 cargo install --git https://github.com/brilyyy/brish brish
 ```
 
-## Not yet implemented
+## Extensions beyond POSIX
 
-Deliberately absent right now, so you don't discover them mid-migration:
-process substitution, `trap ERR`, restricted mode (`-r`), arrays, and
-mid-command signal delivery (`sleep 100` isn't cut short). Runtime
-plugin toggling needs a restart or `relconf`. Full detail, including
-known deviations from `dash`, in
+briSH targets POSIX, plus a small set of bash-compatible extensions:
+
+| Feature | Notes |
+|---|---|
+| Process substitution `<(cmd)`, `>(cmd)` | Expands to `/dev/fd/N`, so it is not portable to shells without `/dev/fd` |
+| `trap ERR`, `set -o errtrace` (`-E`) | ERR fires where `errexit` would exit; `errtrace` extends it into functions and subshells |
+| Restricted mode (`-r`, `set -o restricted`) | For unprivileged accounts; see [`docs/SECURITY.md`](docs/SECURITY.md) |
+| Arrays | `a=(x y)`, `${a[i]}`, `${a[@]}`, `${#a[@]}`, `a[i]=v`, `unset a[i]`, `read -a`, `local -a`; stored densely, and never exported to child processes |
+
+Runtime plugin toggling still needs a restart or `relconf`. Full detail,
+including known deviations from `dash`, in
 [`docs/POSIX.md`](docs/POSIX.md).
 
 ## License

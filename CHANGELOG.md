@@ -7,6 +7,62 @@ this file used to grow one commit at a time (plus a `## 1.0.0 — stable`
 header that never shipped). Batches are in commit order; the entries
 themselves are unchanged.
 
+### Shell gaps closed
+
+The README used to list five features as "not yet implemented". All five
+are now in.
+
+#### Added
+- **Arrays** (bash extension). `a=(x y)`, `${a[i]}`, `${a[@]}`/`${a[*]}`,
+  `${#a[@]}`, `${a[i]:-default}`, `a[i]=v`, `unset a[i]`, `read -a`,
+  `local -a`. `Var` gained an additive `array` field, so every existing
+  scalar read path is untouched; `$a` is `${a[0]}`. Elements keep their
+  own quoting and `"${a[@]}"` behaves like `"$@"`. An array assignment
+  with a command prefix is temporary, as in bash (`a=(x y) true` leaves
+  `a` empty). **Documented deviations:** indices are dense, so `a[5]=x`
+  on a 3-element array gives 6 elements where bash gives 4, and
+  `unset a[i]` compacts rather than leaving a hole. Arrays are never
+  exported.
+- **`trap ERR`** (+ `set -o errtrace` / `-E`). ERR is synthetic — no OS
+  signal — so `signal_by_name` returns `None` and no handler is
+  installed; the engine fires it from `check_errexit`. It runs wherever
+  `errexit` *would* exit (not in `if`/`while` conditions, not negated,
+  not on a short-circuited `&&`/`||` operand) but *regardless* of
+  whether `errexit` is set. `$?` survives a trap body that succeeded.
+  `errtrace` opts functions, subshells, pipeline stages and command
+  substitution back in; a failing function no longer fires twice.
+- **Restricted mode** (`-r`, `set -o restricted`). Blocks `cd`/`z`,
+  command names containing `/`, `source` paths with `/`, `>`/`>>`/`>|`,
+  `exec` (both bare-redirection and replacement), and writes to
+  `SHELL`/`PATH`/`ENV`/`BASH_ENV`. The variable guards sit in
+  `Env::set`/`Env::unset`, so plain assignment, `export` and
+  pre-command temp assignments are all covered by one check. Sticky:
+  `set` refuses any `+o`/`+letter` once restricted.
+- **Mid-command signal delivery.** `drain_traps` now returns the mask it
+  drained, and the wait loops forward it to the foreground child before
+  retrying — so `sleep 100` is cut short, not merely given a trap run.
+  Previously the trap fired and the wait simply continued.
+- **Process substitution** `<(cmd)` / `>(cmd)`. `<(`/`>(` lex as one
+  word part instead of a `<` operator followed by a subshell (which was a
+  parse error); the body scan is quote- and nesting-aware. Expansion
+  yields a literal `/dev/fd/N` through a second expander callback, so no
+  parser or AST changes were needed. Inner commands are reaped at the
+  command boundary, which lets a 200KB producer stream without
+  deadlocking the shell.
+
+#### Fixed
+- **Tab completion returned nothing for any word containing `/`.** The
+  files provider matched the whole word — which still carried the
+  `dir_part` prefix — so `src/al`, `~/Doc` and `./t` all matched zero
+  entries and reedline showed `NO RECORDS FOUND`. Matching now uses the
+  filename part alone.
+- **A `/`-containing word at command position was treated as a command
+  name.** `command_position` only inspects the text *before* the word, so
+  `./t` as the first word looked like a command position: the files
+  provider early-returned and the commands provider matched `./t` against
+  command names (none contain `/`). A word with a `/` is now always a
+  path.
+
 ### Theme engine: powerline-grade prompts from config
 
 #### Added

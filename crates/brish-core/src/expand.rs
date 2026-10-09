@@ -15,37 +15,82 @@ use brish_words::{eval_arith, expand as glob_expand, fields as split_fields};
 /// Command-substitution runner: executes `$(...)` source, returns stdout.
 pub type CmdSubst<'a> = &'a mut dyn FnMut(&str) -> Result<String, Error>;
 
+/// Process-substitution runner: forks `body` asynchronously wired to a
+/// pipe and returns the path naming that pipe's end (`/dev/fd/N`).
+/// `out` selects the `>(...)` form — the shell writes, the body reads.
+pub type ProcSubst<'a> = &'a mut dyn FnMut(&str, bool) -> Result<String, Error>;
+
 /// Recursion cap for nested substitutions / default words.
 const MAX_DEPTH: usize = 64;
 
+/// Evaluate an array subscript expression as arithmetic. Exposed so the
+/// engine can resolve `a[i]=v` targets with the same rules the expander
+/// uses for `${a[i]}` (including `$var` splicing).
+pub fn eval_subscript(src: &str, env: &mut Env) -> Result<usize, Error> {
+    let mut ex = Ex {
+        env,
+        cs: &mut |_s: &str| -> Result<String, Error> { Ok(String::new()) },
+        ps: &mut |s: &str, _out: bool| Ok(format!("/dev/fd/{s}")),
+        depth: 0,
+    };
+    ex.array_index(src)
+}
+
 /// Expand one word into fields (splitting, globbing, quote removal).
-pub fn expand_word(env: &mut Env, w: &Word, cs: CmdSubst) -> Result<Vec<String>, Error> {
-    Ex { env, cs, depth: 0 }.expand_word(w)
+pub fn expand_word(
+    env: &mut Env,
+    w: &Word,
+    cs: CmdSubst,
+    ps: ProcSubst,
+) -> Result<Vec<String>, Error> {
+    Ex {
+        env,
+        cs,
+        ps,
+        depth: 0,
+    }
+    .expand_word(w)
 }
 
 /// Expand words, concatenating all resulting fields in order.
-pub fn expand_words(env: &mut Env, ws: &[Word], cs: CmdSubst) -> Result<Vec<String>, Error> {
+pub fn expand_words(
+    env: &mut Env,
+    ws: &[Word],
+    cs: CmdSubst,
+    ps: ProcSubst,
+) -> Result<Vec<String>, Error> {
     let mut out = Vec::new();
     for w in ws {
-        out.append(&mut expand_word(env, w, cs)?);
+        out.append(&mut expand_word(env, w, cs, ps)?);
     }
     Ok(out)
 }
 
 /// Expand a word to one string: no field splitting, no globbing
 /// (assignment values, here-doc bodies, patterns).
-pub fn expand_value(env: &mut Env, w: &Word, cs: CmdSubst) -> Result<String, Error> {
-    Ex { env, cs, depth: 0 }.value_of_word(w)
+pub fn expand_value(env: &mut Env, w: &Word, cs: CmdSubst, ps: ProcSubst) -> Result<String, Error> {
+    Ex {
+        env,
+        cs,
+        ps,
+        depth: 0,
+    }
+    .value_of_word(w)
 }
 
 /// Expand raw text (here-doc body): substitutions only; lexing failure
 /// falls back to the text unchanged (unterminated quote stays literal).
-pub fn expand_text(env: &mut Env, src: &str, cs: CmdSubst) -> Result<String, Error> {
+pub fn expand_text(env: &mut Env, src: &str, cs: CmdSubst, ps: ProcSubst) -> Result<String, Error> {
     let lexed = match lexer::lex(src) {
         Ok(l) => l,
         Err(_) => return Ok(src.to_string()),
     };
-    let mut ex = Ex { env, cs, depth: 0 };
+    let mut ex = Ex {
+        env,
+        cs,
+        ps,
+        depth: 0,
+    };
     let mut out = String::new();
     let mut prev_end = 0;
     for t in &lexed.tokens {
@@ -346,6 +391,7 @@ enum Seg {
 struct Ex<'a> {
     env: &'a mut Env,
     cs: CmdSubst<'a>,
+    ps: ProcSubst<'a>,
     depth: usize,
 }
 
@@ -493,9 +539,31 @@ impl<'a> Ex<'a> {
                         glob: false,
                     });
                 }
+                Part::ProcSubst { out: is_out, body } => {
+                    let v = self.procsubst(body, *is_out)?;
+                    // Always quoted: the result is a literal `/dev/fd/N`
+                    // path, never subject to field splitting or globbing.
+                    out.push(Seg::T {
+                        text: v,
+                        quoted: true,
+                        glob: false,
+                    });
+                }
             }
         }
         Ok(out)
+    }
+
+    /// Fork `body` onto a pipe and name the near end. Recursion-capped
+    /// like [`Ex::cmdsubst`] — `<(cat <(cat <(…)))` nests.
+    fn procsubst(&mut self, body: &str, out: bool) -> Result<String, Error> {
+        if self.depth >= MAX_DEPTH {
+            return Err(Error::expand("process substitution recursion too deep"));
+        }
+        self.depth += 1;
+        let r = (self.ps)(body, out);
+        self.depth -= 1;
+        r
     }
 
     fn cmdsubst(&mut self, src: &str) -> Result<String, Error> {
@@ -631,7 +699,94 @@ impl<'a> Ex<'a> {
                     quoted,
                 }])
             }
+            Form::Index { name, sub, op } => self.expand_index(name, sub, op, quoted),
+            Form::LenIndex { name, sub } => {
+                let text = match parse_subscript(sub)? {
+                    // `${#a[@]}` / `${#a[*]}`: element count.
+                    Sub::All => self.env.array(name).map_or(0, <[String]>::len).to_string(),
+                    Sub::Index(i) => {
+                        let idx = self.array_index(i)?;
+                        match self.env.array(name).and_then(|a| a.get(idx)) {
+                            Some(v) => v.chars().count().to_string(),
+                            None => "0".to_string(),
+                        }
+                    }
+                };
+                Ok(vec![Seg::T {
+                    text,
+                    quoted,
+                    glob: false,
+                }])
+            }
         }
+    }
+
+    /// `${a[i]}` and `${a[@]}`. `@`/`*` behave exactly like `$@`: quoted
+    /// they stay one field per element, unquoted they word-split.
+    ///
+    /// A non-array `name` falls back to its scalar value, so `${x[0]}` on
+    /// a plain variable is `${x}` rather than an error (bash warns; an
+    /// empty result is closer to the POSIX "unset is empty" rule).
+    fn expand_index(
+        &mut self,
+        name: &str,
+        sub: &str,
+        op: Option<(&str, &str)>,
+        quoted: bool,
+    ) -> Result<Vec<Seg>, Error> {
+        // Cloned because `array_index` may need `&mut env` below.
+        let items = self.env.array(name).map(<[String]>::to_vec);
+        let Some(items) = items else {
+            let v = match self.param_value(name) {
+                Some(v) => v,
+                None if self.env.opts.nounset && !nounset_exempt(name) => {
+                    return Err(Error::expand(format!("{name}: unbound variable")));
+                }
+                None => String::new(),
+            };
+            // `${x[0]:-d}` still applies the operator to the scalar.
+            let v = match op {
+                Some((o, w)) => self.op_on(name, Some(v), o, w)?,
+                None => v,
+            };
+            return Ok(vec![Seg::T {
+                glob: !quoted && has_meta(&v),
+                text: v,
+                quoted,
+            }]);
+        };
+        match parse_subscript(sub)? {
+            Sub::All => {
+                if items.is_empty() {
+                    return Ok(Vec::new());
+                }
+                Ok(vec![Seg::F { items, quoted }])
+            }
+            Sub::Index(i) => {
+                let idx = self.array_index(i)?;
+                // An out-of-range element is empty, and `${a[9]:-d}` must
+                // therefore take the default.
+                let current = items.get(idx).cloned();
+                let v = match op {
+                    Some((o, w)) => self.op_on(name, current, o, w)?,
+                    None => current.unwrap_or_default(),
+                };
+                Ok(vec![Seg::T {
+                    glob: !quoted && has_meta(&v),
+                    text: v,
+                    quoted,
+                }])
+            }
+        }
+    }
+
+    /// Array subscript arithmetic. An unset/non-numeric subscript is 0,
+    /// which makes `${a[x]}` degrade to element 0 instead of failing.
+    fn array_index(&mut self, sub: &str) -> Result<usize, Error> {
+        let expanded = self.expand_arith_params(sub);
+        let v = eval_arith(&expanded, &mut *self.env)
+            .map_err(|e| Error::expand(format!("bad array subscript: {e}")))?;
+        Ok(v.max(0) as usize)
     }
 
     fn positional_items(&mut self, quoted: bool) -> Result<Vec<String>, Error> {
@@ -672,6 +827,18 @@ impl<'a> Ex<'a> {
 
     fn op_value(&mut self, name: &str, op: &str, word: &str) -> Result<String, Error> {
         let current = self.param_value(name);
+        self.op_on(name, current, op, word)
+    }
+
+    /// The `:-`/`:=`/`##`/… machinery, over an already-resolved value.
+    /// `${a[i]:-x}` passes the element rather than re-reading the variable.
+    fn op_on(
+        &mut self,
+        name: &str,
+        current: Option<String>,
+        op: &str,
+        word: &str,
+    ) -> Result<String, Error> {
         let colon = op.starts_with(':');
         let kind = op.trim_start_matches(':');
         let unset = current.is_none();
@@ -903,8 +1070,18 @@ fn path_to_string(p: &std::path::Path) -> String {
 
 /// `name=value` first part of an assignment word: recompute value with
 /// tilde handling at value start, no split/glob.
-pub fn expand_assign_value(env: &mut Env, w: &Word, cs: CmdSubst) -> Result<String, Error> {
-    let mut ex = Ex { env, cs, depth: 0 };
+pub fn expand_assign_value(
+    env: &mut Env,
+    w: &Word,
+    cs: CmdSubst,
+    ps: ProcSubst,
+) -> Result<String, Error> {
+    let mut ex = Ex {
+        env,
+        cs,
+        ps,
+        depth: 0,
+    };
     // Brace expansion applies to assignment values (bash: x={a,b} -> "a b").
     let mut outs = Vec::new();
     for variant in brace_expand(&w.parts) {
@@ -1021,6 +1198,41 @@ enum Form<'a> {
         op: &'a str,
         word: &'a str,
     },
+    /// `${a[i]}` — one element, optionally followed by an operator
+    /// (`${a[i]:-default}`).
+    Index {
+        name: &'a str,
+        sub: &'a str,
+        op: Option<(&'a str, &'a str)>,
+    },
+    /// `${#a[i]}` — length of the array, or of one element.
+    LenIndex {
+        name: &'a str,
+        sub: &'a str,
+    },
+}
+
+/// Split a `[…]` subscript off the front of `rest`. Returns the inside,
+/// the text that followed the closing `]`, and whether a complete `[…]`
+/// was present. `after` is `None` when there is no `[` at all; it is
+/// `Some("")` for a subscript with nothing trailing.
+fn split_subscript(rest: &str) -> Option<(&str, Option<&str>)> {
+    let inner = rest.strip_prefix('[')?;
+    let close = inner.find(']')?;
+    Some((&inner[..close], Some(&inner[close + 1..])))
+}
+
+/// Subscript `@`/`*` = all elements; anything else is an arithmetic index.
+enum Sub<'a> {
+    All,
+    Index(&'a str),
+}
+
+fn parse_subscript(sub: &str) -> Result<Sub<'_>, Error> {
+    match sub {
+        "@" | "*" => Ok(Sub::All),
+        other => Ok(Sub::Index(other)),
+    }
 }
 
 fn parse_form(expr: &str) -> Result<Form<'_>, Error> {
@@ -1030,6 +1242,20 @@ fn parse_form(expr: &str) -> Result<Form<'_>, Error> {
     if let Some(rest) = expr.strip_prefix('#') {
         if rest.is_empty() {
             return Ok(Form::Plain("#"));
+        }
+        // `${#a[@]}` / `${#a[2]}` — array length, not a `#` operator.
+        // `rest` is the whole `a[@]`; split it into name and subscript.
+        if let Some(bracket) = rest.find('[')
+            && rest.ends_with(']')
+            && crate::env::is_name(&rest[..bracket])
+        {
+            let sub = &rest[bracket + 1..rest.len() - 1];
+            if !sub.is_empty() {
+                return Ok(Form::LenIndex {
+                    name: &rest[..bracket],
+                    sub,
+                });
+            }
         }
         if is_param_name(rest) {
             return Ok(Form::Len(rest));
@@ -1053,6 +1279,26 @@ fn parse_form(expr: &str) -> Result<Form<'_>, Error> {
     if rest.is_empty() {
         return Ok(Form::Plain(name));
     }
+    // `${a[0]}` / `${a[@]}` — a subscript is not an operator, so it is
+    // peeled off before the `:-`/`##` scan below. Anything after the
+    // closing `]` is the operator.
+    if let Some((sub, Some(after))) = split_subscript(rest) {
+        let op = parse_trailing_op(after)?;
+        if after.is_empty() {
+            return Ok(Form::Index {
+                name,
+                sub,
+                op: None,
+            });
+        }
+        if let Some((o, w)) = op {
+            return Ok(Form::Index {
+                name,
+                sub,
+                op: Some((o, w)),
+            });
+        }
+    }
     for op in [":-", ":=", ":?", ":+", "##", "%%"] {
         if let Some(word) = rest.strip_prefix(op) {
             return Ok(Form::Op { name, op, word });
@@ -1064,6 +1310,23 @@ fn parse_form(expr: &str) -> Result<Form<'_>, Error> {
         }
     }
     Err(Error::expand(format!("bad substitution: ${{{expr}}}")))
+}
+
+/// Recognize a trailing `:-`-style operator after a subscript. `None` for
+/// empty or unrecognized text; the caller falls through to the normal
+/// bad-substitution error.
+fn parse_trailing_op(after: &str) -> Result<Option<(&str, &str)>, Error> {
+    if after.is_empty() {
+        return Ok(None);
+    }
+    for op in [
+        ":-", ":=", ":?", ":+", "##", "%%", "-", "=", "?", "+", "#", "%",
+    ] {
+        if let Some(word) = after.strip_prefix(op) {
+            return Ok(Some((op, word)));
+        }
+    }
+    Ok(None)
 }
 
 fn is_param_name(s: &str) -> bool {
@@ -1102,22 +1365,31 @@ mod tests {
         Part::Param(expr.to_string())
     }
 
+    /// Process-substitution stub for tests: returns a fixed fake path
+    /// (no fork), asserting the requested direction was threaded through.
+    fn ps_stub(body: &str, out: bool) -> Result<String, Error> {
+        Ok(format!("/dev/fd/stub:{out}:{body}"))
+    }
+
     fn expand(env: &mut Env, parts: Vec<Part>) -> Vec<String> {
         let w = one_word(parts);
         let mut cs = |_src: &str| -> Result<String, Error> { Ok(String::new()) };
-        expand_word(env, &w, &mut cs).unwrap()
+        let mut ps = |src: &str, out: bool| ps_stub(src, out);
+        expand_word(env, &w, &mut cs, &mut ps).unwrap()
     }
 
     fn value(env: &mut Env, parts: Vec<Part>) -> String {
         let w = one_word(parts);
         let mut cs = |_src: &str| -> Result<String, Error> { Ok(String::new()) };
-        expand_value(env, &w, &mut cs).unwrap()
+        let mut ps = |src: &str, out: bool| ps_stub(src, out);
+        expand_value(env, &w, &mut cs, &mut ps).unwrap()
     }
 
     fn value_err(env: &mut Env, parts: Vec<Part>) -> bool {
         let w = one_word(parts);
         let mut cs = |_src: &str| -> Result<String, Error> { Ok(String::new()) };
-        expand_value(env, &w, &mut cs).is_err()
+        let mut ps = |src: &str, out: bool| ps_stub(src, out);
+        expand_value(env, &w, &mut cs, &mut ps).is_err()
     }
 
     #[test]
@@ -1316,16 +1588,24 @@ mod tests {
     fn cmdsubst_trailing_newlines_stripped() {
         let mut e = env_with(&[]);
         let mut cs = |_src: &str| -> Result<String, Error> { Ok("out\n\n".into()) };
+        let mut ps = |src: &str, out: bool| ps_stub(src, out);
         let w = one_word(vec![Part::Subst("echo hi".into())]);
-        assert_eq!(expand_word(&mut e, &w, &mut cs).unwrap(), vec!["out"]);
+        assert_eq!(
+            expand_word(&mut e, &w, &mut cs, &mut ps).unwrap(),
+            vec!["out"]
+        );
     }
 
     #[test]
     fn cmdsubst_value_spliced() {
         let mut e = env_with(&[]);
         let mut cs = |src: &str| -> Result<String, Error> { Ok(format!("X{src}X")) };
+        let mut ps = |src: &str, out: bool| ps_stub(src, out);
         let w = one_word(vec![raw("a"), Part::Subst("cmd".into()), raw("b")]);
-        assert_eq!(expand_word(&mut e, &w, &mut cs).unwrap(), vec!["aXcmdXb"]);
+        assert_eq!(
+            expand_word(&mut e, &w, &mut cs, &mut ps).unwrap(),
+            vec!["aXcmdXb"]
+        );
     }
 
     #[test]
@@ -1344,7 +1624,8 @@ mod tests {
             value_err(&mut e, vec![Part::Arith("1/0".into())]) || {
                 let w2 = one_word(vec![Part::Arith("1/0".into())]);
                 let mut cs = |_s: &str| -> Result<String, Error> { Ok(String::new()) };
-                expand_word(&mut e, &w2, &mut cs).is_err()
+                let mut ps = |src: &str, out: bool| ps_stub(src, out);
+                expand_word(&mut e, &w2, &mut cs, &mut ps).is_err()
             }
         );
         assert_eq!(
@@ -1380,25 +1661,34 @@ mod tests {
         let mut e = env_with(&[("HOME", "/h")]);
         let w = one_word(vec![raw("FOO=~/x")]);
         assert_eq!(
-            expand_assign_value(&mut e, &w, &mut |_s: &str| -> Result<String, Error> {
-                Ok(String::new())
-            })
+            expand_assign_value(
+                &mut e,
+                &w,
+                &mut |_s: &str| -> Result<String, Error> { Ok(String::new()) },
+                &mut |src: &str, out: bool| ps_stub(src, out),
+            )
             .unwrap(),
             "FOO=/h/x"
         );
         let w = one_word(vec![raw("FOO=*")]);
         assert_eq!(
-            expand_assign_value(&mut e, &w, &mut |_s: &str| -> Result<String, Error> {
-                Ok(String::new())
-            })
+            expand_assign_value(
+                &mut e,
+                &w,
+                &mut |_s: &str| -> Result<String, Error> { Ok(String::new()) },
+                &mut |src: &str, out: bool| ps_stub(src, out),
+            )
             .unwrap(),
             "FOO=*"
         );
         let w = one_word(vec![raw("FOO="), Part::Double(vec![raw("a b")])]);
         assert_eq!(
-            expand_assign_value(&mut e, &w, &mut |_s: &str| -> Result<String, Error> {
-                Ok(String::new())
-            })
+            expand_assign_value(
+                &mut e,
+                &w,
+                &mut |_s: &str| -> Result<String, Error> { Ok(String::new()) },
+                &mut |src: &str, out: bool| ps_stub(src, out),
+            )
             .unwrap(),
             "FOO=a b"
         );
@@ -1411,8 +1701,9 @@ mod tests {
         let (n, v) = split_assign(&w).unwrap();
         assert_eq!(n, "FOO");
         let mut cs = |_s: &str| -> Result<String, Error> { Ok(String::new()) };
+        let mut ps = |src: &str, out: bool| ps_stub(src, out);
         let mut e = env_with(&[]);
-        assert_eq!(expand_value(&mut e, &v, &mut cs).unwrap(), "bar");
+        assert_eq!(expand_value(&mut e, &v, &mut cs, &mut ps).unwrap(), "bar");
 
         let w2 = one_word(vec![raw("FOO="), Part::Param("X".into())]);
         let (n2, v2) = split_assign(&w2).unwrap();
@@ -1427,7 +1718,8 @@ mod tests {
     fn assign_value(env: &mut Env, parts: Vec<Part>) -> String {
         let w = one_word(parts);
         let mut cs = |_s: &str| -> Result<String, Error> { Ok(String::new()) };
-        expand_assign_value(env, &w, &mut cs).unwrap()
+        let mut ps = |src: &str, out: bool| ps_stub(src, out);
+        expand_assign_value(env, &w, &mut cs, &mut ps).unwrap()
     }
 
     #[test]
@@ -1491,11 +1783,12 @@ mod tests {
     fn expand_text_raw() {
         let mut e = env_with(&[("X", "1")]);
         let mut cs = |_s: &str| -> Result<String, Error> { Ok(String::new()) };
-        let out = expand_text(&mut e, "a $X b\nc\n", &mut cs).unwrap();
+        let mut ps = |src: &str, out: bool| ps_stub(src, out);
+        let out = expand_text(&mut e, "a $X b\nc\n", &mut cs, &mut ps).unwrap();
         assert_eq!(out, "a 1 b\nc\n");
-        let out = expand_text(&mut e, "cost: $", &mut cs).unwrap();
+        let out = expand_text(&mut e, "cost: $", &mut cs, &mut ps).unwrap();
         assert_eq!(out, "cost: $");
-        let out = expand_text(&mut e, "bad \'quote", &mut cs).unwrap();
+        let out = expand_text(&mut e, "bad \'quote", &mut cs, &mut ps).unwrap();
         assert_eq!(out, "bad \'quote");
     }
 

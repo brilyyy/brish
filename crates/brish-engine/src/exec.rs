@@ -15,10 +15,11 @@
 //! (Plan deviation: lives here, not in `brish-core` — `brish-core` cannot
 //! depend on this crate without a dependency cycle.)
 
-use brish_core::ast::{self, CaseArm, Cmd, Program, Redir, Simple};
+use brish_core::ast::{self, Assign, CaseArm, Cmd, Program, Redir, Simple};
 use brish_core::env::Env;
+use brish_core::env::Var;
 use brish_core::error::Error;
-use brish_core::expand::{self, CmdSubst};
+use brish_core::expand::{self, CmdSubst, ProcSubst};
 use brish_core::lexer::{self, Word};
 use brish_core::path::find_in_path;
 
@@ -166,6 +167,17 @@ pub struct Engine {
     hooks: Arc<Registry>,
     /// True inside forked children: plugin hooks run in the parent only.
     in_child: bool,
+    /// ERR trap just fired for a function body; suppress the caller's
+    /// check_errexit to avoid double-fire (bash semantics: ERR fires
+    /// for the failing simple command, not for the function call wrapper).
+    suppress_err: bool,
+    /// Live process substitutions for the command being built: the
+    /// shell's copy of each pipe end (CLOEXEC cleared), the inner child
+    /// pid to reap, and whether this end is the *write* side (`>(…)`).
+    ps_pending: Vec<(File, i32, bool)>,
+    /// Inner children whose pipe ends have already been dropped, awaiting
+    /// the reap at the command boundary.
+    ps_pids: Vec<i32>,
     /// Active theme name (`theme` builtin switches it at runtime).
     pub theme: String,
     /// `[hooks] command_not_found` command line (binary passes it from
@@ -284,6 +296,11 @@ fn word_text(w: &Word) -> String {
                 s.push_str(c);
                 s.push_str("))");
             }
+            Part::ProcSubst { out, body } => {
+                s.push_str(if *out { ">(" } else { "<(" });
+                s.push_str(body);
+                s.push(')');
+            }
         }
     }
     let mut s = String::new();
@@ -366,37 +383,56 @@ fn open_out(path: &str, append: bool, force: bool, noclobber: bool) -> std::io::
     }
 }
 
+/// Fresh in-child engine: inherited env/funcs, no job table, no hooks
+/// (plugin hooks are parent-only). Shared by command substitution and
+/// process substitution, which fork identically and differ only in how
+/// the child's stdio is wired.
+fn child_engine(env: &Env, funcs: &HashMap<String, Cmd>) -> Engine {
+    Engine {
+        env: env.clone(),
+        funcs: funcs.clone(),
+        depth: 0,
+        bg: Vec::new(),
+        job_control: false,
+        cs_seen: false,
+        hooks: Arc::new(Registry::default()),
+        in_child: true,
+        suppress_err: false,
+        theme: DEFAULT_THEME.to_string(),
+        not_found_hook: None,
+        not_found_style: NotFoundStyle::default(),
+        not_found_suggest: true,
+        relconf_fn: None,
+        ps_pending: Vec::new(),
+        ps_pids: Vec::new(),
+    }
+}
+
+/// Run `prog` in `child`, mapping a non-local `Stop` to a process exit
+/// status. Shared by both fork paths.
+fn child_status(child: &mut Engine, prog: &Program) -> i32 {
+    match child.program(prog, true) {
+        Ok(()) => child.env.status,
+        Err(Stop::Exit(c)) | Err(Stop::Return(c)) => c,
+        Err(Stop::Break(_)) | Err(Stop::Continue(_)) => child.env.status,
+        Err(Stop::Fail(e)) => {
+            eprintln!("brish: {e}");
+            1
+        }
+    }
+}
+
 /// Run `src` as a command substitution in a forked child, capturing
 /// stdout. Returns `(output, exit_status)`.
 fn run_subst(src: &str, env: &Env, funcs: &HashMap<String, Cmd>) -> Result<(String, i32), Error> {
     let prog = brish_core::parser::parse(src)?;
     let (mut rd, wr) = std::io::pipe().map_err(|e| Error::Exec(format!("pipe: {e}")))?;
     let setups = vec![(1, FdSetup::File(pipe_writer_file(wr)))];
-    let pid = fork_spawn(setups, false, || {
-        let mut child = Engine {
-            env: env.clone(),
-            funcs: funcs.clone(),
-            depth: 0,
-            bg: Vec::new(),
-            job_control: false,
-            cs_seen: false,
-            hooks: Arc::new(Registry::default()),
-            in_child: true,
-            theme: DEFAULT_THEME.to_string(),
-            not_found_hook: None,
-            not_found_style: NotFoundStyle::default(),
-            not_found_suggest: true,
-            relconf_fn: None,
-        };
-        match child.program(&prog, true) {
-            Ok(()) => child.env.status,
-            Err(Stop::Exit(c)) | Err(Stop::Return(c)) => c,
-            Err(Stop::Break(_)) | Err(Stop::Continue(_)) => child.env.status,
-            Err(Stop::Fail(e)) => {
-                eprintln!("brish: {e}");
-                1
-            }
-        }
+    let env_c = env.clone();
+    let funcs_c = funcs.clone();
+    let pid = fork_spawn(setups, false, move || {
+        let mut child = child_engine(&env_c, &funcs_c);
+        child_status(&mut child, &prog)
     })
     .map_err(|e| Error::Exec(e.to_string()))?;
     // Read *before* waiting: large outputs would deadlock a wait-first
@@ -414,6 +450,59 @@ fn run_subst(src: &str, env: &Env, funcs: &HashMap<String, Cmd>) -> Result<(Stri
         }
     };
     Ok((out, code))
+}
+
+/// Fork `body` onto a pipe; return `/dev/fd/N` naming the end the *outer*
+/// command uses. `<(body)`: inner writes, shell reads. `>(body)`: shell
+/// writes, inner reads.
+///
+/// The shell's copy of the near end is pushed to `pending` with CLOEXEC
+/// cleared, so it survives `exec` into the outer command; the caller
+/// closes and reaps it at the command boundary. Waiting there (rather than
+/// here) matches bash and keeps a large inner output from filling the pipe
+/// before the reader starts.
+fn fork_proc_subst(
+    body: &str,
+    out: bool,
+    env: &Env,
+    funcs: &HashMap<String, Cmd>,
+    pending: &mut Vec<(File, i32, bool)>,
+) -> Result<String, Error> {
+    let prog = brish_core::parser::parse(body)?;
+    let (rd, wr) = std::io::pipe().map_err(|e| Error::Exec(format!("pipe: {e}")))?;
+    let (near_raw, far_raw) = if out {
+        (wr.as_raw_fd(), rd.as_raw_fd())
+    } else {
+        (rd.as_raw_fd(), wr.as_raw_fd())
+    };
+    let (near, far) = if out {
+        (pipe_writer_file(wr), pipe_reader_file(rd))
+    } else {
+        (pipe_reader_file(rd), pipe_writer_file(wr))
+    };
+    // The child inherits BOTH raw pipe fds across the fork. Only `far` is
+    // meant to be wired to stdio; leaving the other open means the child
+    // holds the near end itself, so the peer never sees EOF and the reap
+    // below hangs forever. Close both raws after the stdio dup, exactly
+    // as `pipeline_multi` does.
+    let mut setups = vec![(if out { 0 } else { 1 }, FdSetup::File(far))];
+    for raw in [near_raw, far_raw] {
+        if raw > 1 && !setups.iter().any(|(t, _)| *t == raw) {
+            setups.push((raw, FdSetup::Close));
+        }
+    }
+    let env_c = env.clone();
+    let funcs_c = funcs.clone();
+    let pid = fork_spawn(setups, false, move || {
+        let mut child = child_engine(&env_c, &funcs_c);
+        child_status(&mut child, &prog)
+    })
+    .map_err(|e| Error::Exec(e.to_string()))?;
+    let raw = near.as_raw_fd();
+    brish_platform::clear_cloexec(raw)
+        .map_err(|e| Error::Exec(format!("process substitution: {e}")))?;
+    pending.push((near, pid, out));
+    Ok(format!("/dev/fd/{raw}"))
 }
 
 /// Single-quote `word` for safe re-entry into a command line.
@@ -496,11 +585,14 @@ impl Engine {
             cs_seen: false,
             hooks: Arc::new(Registry::default()),
             in_child: false,
+            suppress_err: false,
             theme: DEFAULT_THEME.to_string(),
             not_found_hook: None,
             not_found_style: NotFoundStyle::default(),
             not_found_suggest: true,
             relconf_fn: None,
+            ps_pending: Vec::new(),
+            ps_pids: Vec::new(),
         }
     }
 
@@ -595,7 +687,7 @@ impl Engine {
     /// asynchronous notification). Interactive only. Drains pending
     /// signal traps first so an idle shell still runs `trap ... TERM`.
     pub fn job_notifications(&mut self) -> R<Vec<String>> {
-        self.drain_traps()?;
+        _ = self.drain_traps()?;
         self.reap_bg();
         let mut out = Vec::new();
         for (n, j) in self.bg.iter_mut().enumerate() {
@@ -619,16 +711,19 @@ impl Engine {
     /// and run their commands. Flags swap first so a trap that raises
     /// the same signal cannot self-requeue. Parent only.
     ///
+    /// Returns the mask of signals whose traps were run (for mid-wait
+    /// delivery to the child).
+    ///
     /// ponytail: signal traps fire at command/prompt boundaries — a
     /// foreground `sleep 100` is not interrupted mid-wait. Ceiling:
     /// self-pipe + EINTR-aware wait for mid-command delivery.
-    pub fn drain_traps(&mut self) -> R<()> {
+    pub fn drain_traps(&mut self) -> R<u32> {
         if self.in_child {
-            return Ok(());
+            return Ok(0);
         }
         let pending = brish_platform::peek_pending_traps();
         if pending == 0 {
-            return Ok(());
+            return Ok(0);
         }
         // Clear + run only the bits this shell has a trap for — a flag
         // set by our self-signal must not be swallowed by a parallel
@@ -650,13 +745,13 @@ impl Engine {
             }
         }
         if run_mask == 0 {
-            return Ok(());
+            return Ok(0);
         }
         brish_platform::clear_pending_traps(run_mask);
         for cmd in cmds {
             self.run_trap_body(&cmd)?;
         }
-        Ok(())
+        Ok(run_mask)
     }
 
     /// Run one trap/`EXIT` action body. Parse errors warn and are
@@ -700,6 +795,34 @@ impl Engine {
         }
     }
 
+    /// Run the `ERR` trap after a failed pipeline. Synthetic: no
+    /// signal, the engine fires it. Mirrors bash: fires wherever
+    /// `errexit` *would* exit (errexit context, not negated), but
+    /// regardless of whether `errexit` is set. `$?` is preserved
+    /// across the body unless the body itself fails — a trap that
+    /// runs `true` must not launder the failing status.
+    ///
+    /// Subshells/functions/command substitution inherit the ERR
+    /// trap only when `errtrace` is set. `in_child` covers subshells,
+    /// pipeline stages, command substitution and background jobs;
+    /// `depth > 0` covers functions (same process, no fork).
+    fn run_err_trap(&mut self) -> R<()> {
+        if (self.in_child || self.depth > 0) && !self.env.opts.errtrace {
+            return Ok(());
+        }
+        let Some(cmd) = self.env.traps.get("ERR").cloned() else {
+            return Ok(());
+        };
+        let saved = self.env.status;
+        let res = self.run_trap_body(&cmd);
+        // A body that neither exits nor fails keeps the original
+        // `$?`; one that fails reports its own status (bash).
+        if self.env.status == 0 && matches!(res, Ok(())) {
+            self.env.status = saved;
+        }
+        res
+    }
+
     /// Blocking wait that honors pending signal traps *mid-wait*:
     /// EINTR + flags → drain (run trap bodies) → retry. `Exit` from a
     /// trap propagates. This closes the "traps only fire at command
@@ -709,7 +832,20 @@ impl Engine {
         loop {
             match brish_platform::wait_pid(pid) {
                 Ok(c) => return Ok(c),
-                Err(PlatformError::Interrupted) => self.drain_traps()?,
+                Err(PlatformError::Interrupted) => {
+                    let mask = self.drain_traps()?;
+                    // Forward trapped signals to the child so it actually
+                    // dies (bash semantics: trap runs, then child gets signal).
+                    if mask != 0 {
+                        let mut m = mask;
+                        while m != 0 {
+                            if let Some(sig) = brish_platform::signal_from_trap_bit(m & (!m + 1)) {
+                                let _ = brish_platform::send_signal(pid, sig);
+                            }
+                            m &= m - 1; // clear lowest set bit
+                        }
+                    }
+                }
                 Err(e) => return Err(platform_err(e)),
             }
         }
@@ -721,7 +857,18 @@ impl Engine {
         loop {
             match brish_platform::wait_untraced(pid) {
                 Ok(s) => return Ok(s),
-                Err(PlatformError::Interrupted) => self.drain_traps()?,
+                Err(PlatformError::Interrupted) => {
+                    let mask = self.drain_traps()?;
+                    if mask != 0 {
+                        let mut m = mask;
+                        while m != 0 {
+                            if let Some(sig) = brish_platform::signal_from_trap_bit(m & (!m + 1)) {
+                                let _ = brish_platform::send_signal(pid, sig);
+                            }
+                            m &= m - 1;
+                        }
+                    }
+                }
                 Err(e) => return Err(platform_err(e)),
             }
         }
@@ -748,8 +895,13 @@ impl Engine {
             eprintln!("brish[exec]: {}", ao_text(&item.andor));
         }
         self.reap_bg();
-        self.drain_traps()?;
-        self.and_or(&item.andor, errexit_ctx)
+        _ = self.drain_traps()?;
+        let r = self.and_or(&item.andor, errexit_ctx);
+        // Close + reap process substitutions the item's expansion opened,
+        // whatever the outcome (bash waits for them at the command
+        // boundary too). Drain even on error so a `Stop` never leaks them.
+        self.finish_proc_substs();
+        r
     }
 
     fn background(&mut self, ao: &ast::AndOr) -> R<()> {
@@ -805,7 +957,9 @@ impl Engine {
                             self.bg[i].st[k] = Some(c);
                             break;
                         }
-                        Err(PlatformError::Interrupted) => self.drain_traps()?,
+                        Err(PlatformError::Interrupted) => {
+                            _ = self.drain_traps()?;
+                        }
                         Err(_) => return Ok(None),
                     }
                 }
@@ -1116,8 +1270,18 @@ impl Engine {
     /// errexit: a failing pipeline that is not a `&&`/`||` condition
     /// (and not negated) terminates the shell.
     fn check_errexit(&mut self, ctx: bool, negated: bool) -> R<()> {
-        if ctx && self.env.opts.errexit && self.env.status != 0 && !negated {
-            return Err(Stop::Exit(self.env.status));
+        if ctx && self.env.status != 0 && !negated {
+            // If ERR just fired for a function body, suppress this
+            // check to avoid double-fire (bash: ERR fires for the
+            // failing simple command, not for the function call).
+            if self.suppress_err {
+                self.suppress_err = false;
+            } else {
+                self.run_err_trap()?;
+            }
+            if self.env.opts.errexit {
+                return Err(Stop::Exit(self.env.status));
+            }
         }
         Ok(())
     }
@@ -1411,12 +1575,6 @@ impl Engine {
 
     fn simple(&mut self, s: &Simple, extra: &[Redir]) -> R<()> {
         self.cs_seen = false;
-        // Parser already split leading assignments into s.assigns.
-        let assign_words: Vec<(String, Word)> = s
-            .assigns
-            .iter()
-            .map(|a| (a.name.clone(), a.value.clone()))
-            .collect();
         let cmd_words = &s.words;
 
         // Command words expand first, then redirections (bash order).
@@ -1436,15 +1594,39 @@ impl Engine {
             return Ok(());
         };
 
-        let mut assigns: Vec<(String, String)> = Vec::with_capacity(assign_words.len());
-        for (n, w) in &assign_words {
-            let v = self.xvalue_assign(w)?;
-            assigns.push((n.clone(), v));
+        // Every leading assignment — scalar, array literal or indexed —
+        // is temporary when a command follows it, and permanent when the
+        // command is assignment-only. bash-verified: `a=(x y) true` leaves
+        // `a` empty, while `a=(x y)` alone keeps both elements.
+        let permanent = argv.is_empty();
+        let mut scalar_assigns: Vec<(String, String)> = Vec::with_capacity(s.assigns.len());
+        let mut array_assigns: Vec<&Assign> = Vec::new();
+        for a in &s.assigns {
+            if a.array.is_some() || a.index.is_some() {
+                array_assigns.push(a);
+            } else {
+                let v = self.xvalue_assign(&a.value)?;
+                scalar_assigns.push((a.name.clone(), v));
+            }
+        }
+        // Snapshot the arrays *before* binding, so the rollback below
+        // restores what was there rather than the temporary value.
+        let array_saved: Vec<(String, Option<Var>)> = if permanent {
+            Vec::new()
+        } else {
+            array_assigns
+                .iter()
+                .map(|a| (a.name.clone(), self.env.get_var(&a.name).cloned()))
+                .collect()
+        };
+        if !self.bind_array_assigns(&array_assigns)? {
+            return Ok(()); // status already set
         }
 
         if argv.is_empty() {
-            // Assignment-only command: persists, status 0.
-            for (n, v) in assigns {
+            // Assignment-only command: persists, status 0. The array
+            // literals are already bound above; only scalars remain.
+            for (n, v) in scalar_assigns {
                 if let Err(e) = self.env.set(&n, v) {
                     eprintln!("brish: {e}");
                     self.env.status = 1;
@@ -1463,13 +1645,59 @@ impl Engine {
         }
 
         // Temp assignments live only for the command (bash-verified).
-        let saved = match self.push_temp(&assigns) {
+        let saved = match self.push_temp(&scalar_assigns) {
             Ok(s) => s,
-            Err(()) => return Ok(()), // status already set
+            Err(()) => {
+                for (n, prev) in array_saved.into_iter().rev() {
+                    self.env.restore_var(&n, prev);
+                }
+                return Ok(()); // status already set
+            }
         };
         let out = self.exec_words(argv, plan, false);
         self.pop_temp(saved);
+        for (n, prev) in array_saved.into_iter().rev() {
+            self.env.restore_var(&n, prev);
+        }
         out
+    }
+
+    /// Bind `a=(…)` literals and `a[i]=v` assignments. Applied before the
+    /// command runs; the caller rolls them back when they are temporary.
+    ///
+    /// Each element is expanded as a full word (splitting + globbing),
+    /// matching bash: `a=(x y)` is two elements, `a=(*)` globs.
+    /// Returns `false` if a bind failed (status already set).
+    fn bind_array_assigns(&mut self, assigns: &[&Assign]) -> R<bool> {
+        for a in assigns {
+            if let Some(elements) = &a.array {
+                let mut items = Vec::with_capacity(elements.len());
+                for e in elements {
+                    let v = self.xwords(std::slice::from_ref(e))?;
+                    items.extend(v);
+                }
+                if let Err(err) = self.env.set_array(&a.name, items) {
+                    eprintln!("brish: {err}");
+                    self.env.status = 1;
+                    return Ok(false);
+                }
+            } else if let Some(index) = &a.index {
+                let idx = self.array_subscript(index)?;
+                let v = self.xvalue_assign(&a.value)?;
+                if let Err(err) = self.env.set_index(&a.name, idx, v) {
+                    eprintln!("brish: {err}");
+                    self.env.status = 1;
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// Array subscript arithmetic, shared with the expander.
+    fn array_subscript(&mut self, w: &Word) -> R<usize> {
+        let src = brish_core::lexer::plain_text(w).map_err(Stop::Fail)?;
+        brish_core::expand::eval_subscript(&src, &mut self.env).map_err(Stop::Fail)
     }
 
     fn push_temp(&mut self, assigns: &[(String, String)]) -> Result<TempSaved, ()> {
@@ -1605,6 +1833,20 @@ impl Engine {
     /// at all and fell through to the PATH search, so `exec 3>&1` died
     /// with "command not found".
     fn exec_cmd(&mut self, argv: &[String], plan: Plan) -> R<()> {
+        if self.env.opts.restricted {
+            // Bare exec with redirections is not allowed
+            if argv.len() == 1 && !plan.is_empty() {
+                eprintln!("exec: restricted");
+                self.env.status = 1;
+                return Ok(());
+            }
+            // exec cmd replacement is not allowed
+            if argv.len() > 1 {
+                eprintln!("exec: restricted");
+                self.env.status = 1;
+                return Ok(());
+            }
+        }
         if argv.len() == 1 {
             // Redirections only: make them permanent for this shell.
             // `apply_bare` dup2s without the save/restore that
@@ -1778,9 +2020,17 @@ impl Engine {
         match res? {
             Err(Stop::Return(s)) => {
                 self.env.status = s;
+                if s != 0 {
+                    self.suppress_err = true;
+                }
                 Ok(())
             }
-            r => r,
+            r => {
+                if matches!(r, Ok(())) && self.env.status != 0 {
+                    self.suppress_err = true;
+                }
+                r
+            }
         }
     }
 
@@ -1803,6 +2053,11 @@ impl Engine {
             self.env.status = 2;
             return Ok(());
         };
+        if self.env.opts.restricted && path.contains('/') {
+            eprintln!("source: restricted");
+            self.env.status = 1;
+            return Ok(());
+        }
         let src = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {
@@ -1969,6 +2224,11 @@ impl Engine {
 
     fn spawn_external(&mut self, argv: &[String], plan: Plan) -> R<()> {
         let name = &argv[0];
+        if self.env.opts.restricted && name.contains('/') {
+            eprintln!("brish: {name}: restricted");
+            self.env.status = 126;
+            return Ok(());
+        }
         let path: PathBuf = if name.contains('/') {
             PathBuf::from(name)
         } else {
@@ -1987,6 +2247,15 @@ impl Engine {
         for (k, v) in self.env.child_env() {
             cmd.env(k, v);
         }
+
+        // Process substitution: a `>(…)` write end must not survive into
+        // the child. `Stdio::inherit()` passes every open fd, so a
+        // still-open write end would be held by the *command* and
+        // `>(cat)` would never see EOF. The plan already holds its own
+        // reference (the redirection re-opened `/dev/fd/N`), so dropping
+        // the shell's copy here is safe. `<(…)` read ends are kept —
+        // the command opens that path by name and needs the fd live.
+        self.drop_ps_write_ends();
 
         let mut ops: Vec<FdOp> = Vec::new();
         // Extra-fd sources must stay open until spawn: pre_exec dups them.
@@ -2124,6 +2393,9 @@ impl Engine {
                 })
             }
             Redir::Output { fd, target } => {
+                if self.env.opts.restricted {
+                    return Ok(Err("restricted: output redirection".to_string()));
+                }
                 let t = self.xvalue(target)?;
                 Ok(match open_out(&t, false, false, self.env.opts.noclobber) {
                     Ok(f) => Ok((*fd, Src::File(f))),
@@ -2131,6 +2403,9 @@ impl Engine {
                 })
             }
             Redir::Append { fd, target } => {
+                if self.env.opts.restricted {
+                    return Ok(Err("restricted: output redirection".to_string()));
+                }
                 let t = self.xvalue(target)?;
                 Ok(match open_out(&t, true, false, self.env.opts.noclobber) {
                     Ok(f) => Ok((*fd, Src::File(f))),
@@ -2138,6 +2413,9 @@ impl Engine {
                 })
             }
             Redir::Clobber { fd, target } => {
+                if self.env.opts.restricted {
+                    return Ok(Err("restricted: output redirection".to_string()));
+                }
                 let t = self.xvalue(target)?;
                 Ok(match open_out(&t, false, true, self.env.opts.noclobber) {
                     Ok(f) => Ok((*fd, Src::File(f))),
@@ -2200,10 +2478,13 @@ impl Engine {
     fn xexpand<T>(
         &mut self,
         has_subst: bool,
-        f: impl FnOnce(&mut Env, CmdSubst) -> Result<T, Error>,
+        f: impl FnOnce(&mut Env, CmdSubst, ProcSubst) -> Result<T, Error>,
     ) -> R<T> {
         let snapshot = has_subst.then(|| (self.env.clone(), self.funcs.clone()));
         let mut st: Option<i32> = None;
+        // `ps` cannot borrow `self` while `f` holds `self.env`, so process
+        // substitutions land here and merge into `self.ps_pending` after.
+        let mut pending: Vec<(File, i32, bool)> = Vec::new();
         let r = {
             let mut cs = |src: &str| -> Result<String, Error> {
                 let (env_c, funcs_c) = snapshot
@@ -2213,12 +2494,19 @@ impl Engine {
                 st = Some(code);
                 Ok(out)
             };
-            f(&mut self.env, &mut cs)
+            let mut ps = |src: &str, out: bool| -> Result<String, Error> {
+                let (env_c, funcs_c) = snapshot
+                    .as_ref()
+                    .ok_or_else(|| Error::expand("process substitution without env snapshot"))?;
+                fork_proc_subst(src, out, env_c, funcs_c, &mut pending)
+            };
+            f(&mut self.env, &mut cs, &mut ps)
         };
+        self.ps_pending.append(&mut pending);
         // Traps signaled while expansion waits (cmd-subst) run now
         // that the Engine borrow is free — then expansion status wins.
         if brish_platform::peek_pending_traps() != 0 {
-            self.drain_traps()?;
+            _ = self.drain_traps()?;
         }
         if let Some(c) = st {
             self.env.status = c;
@@ -2227,26 +2515,80 @@ impl Engine {
         r.map_err(Stop::Fail)
     }
 
+    /// Close the shell's pipe copies and reap the inner children. Bash
+    /// waits for process substitutions at the command boundary; the copy
+    /// must stay open until then or the inner command would see EOF early.
+    /// Close the shell's copy of each `>(…)` **write** end, keeping the
+    /// pids to reap. Read ends stay open: the outer command opens
+    /// `/dev/fd/N` by path, so the fd must still be live when it execs.
+    ///
+    /// Split from [`Self::finish_proc_substs`] so `spawn_external` can
+    /// drop the write ends before the child inherits them.
+    fn drop_ps_write_ends(&mut self) {
+        let mut kept = Vec::with_capacity(self.ps_pending.len());
+        for (f, pid, is_write) in self.ps_pending.drain(..) {
+            if is_write {
+                self.ps_pids.push(pid);
+                drop(f);
+            } else {
+                kept.push((f, pid, is_write));
+            }
+        }
+        self.ps_pending = kept;
+    }
+
+    /// Close any remaining pipe copies and reap the inner
+    /// process-substitution children. Bash waits for them at the command
+    /// boundary, so a large inner output is fully drained before the shell
+    /// proceeds.
+    fn finish_proc_substs(&mut self) {
+        for (f, pid, _) in self.ps_pending.drain(..) {
+            self.ps_pids.push(pid);
+            drop(f);
+        }
+        for pid in self.ps_pids.drain(..) {
+            if brish_core::debug_on("ps") {
+                eprintln!("brish[ps]: reaping {pid}");
+            }
+            loop {
+                match brish_platform::wait_pid(pid) {
+                    Ok(c) => {
+                        if brish_core::debug_on("ps") {
+                            eprintln!("brish[ps]: {pid} reaped status={c}");
+                        }
+                        break;
+                    }
+                    // Trap-pending EINTR: retry; flags drain at the next
+                    // boundary, exactly as in `wait_captured`.
+                    Err(brish_platform::PlatformError::Interrupted) => continue,
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+
     fn xwords(&mut self, ws: &[Word]) -> R<Vec<String>> {
         let sub = ws.iter().any(word_has_subst);
-        self.xexpand(sub, |env, cs| expand::expand_words(env, ws, cs))
+        self.xexpand(sub, |env, cs, ps| expand::expand_words(env, ws, cs, ps))
     }
 
     fn xvalue(&mut self, w: &Word) -> R<String> {
         let sub = word_has_subst(w);
-        self.xexpand(sub, |env, cs| expand::expand_value(env, w, cs))
+        self.xexpand(sub, |env, cs, ps| expand::expand_value(env, w, cs, ps))
     }
 
     fn xvalue_assign(&mut self, w: &Word) -> R<String> {
         let sub = word_has_subst(w);
-        self.xexpand(sub, |env, cs| expand::expand_assign_value(env, w, cs))
+        self.xexpand(sub, |env, cs, ps| {
+            expand::expand_assign_value(env, w, cs, ps)
+        })
     }
 
     fn xtext(&mut self, src: &str) -> R<String> {
         // `expand_text` re-lexes here-doc bodies, so a `$(...)` can be
         // anywhere in the text.
         let sub = src.contains("$(") || src.contains('`');
-        self.xexpand(sub, |env, cs| expand::expand_text(env, src, cs))
+        self.xexpand(sub, |env, cs, ps| expand::expand_text(env, src, cs, ps))
     }
 }
 
@@ -2261,7 +2603,7 @@ fn word_has_subst(w: &Word) -> bool {
 /// Recursive: a `$(...)` can sit inside a double-quoted part's parts.
 fn part_has_subst(p: &lexer::Part) -> bool {
     match p {
-        lexer::Part::Subst(_) => true,
+        lexer::Part::Subst(_) | lexer::Part::ProcSubst { .. } => true,
         lexer::Part::Double(inner) => inner.iter().any(part_has_subst),
         lexer::Part::Raw(t) => t.contains("$(") || t.contains('`'),
         _ => false,
@@ -3436,5 +3778,25 @@ mod tests {
         std::fs::write(&marker, "x").expect("write");
         assert_eq!(run_src(&mut e, "true"), 0);
         assert!(marker.exists(), "no trap entry → no body");
+    }
+
+    #[test]
+    fn err_trap_fires_on_failure_and_respects_context() {
+        let mut e = Engine::new();
+        // set -e
+        let prog = brish_core::parser::parse("set -e").unwrap();
+        let result = e.run(&prog);
+        assert!(
+            matches!(result, Ok(Outcome::Status(0))),
+            "set -e failed: {result:?}"
+        );
+        assert!(e.env.opts.errexit, "errexit not set after set -e");
+        // false terminates the shell under errexit
+        let prog = brish_core::parser::parse("false").unwrap();
+        let result = e.run(&prog);
+        assert!(
+            matches!(result, Ok(Outcome::Exit(1))),
+            "false should exit with 1, got {result:?}"
+        );
     }
 }

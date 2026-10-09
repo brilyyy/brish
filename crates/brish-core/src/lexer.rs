@@ -37,6 +37,10 @@ pub enum Part {
     Subst(String),
     /// `$((...))` — arithmetic source.
     Arith(String),
+    /// `<(...)` / `>(...)` — process substitution. `out` = `>` form
+    /// (shell writes, inner command reads); source is the raw inner
+    /// text, parsed at expansion time like [`Part::Subst`].
+    ProcSubst { out: bool, body: String },
 }
 
 /// Operator / metacharacter token.
@@ -157,6 +161,9 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     self.bump();
                 }
+                // `<(` / `>(` begin a word (process substitution), not an
+                // operator — lex_word consumes the whole `<(...)` group.
+                '<' | '>' if self.peek_next()? == Some('(') => self.lex_word()?,
                 '|' | '&' | ';' | '(' | ')' | '<' | '>' => self.lex_operator()?,
                 _ => self.lex_word()?,
             }
@@ -372,6 +379,16 @@ impl<'a> Lexer<'a> {
             match c {
                 ' ' | '\t' | '\n' | '\r' => break,
                 '|' | '&' | ';' | '(' | ')' => break,
+                // `<(` / `>(` continue the word with a process
+                // substitution; a bare `<`/`>` ends it (redirection).
+                '<' | '>' if self.peek_next()? == Some('(') => {
+                    let out = c == '>';
+                    self.bump(); // the < or >
+                    self.bump(); // the (
+                    let body = self.read_proc_subst_body()?;
+                    flush_raw(&mut raw, &mut parts);
+                    parts.push(Part::ProcSubst { out, body });
+                }
                 '<' | '>' => break,
                 '\'' => {
                     self.bump();
@@ -457,6 +474,51 @@ impl<'a> Lexer<'a> {
             }
             s.push(c);
         }
+    }
+
+    /// Process-substitution body: opening `(` already consumed; returns
+    /// the raw inner source up to the matching `)`. Quote-aware and
+    /// nesting-aware, so `<(echo ")")` and `<(echo $(date))` both work.
+    fn read_proc_subst_body(&mut self) -> Result<String, Error> {
+        let start = self.pos;
+        let mut depth = 1usize;
+        while self.pos < self.src.len() {
+            let c = self.cur()?;
+            match c {
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let body = self.src[start..self.pos].to_string();
+                        self.bump();
+                        return Ok(body);
+                    }
+                    self.bump();
+                }
+                // Skip quoted runs whole: parens inside them are literal.
+                '\'' => {
+                    self.bump();
+                    self.read_until('\'')?;
+                }
+                '"' => {
+                    self.bump();
+                    self.read_dquote()?;
+                }
+                '`' => {
+                    self.bump();
+                    self.read_backtick()?;
+                }
+                '\\' => {
+                    self.bump();
+                    self.bump();
+                }
+                '(' => {
+                    depth += 1;
+                    self.bump();
+                }
+                _ => self.bump(),
+            }
+        }
+        Err(Error::Incomplete)
     }
 
     /// Read double-quoted section contents (opening `"` consumed).
@@ -871,6 +933,66 @@ mod tests {
             .into_iter()
             .map(|t| t.tok)
             .collect()
+    }
+
+    #[test]
+    fn proc_subst_is_one_word_part() {
+        // `<(a b)` is a single word holding one ProcSubst part, not `<`
+        // followed by a subshell.
+        let k = kinds("cat <(echo hi)");
+        assert_eq!(k.len(), 2);
+        match &k[1] {
+            Tok::Word(w) => assert_eq!(
+                w.parts,
+                vec![Part::ProcSubst {
+                    out: false,
+                    body: "echo hi".to_string()
+                }]
+            ),
+            other => panic!("expected word, got {other:?}"),
+        }
+        // The `>(…)` form sets `out`.
+        let k = kinds(">(cat)");
+        match &k[0] {
+            Tok::Word(w) => assert_eq!(
+                w.parts,
+                vec![Part::ProcSubst {
+                    out: true,
+                    body: "cat".to_string()
+                }]
+            ),
+            other => panic!("expected word, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn proc_subst_body_respects_quotes_and_nesting() {
+        let body = |src: &str| -> String {
+            match kinds(src).into_iter().next() {
+                Some(Tok::Word(w)) => match w.parts.into_iter().next() {
+                    Some(Part::ProcSubst { body, .. }) => body,
+                    other => panic!("expected ProcSubst, got {other:?}"),
+                },
+                other => panic!("expected word, got {other:?}"),
+            }
+        };
+        // A quoted paren does not terminate the group.
+        assert_eq!(body(r"<(echo ')')"), "echo ')'");
+        assert_eq!(body(r#"<(echo "(")"#), r#"echo "(""#);
+        // A nested group keeps its parens.
+        assert_eq!(body("<(echo (a | b))"), "echo (a | b)");
+        // Backslash-escaped paren.
+        assert_eq!(body(r"<(echo \))"), r"echo \)");
+        // Unterminated → Incomplete, like an open quote or subshell.
+        assert!(matches!(lex("<(echo"), Err(Error::Incomplete)));
+    }
+
+    #[test]
+    fn bare_redirect_operators_still_lex() {
+        // `<` / `>` NOT followed by `(` must stay operators.
+        assert!(kinds("echo > f").contains(&Tok::Op(Op::Great)));
+        assert!(kinds("cat < f").contains(&Tok::Op(Op::Less)));
+        assert!(kinds("echo >>f").contains(&Tok::Op(Op::DGreat)));
     }
 
     #[test]

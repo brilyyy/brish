@@ -92,8 +92,7 @@ fn builtin_output_reaches_redirected_file() {
     let f = d.path().join("out.txt");
     let o = run(&["-c", &format!("echo to-file > {}", f.display())]);
     assert_eq!(code(&o), 0);
-    assert_eq!(std::fs::read_to_string(&f).unwrap(), "to-file\n");
-    // append
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "to-file\n"); // append
     let o = run(&["-c", &format!("echo more >> {}", f.display())]);
     assert_eq!(code(&o), 0);
     assert_eq!(std::fs::read_to_string(&f).unwrap(), "to-file\nmore\n");
@@ -557,4 +556,184 @@ fn relconf_e_runs_the_editor_then_reloads() {
         .output()
         .expect("spawn brish");
     assert!(String::from_utf8_lossy(&o.stderr).contains("$VISUAL or $EDITOR"));
+}
+
+/// Process substitution `<(…)` / `>(…)` (bash extension, not POSIX).
+#[test]
+fn proc_subst_read_side_feeds_a_command() {
+    // The inner command's stdout arrives as a readable fd.
+    let o = run(&["-c", "cat <(echo hi)"]);
+    assert_eq!(out(&o), "hi\n", "stderr: {}", err(&o));
+    assert_eq!(code(&o), 0);
+
+    // Two substitutions, both live in one command (`paste` needs two).
+    let o = run(&["-c", r#"paste <(printf '1\n2\n') <(printf 'a\nb\n')"#]);
+    assert_eq!(out(&o), "1\ta\n2\tb\n", "stderr: {}", err(&o));
+
+    // A failing inner command still yields the path; only its output is absent.
+    assert_eq!(code(&run(&["-c", "cat <(exit 3)"])), 0);
+}
+
+#[test]
+fn proc_subst_body_is_a_full_command() {
+    // Pipelines, redirections and nesting inside the body.
+    assert_eq!(out(&run(&["-c", "cat <(echo x | tr x y)"])), "y\n");
+    assert_eq!(out(&run(&["-c", "cat <(cat <(echo deep))"])), "deep\n");
+    // Quoted parens inside the body are literal, not the terminator.
+    assert_eq!(out(&run(&["-c", "cat <(echo ')')"])), ")\n");
+    assert_eq!(out(&run(&["-c", "cat <(echo '(')"])), "(\n");
+    // `$(…)` inside the body expands in the child.
+    assert_eq!(out(&run(&["-c", "cat <(echo $(echo sub))"])), "sub\n");
+}
+
+#[test]
+fn proc_subst_write_side_redirects_output() {
+    let d = tempfile::tempdir().unwrap();
+    let f = d.path().join("ps.txt");
+    // `>(cat > f)` consumes the shell's stdout; the shell must not leave
+    // its own copy of the write end open or `cat` never sees EOF.
+    let o = run(&["-c", &format!("echo hi > >(cat > {})", f.display())]);
+    assert_eq!(code(&o), 0, "stderr: {}", err(&o));
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "hi\n");
+}
+
+#[test]
+fn proc_subst_does_not_hang_on_large_output() {
+    // The reader must drain the pipe while the writer is still running,
+    // and both sides must be reaped at the command boundary.
+    let o = run(&["-c", "wc -c <(yes abcdefgh | head -c 200000)"]);
+    assert_eq!(code(&o), 0, "stderr: {}", err(&o));
+    // `wc -c` also prints the filename it read, which is the fd path.
+    assert_eq!(
+        out(&o).split_whitespace().next(),
+        Some("200000"),
+        "stderr: {}",
+        err(&o)
+    );
+}
+
+#[test]
+fn proc_subst_path_is_not_split_or_globbed() {
+    // The expansion is a literal `/dev/fd/N`: no IFS split, no globbing
+    // against the cwd.
+    let d = tempfile::tempdir().unwrap();
+    let o = run(&["-c", "echo <(echo x) | wc -w"]);
+    assert_eq!(out(&o).trim(), "1", "stderr: {}", err(&o));
+    assert!(d.path().exists());
+}
+
+/// Arrays (bash extension; dense storage — see docs/POSIX.md).
+#[test]
+fn array_literal_and_indexing() {
+    assert_eq!(out(&run(&["-c", "a=(x y z); echo ${a[1]}"])), "y\n");
+    assert_eq!(
+        out(&run(&["-c", "a=(x y z); echo $a"])),
+        "x\n",
+        "$a is a[0]"
+    );
+    assert_eq!(out(&run(&["-c", "a=(x y z); echo ${#a[@]}"])), "3\n");
+    assert_eq!(out(&run(&["-c", "a=(x y z); echo ${#a[1]}"])), "1\n");
+    // Out of range is empty, and takes a default.
+    assert_eq!(out(&run(&["-c", "a=(x); echo \"[${a[7]}]\""])), "[]\n");
+    assert_eq!(out(&run(&["-c", "a=(x); echo ${a[7]:-none}"])), "none\n");
+    // Empty array.
+    assert_eq!(out(&run(&["-c", "a=(); echo ${#a[@]}"])), "0\n");
+    assert_eq!(out(&run(&["-c", "a=(); echo \"[${a[@]}]\""])), "[]\n");
+}
+
+#[test]
+fn array_elements_keep_their_own_quoting() {
+    // A quoted element is one element even with a space in it.
+    assert_eq!(out(&run(&["-c", "a=(\"p q\" r); echo ${#a[@]}"])), "2\n");
+    assert_eq!(
+        out(&run(&["-c", "a=(\"p q\" r); echo \"[${a[0]}]\""])),
+        "[p q]\n"
+    );
+    // Unquoted expansion splits on IFS like `$@`.
+    assert_eq!(out(&run(&["-c", "a=(one two); echo ${a[@]}"])), "one two\n");
+    assert_eq!(out(&run(&["-c", "a=(one two); echo ${#a[@]}"])), "2\n");
+    // Quoted `"${a[@]}"` keeps one field per element.
+    let o = run(&[
+        "-c",
+        "a=('x y' z); for e in \"${a[@]}\"; do echo \"<$e>\"; done",
+    ]);
+    assert_eq!(out(&o), "<x y>\n<z>\n");
+}
+
+#[test]
+fn array_index_assignment() {
+    assert_eq!(
+        out(&run(&["-c", "a=(x y); a[0]=NEW; echo ${a[0]}"])),
+        "NEW\n"
+    );
+    // The subscript is arithmetic.
+    assert_eq!(
+        out(&run(&["-c", "a=(x y); i=1; a[i+1]=third; echo ${#a[@]}"])),
+        "3\n"
+    );
+    assert_eq!(out(&run(&["-c", "a=(x y); a[1]=B; echo ${a[1]}"])), "B\n");
+}
+
+#[test]
+fn array_assignment_is_temporary_with_a_command_prefix() {
+    // bash: `a=(x y) true` leaves `a` empty.
+    assert_eq!(out(&run(&["-c", "a=(x y) true; echo ${#a[@]}"])), "0\n");
+    assert_eq!(
+        out(&run(&["-c", "a=(1 2 3); a[9]=N true; echo ${#a[@]}"])),
+        "3\n"
+    );
+    // ... but persists without one.
+    assert_eq!(out(&run(&["-c", "a=(x y); echo ${#a[@]}"])), "2\n");
+}
+
+#[test]
+fn array_unset_element_and_whole() {
+    assert_eq!(
+        out(&run(&["-c", "a=(x y z); unset \"a[1]\"; echo ${#a[@]}"])),
+        "2\n"
+    );
+    assert_eq!(
+        out(&run(&["-c", "a=(x y); unset a; echo \"[${a[@]}]\""])),
+        "[]\n"
+    );
+    // A scalar is unaffected by the indexed form.
+    assert_eq!(
+        out(&run(&["-c", "x=hello; unset \"x[0]\"; echo $x"])),
+        "hello\n"
+    );
+}
+
+#[test]
+fn array_read_into_and_local() {
+    assert_eq!(
+        out(&run(&["-c", "read -a a <<< '1 2 3'; echo ${#a[@]}"])),
+        "3\n"
+    );
+    assert_eq!(
+        out(&run(&["-c", "read -a a <<< '1 2 3'; echo ${a[2]}"])),
+        "3\n"
+    );
+    // `read -r` still works alongside.
+    let o = run(&[
+        "-c",
+        "while read -r line; do echo \"[$line]\"; done <<< 'x y'",
+    ]);
+    assert_eq!(out(&o), "[x y]\n");
+    // `local -a` inside a function, isolated from the global.
+    let o = run(&[
+        "-c",
+        "g=1; f() { local -a a; a=(in); echo ${#a[@]}; }; f; echo ${#a[@]}",
+    ]);
+    assert_eq!(out(&o), "1\n0\n");
+}
+
+#[test]
+fn array_is_not_exported_to_children() {
+    // bash never exports arrays; a child sees no `a` at all. Uses a
+    // plain `$a` rather than `${a[@]}` on purpose: `/bin/sh` is dash on
+    // Linux, which rejects the array form outright with "Bad
+    // substitution" — the test must not depend on the system shell
+    // supporting arrays.
+    let o = run(&["-c", "a=(x y); sh -c 'echo \"[$a]\"'"]);
+    assert_eq!(out(&o), "[]\n", "stderr: {}", err(&o));
 }

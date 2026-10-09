@@ -283,13 +283,15 @@ impl Parser {
     }
 
     fn parse_command(&mut self) -> Result<Cmd, Error> {
-        // Function definition: NAME ( ) compound
+        // Function definition: NAME ( ) compound. `peek_word_literal` of
+        // `a=(x y)` is `a`, so a word containing `=` must be excluded —
+        // that is an array literal, which `parse_simple` handles.
         if let (Some(Tok::Word(_)), Some(Tok::Op(Op::LParen))) = (
             self.peek_tok(),
             self.tokens.get(self.idx + 1).map(|t| &t.tok),
         ) {
             let name = self.peek_word_literal().unwrap_or_default();
-            if !name.is_empty() && !RESERVED.contains(&name.as_str()) {
+            if !name.is_empty() && !name.contains('=') && !RESERVED.contains(&name.as_str()) {
                 self.idx += 2; // name (
                 if !self.eat_op(Op::RParen) {
                     return Err(self.err("expected `)' after function name"));
@@ -556,7 +558,18 @@ impl Parser {
                 Some(Tok::Word(w)) => {
                     self.idx += 1;
                     if !seen_word && is_assign(&w) {
-                        assigns.push(make_assign(&w));
+                        let mut a = make_assign(&w);
+                        // `a=(x y)` — an array literal, not `a=` followed
+                        // by a subshell. Only an *empty* value can be the
+                        // LHS of one, so `a=v=(x y)` stays two assignments.
+                        if a.array.is_none()
+                            && a.value.parts.is_empty()
+                            && a.index.is_none()
+                            && self.peek_op() == Some(Op::LParen)
+                        {
+                            a.array = Some(self.parse_array_literal()?);
+                        }
+                        assigns.push(a);
                     } else {
                         seen_word = true;
                         words.push(w);
@@ -573,6 +586,38 @@ impl Parser {
             redirs,
             words,
         }))
+    }
+
+    /// Elements of an array literal: the words between the parens of
+    /// `a=(…)`. Each element keeps its own quoting, so `a=("x y" z)`
+    /// holds two elements. A nested `(…)` or `$()` is not an element —
+    /// bash treats it as a command that must produce one, and supporting
+    /// that here would mean re-lexing arbitrary source; use
+    /// `a=("$(cmd)")` instead.
+    fn parse_array_literal(&mut self) -> Result<Vec<Word>, Error> {
+        if !self.eat_op(Op::LParen) {
+            return Err(self.err("expected `(' after array assignment"));
+        }
+        let mut items = Vec::new();
+        loop {
+            match self.peek_tok().cloned() {
+                None => return Err(Error::Incomplete),
+                Some(Tok::Op(Op::RParen)) => {
+                    self.idx += 1;
+                    return Ok(items);
+                }
+                Some(Tok::Word(w)) => {
+                    self.idx += 1;
+                    items.push(w);
+                }
+                // Separators inside the list are allowed and ignored;
+                // only `)` closes it.
+                Some(Tok::Newline) | Some(Tok::Op(Op::Semi)) | Some(Tok::Op(Op::Amp)) => {
+                    self.idx += 1;
+                }
+                _ => return Err(self.err("invalid array assignment")),
+            }
+        }
     }
 
     /// Redirection operator consumed; read its target word.
@@ -684,12 +729,32 @@ fn is_name(s: &str) -> bool {
 }
 
 /// Word is a `name=value` assignment prefix (at command start).
+/// LHS of an assignment word: split `name=value` into the name, an
+/// optional subscript (`a[i]=…`), and the value text. `None` when the
+/// word is not an assignment at all.
+fn assign_lhs(t: &str) -> Option<(String, Option<&str>, &str)> {
+    let eq = t.find('=')?;
+    let lhs = &t[..eq];
+    let value = &t[eq + 1..];
+    // `a[i]=v` — the subscript rides along with the name.
+    if let Some(open) = lhs.find('[')
+        && lhs.ends_with(']')
+    {
+        let name = &lhs[..open];
+        let sub = &lhs[open + 1..lhs.len() - 1];
+        if !name.is_empty() && is_name(name) && !sub.is_empty() {
+            return Some((name.to_string(), Some(sub), value));
+        }
+    }
+    if is_name(lhs) {
+        return Some((lhs.to_string(), None, value));
+    }
+    None
+}
+
 fn is_assign(w: &Word) -> bool {
     match w.parts.first() {
-        Some(lexer::Part::Raw(t)) => match t.find('=') {
-            Some(eq) => is_name(&t[..eq]),
-            None => false,
-        },
+        Some(lexer::Part::Raw(t)) => assign_lhs(t).is_some(),
         _ => false,
     }
 }
@@ -697,12 +762,16 @@ fn is_assign(w: &Word) -> bool {
 fn make_assign(w: &Word) -> Assign {
     let mut value_parts = Vec::new();
     let mut name = String::new();
+    let mut index = None;
     for (i, p) in w.parts.iter().enumerate() {
         match p {
             lexer::Part::Raw(t) if i == 0 => {
-                if let Some(eq) = t.find('=') {
-                    name = t[..eq].to_string();
-                    let rest = &t[eq + 1..];
+                if let Some((n, sub, rest)) = assign_lhs(t) {
+                    name = n;
+                    index = sub.map(|s| Word {
+                        parts: vec![lexer::Part::Raw(s.to_string())],
+                        span: w.span,
+                    });
                     if !rest.is_empty() {
                         value_parts.push(lexer::Part::Raw(rest.to_string()));
                     }
@@ -718,6 +787,8 @@ fn make_assign(w: &Word) -> Assign {
             span: w.span,
         },
         span: w.span,
+        array: None,
+        index,
     }
 }
 
