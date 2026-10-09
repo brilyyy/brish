@@ -22,7 +22,9 @@ fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
 
 /// True if `tag` represents a newer version than `CURRENT_VERSION`.
 pub fn is_newer(tag: &str) -> bool {
-    parse_version(tag).zip(parse_version(CURRENT_VERSION)).is_some_and(|(t, c)| t > c)
+    parse_version(tag)
+        .zip(parse_version(CURRENT_VERSION))
+        .is_some_and(|(t, c)| t > c)
 }
 
 /// Extract tag from GitHub's effective URL after following redirect.
@@ -135,7 +137,10 @@ fn print_color(color: &str, text: &str) {
 /// Returns true if update was performed, false if declined/skipped.
 fn prompt_update(tag: &str) -> bool {
     let current = CURRENT_VERSION;
-    print_color("1;33", &format!("briSH {tag} is available (you have {current})."));
+    print_color(
+        "1;33",
+        &format!("briSH {tag} is available (you have {current})."),
+    );
     if !read_yes("Would you like to update now? [Y/n] ") {
         print_color("0;36", "Run `brish --self-update` anytime to update.");
         return false;
@@ -185,7 +190,12 @@ pub fn self_update(tag: &str) -> Result<(), String> {
     }
 
     // Verify sha256
-    let sha_cmd = if Command::new("sha256sum").arg("-c").stdin(Stdio::null()).status().is_ok() {
+    let sha_cmd = if Command::new("sha256sum")
+        .arg("-c")
+        .stdin(Stdio::null())
+        .status()
+        .is_ok()
+    {
         "sha256sum"
     } else {
         "shasum"
@@ -203,8 +213,12 @@ pub fn self_update(tag: &str) -> Result<(), String> {
     }
 
     // Extract
-    let asset_file = asset_path.file_name().ok_or("asset path has no file name")?;
-    let asset_file_str = asset_file.to_str().ok_or("asset file name not valid UTF-8")?;
+    let asset_file = asset_path
+        .file_name()
+        .ok_or("asset path has no file name")?;
+    let asset_file_str = asset_file
+        .to_str()
+        .ok_or("asset file name not valid UTF-8")?;
     let status = Command::new("tar")
         .args(["-xzf", asset_file_str])
         .current_dir(&tmp)
@@ -231,7 +245,8 @@ pub fn self_update(tag: &str) -> Result<(), String> {
 
 /// Called from `repl()` on tty interactive startup.
 /// Runs synchronous check + prompt if due and enabled.
-pub fn maybe_check_and_prompt(enabled: bool, interval_days: u64) {
+/// Prints the banner before prompting when an update is found and `banner_on_update` is set.
+pub fn maybe_check_and_prompt(enabled: bool, interval_days: u64, banner_on_update: bool) {
     if !enabled || !check_due(interval_days) {
         return;
     }
@@ -243,6 +258,9 @@ pub fn maybe_check_and_prompt(enabled: bool, interval_days: u64) {
         // we touch stamp in those paths. If we hit timeout/network
         // error here, we don't touch -> retry next startup.
         touch_stamp();
+        if banner_on_update {
+            crate::banner::print_banner();
+        }
         let _ = prompt_update(&tag);
     }
 }
@@ -250,7 +268,7 @@ pub fn maybe_check_and_prompt(enabled: bool, interval_days: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use filetime::{set_file_times, FileTime};
+    use filetime::{FileTime, set_file_times};
     use std::time::SystemTime;
 
     #[test]

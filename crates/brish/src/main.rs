@@ -15,6 +15,7 @@ use reedline::{
 };
 use std::sync::{Arc, Mutex};
 
+mod banner;
 mod update;
 
 /// briSH (brily SHell) — a memory-safe, crash-resistant POSIX shell.
@@ -230,7 +231,10 @@ fn main() {
             }
         };
         if !update::is_newer(&tag) {
-            println!("brish: already at latest version ({})", env!("CARGO_PKG_VERSION"));
+            println!(
+                "brish: already at latest version ({})",
+                env!("CARGO_PKG_VERSION")
+            );
             std::process::exit(0);
         }
         if let Err(e) = update::self_update(&tag) {
@@ -494,9 +498,29 @@ fn repl(
     if interactive && !engine.env.flags.contains('i') {
         engine.env.flags.push('i');
     }
+    // First-init banner: show once, then drop a stamp file.
+    if interactive
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && cfg.banner_first_init
+    {
+        let stamp = brish_builtin::paths::startup_stamp_path();
+        if !stamp.exists() {
+            banner::print_banner();
+            if let Some(parent) = stamp.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&stamp, "");
+        }
+    }
+
     // Startup update check + prompt (tty REPL only, throttled by stamp file).
     if interactive && std::io::stdin().is_terminal() {
-        update::maybe_check_and_prompt(cfg.update_enabled, cfg.update_interval_days);
+        update::maybe_check_and_prompt(
+            cfg.update_enabled,
+            cfg.update_interval_days,
+            cfg.banner_on_update,
+        );
     }
     if !cli.norc {
         // ponytail: rc loads only on the REPL path, so `brish -lc 'cmd'`

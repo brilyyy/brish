@@ -28,6 +28,7 @@ pub struct ConfigFile {
     pub engine: Option<EngineSection>,
     pub completion: Option<CompletionSection>,
     pub update: Option<UpdateSection>,
+    pub startup: Option<StartupSection>,
 }
 
 /// `[completion]` — how Tab matches candidates.
@@ -50,6 +51,16 @@ pub struct UpdateSection {
     pub enabled: Option<bool>,
     /// Check interval in days (default 13, oh-my-zsh default).
     pub interval_days: Option<u64>,
+}
+
+/// `[startup]` — first-run and startup banner behavior.
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+pub struct StartupSection {
+    /// Show banner on very first run (default true).
+    pub banner_first_init: Option<bool>,
+    /// Show banner when version check finds an update (default true).
+    pub banner_on_update: Option<bool>,
 }
 
 /// `[hooks]` — shell-level hooks the engine runs.
@@ -183,6 +194,10 @@ pub struct Config {
     pub update_enabled: bool,
     /// `[update] interval_days`: check interval (default 13).
     pub update_interval_days: u64,
+    /// `[startup] banner_first_init`: show banner on first run (default true).
+    pub banner_first_init: bool,
+    /// `[startup] banner_on_update`: show banner when update found (default true).
+    pub banner_on_update: bool,
     enabled: Option<Vec<String>>,
     disabled: Option<Vec<String>>,
 }
@@ -209,6 +224,8 @@ impl Default for Config {
             cmd_duration_mode: CmdDurationMode::default(),
             update_enabled: true,
             update_interval_days: 13,
+            banner_first_init: true,
+            banner_on_update: true,
             enabled: None,
             disabled: None,
         }
@@ -361,7 +378,21 @@ pub fn load_from(path: &Path, known: &[&str]) -> Config {
         completion_match_description: file.completion.as_ref().and_then(|c| c.match_description),
         cmd_duration_mode,
         update_enabled: file.update.as_ref().and_then(|u| u.enabled).unwrap_or(true),
-        update_interval_days: file.update.as_ref().and_then(|u| u.interval_days).unwrap_or(13),
+        update_interval_days: file
+            .update
+            .as_ref()
+            .and_then(|u| u.interval_days)
+            .unwrap_or(13),
+        banner_first_init: file
+            .startup
+            .as_ref()
+            .and_then(|s| s.banner_first_init)
+            .unwrap_or(true),
+        banner_on_update: file
+            .startup
+            .as_ref()
+            .and_then(|s| s.banner_on_update)
+            .unwrap_or(true),
         enabled,
         disabled,
     };

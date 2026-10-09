@@ -43,6 +43,11 @@ pub fn update_stamp_path() -> PathBuf {
     config_dir().join(".update_check")
 }
 
+/// `~/.config/brish/.first_startup` — marker that first-run banner shown.
+pub fn startup_stamp_path() -> PathBuf {
+    config_dir().join(".first_startup")
+}
+
 /// Create `~/.config/brish` with mode `0700`. Existing dirs get
 /// tightened when group/world-accessible (history/config live here).
 pub fn ensure_config_dir() -> std::io::Result<PathBuf> {
