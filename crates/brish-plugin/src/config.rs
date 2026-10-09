@@ -41,6 +41,12 @@ pub struct CompletionSection {
     pub sort: Option<bool>,
     /// Also match the typed text against each candidate's description.
     pub match_description: Option<bool>,
+    /// Column count for the completion menu. `None` = reedline default (4).
+    pub columns: Option<u16>,
+    /// Max candidates shown before truncating (prevents scroll). Default 24.
+    pub max_candidates: Option<usize>,
+    /// Max width per candidate value (ellipsis truncated). `None` = no limit.
+    pub truncate_width: Option<usize>,
 }
 
 /// `[update]` — auto-update check on startup (oh-my-zsh style).
@@ -149,6 +155,12 @@ pub struct PromptSection {
     /// Completion menu description color: named color, `#rrggbb`, or
     /// `off`. Absent = reedline default (muted gray).
     pub completion_description: Option<String>,
+    /// Completion value text style: named color, `#rrggbb`, or `off`.
+    /// Absent = reedline default.
+    pub completion_text_style: Option<String>,
+    /// Match highlight style: named color, `#rrggbb`, or `off`.
+    /// Absent = reedline default (underline).
+    pub completion_match_style: Option<String>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -188,6 +200,12 @@ pub struct Config {
     pub completion_sort: Option<bool>,
     /// `[completion] match_description`, if any.
     pub completion_match_description: Option<bool>,
+    /// `[completion] columns`, if any.
+    pub completion_columns: Option<u16>,
+    /// `[completion] max_candidates`, if any.
+    pub completion_max_candidates: Option<usize>,
+    /// `[completion] truncate_width`, if any.
+    pub completion_truncate_width: Option<usize>,
     /// `[engine] cmd_duration_mode`: "wall" (default) or "cpu".
     pub cmd_duration_mode: CmdDurationMode,
     /// `[update] enabled`: check for updates on startup (default true).
@@ -221,6 +239,9 @@ impl Default for Config {
             completion_algorithm: None,
             completion_sort: None,
             completion_match_description: None,
+            completion_columns: None,
+            completion_max_candidates: None,
+            completion_truncate_width: None,
             cmd_duration_mode: CmdDurationMode::default(),
             update_enabled: true,
             update_interval_days: 13,
@@ -240,6 +261,8 @@ pub struct PromptChrome {
     pub vi_visual: String,
     pub multiline: String,
     pub completion_description: Option<String>,
+    pub completion_text_style: Option<String>,
+    pub completion_match_style: Option<String>,
 }
 
 impl Default for PromptChrome {
@@ -250,6 +273,8 @@ impl Default for PromptChrome {
             vi_visual: "+ ".into(),
             multiline: "::: ".into(),
             completion_description: None,
+            completion_text_style: None,
+            completion_match_style: None,
         }
     }
 }
@@ -338,6 +363,8 @@ pub fn load_from(path: &Path, known: &[&str]) -> Config {
             prompt.multiline = v;
         }
         prompt.completion_description = p.completion_description;
+        prompt.completion_text_style = p.completion_text_style;
+        prompt.completion_match_style = p.completion_match_style;
     }
     let (enabled, mut disabled) = match file.plugins {
         Some(p) => (p.enabled, p.disabled),
@@ -376,6 +403,9 @@ pub fn load_from(path: &Path, known: &[&str]) -> Config {
         completion_algorithm: file.completion.as_ref().and_then(|c| c.algorithm.clone()),
         completion_sort: file.completion.as_ref().and_then(|c| c.sort),
         completion_match_description: file.completion.as_ref().and_then(|c| c.match_description),
+        completion_columns: file.completion.as_ref().and_then(|c| c.columns),
+        completion_max_candidates: file.completion.as_ref().and_then(|c| c.max_candidates),
+        completion_truncate_width: file.completion.as_ref().and_then(|c| c.truncate_width),
         cmd_duration_mode,
         update_enabled: file.update.as_ref().and_then(|u| u.enabled).unwrap_or(true),
         update_interval_days: file
@@ -408,6 +438,14 @@ pub fn completion_desc_style() -> Option<nu_ansi_term::Style> {
     let file: ConfigFile = toml::from_str(&text).ok()?;
     let spec = file.prompt?.completion_description?;
     parse_style(&spec)
+}
+
+/// Parse a menu style spec: named color, `#rrggbb`, or `off`.
+/// Unknown → fallback. Note: curly/squiggly underline not supported —
+/// nu_ansi_term 0.50.3 has no SGR 4:3, reedline paints via Style only.
+pub fn parse_menu_style(spec: Option<&str>, fallback: nu_ansi_term::Style) -> nu_ansi_term::Style {
+    let Some(s) = spec else { return fallback };
+    parse_style(s.trim()).unwrap_or(fallback)
 }
 
 /// Color spec: named (`black`…`white`, optional `bright-` prefix),

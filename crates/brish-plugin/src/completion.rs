@@ -267,6 +267,10 @@ pub struct MatchOpts {
     /// Keep a candidate whose *description* matches even when the
     /// value does not (nushell's `match_description`).
     pub match_description: bool,
+    /// Max candidates shown before truncating (prevents scroll). Default 24.
+    pub max_candidates: usize,
+    /// Max width per candidate value (ellipsis truncated). 0 = no limit.
+    pub truncate_width: usize,
 }
 
 impl MatchOpts {
@@ -280,6 +284,8 @@ impl MatchOpts {
                 .unwrap_or_default(),
             sort: cfg.completion_sort.unwrap_or(true),
             match_description: cfg.completion_match_description.unwrap_or(false),
+            max_candidates: cfg.completion_max_candidates.unwrap_or(24),
+            truncate_width: cfg.completion_truncate_width.unwrap_or(0),
         }
     }
 }
@@ -344,11 +350,22 @@ impl BrishCompleter {
             out.sort_by_key(|c| c.value.to_lowercase());
         }
         out.into_iter()
+            .take(opts.max_candidates)
             .map(|c| {
                 let value = match quote {
                     Some(q) => format!("{q}{}", c.value),
                     None => c.value,
                 };
+                let value =
+                    if opts.truncate_width > 0 && value.chars().count() > opts.truncate_width {
+                        let truncated: String = value
+                            .chars()
+                            .take(opts.truncate_width.saturating_sub(1))
+                            .collect();
+                        format!("{truncated}…")
+                    } else {
+                        value
+                    };
                 sug(value, &span, c.description.as_deref(), c.keep_typing)
             })
             .collect()
@@ -523,7 +540,14 @@ mod tests {
 
         let mut reg = Registry::default();
         reg.completion_providers.push(Box::new(FilesProvider));
-        let c = BrishCompleter::new(Arc::new(reg), MatchOpts::default());
+        let c = BrishCompleter::new(
+            Arc::new(reg),
+            MatchOpts {
+                max_candidates: 100,
+                truncate_width: 0,
+                ..Default::default()
+            },
+        );
 
         // `./t` is the first word of the line (a command position)
         // but contains `/`, so it is a path, not a command name.
@@ -545,7 +569,14 @@ mod tests {
 
         let mut reg = Registry::default();
         reg.completion_providers.push(Box::new(FilesProvider));
-        let c = BrishCompleter::new(Arc::new(reg), MatchOpts::default());
+        let c = BrishCompleter::new(
+            Arc::new(reg),
+            MatchOpts {
+                max_candidates: 100,
+                truncate_width: 0,
+                ..Default::default()
+            },
+        );
 
         // `.` at command position → file completion, not command lookup
         let out = c.suggestions_in(".", 1, dir.path());
@@ -630,6 +661,8 @@ mod tests {
             algorithm: brish_plugin_api::Algorithm::Prefix,
             sort: true,
             match_description: false,
+            max_candidates: 100,
+            truncate_width: 0,
         });
         let got: Vec<String> = c
             .suggestions_in("al", 2, dir)
@@ -643,6 +676,8 @@ mod tests {
             algorithm: brish_plugin_api::Algorithm::Substring,
             sort: false,
             match_description: false,
+            max_candidates: 100,
+            truncate_width: 0,
         });
         let got: Vec<String> = c
             .suggestions_in("et", 2, dir)
@@ -656,6 +691,8 @@ mod tests {
             algorithm: brish_plugin_api::Algorithm::Substring,
             sort: true,
             match_description: true,
+            max_candidates: 100,
+            truncate_width: 0,
         });
         let got: Vec<String> = c
             .suggestions_in("ailin", 5, dir)
@@ -670,7 +707,14 @@ mod tests {
         let mut reg = Registry::default();
         reg.completion_providers.push(Box::new(Dup("one")));
         reg.completion_providers.push(Box::new(Dup("two")));
-        let c = BrishCompleter::new(Arc::new(reg), MatchOpts::default());
+        let c = BrishCompleter::new(
+            Arc::new(reg),
+            MatchOpts {
+                max_candidates: 100,
+                truncate_width: 0,
+                ..Default::default()
+            },
+        );
         let out = c.suggestions("x", 1);
         let vals: Vec<&str> = out.iter().map(|s| s.value.as_str()).collect();
         // "same" appears once (first provider wins), one/two both kept
@@ -692,7 +736,14 @@ mod tests {
         reg.completion_providers
             .push(Box::new(VarsProvider::new(names)));
         reg.completion_providers.push(Box::new(FilesProvider));
-        let c = BrishCompleter::new(Arc::new(reg), MatchOpts::default());
+        let c = BrishCompleter::new(
+            Arc::new(reg),
+            MatchOpts {
+                max_candidates: 100,
+                truncate_width: 0,
+                ..Default::default()
+            },
+        );
 
         // command position: builtins, not files
         let out = c.suggestions_in("ec", 2, dir.path());
