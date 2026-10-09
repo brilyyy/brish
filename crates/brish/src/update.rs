@@ -292,9 +292,13 @@ mod tests {
 
     #[test]
     fn is_newer_works() {
-        assert!(is_newer("v0.3.0")); // 0.3.0 > 0.2.0
-        assert!(!is_newer("v0.1.0"));
-        assert!(!is_newer("v0.2.0"));
+        // Relative to CURRENT_VERSION so a version bump never rots this.
+        let (maj, min, pat) = parse_version(CURRENT_VERSION).expect("valid current version");
+        let newer = format!("v{maj}.{min}.{}", pat + 1);
+        let same = format!("v{maj}.{min}.{pat}");
+        assert!(is_newer(&newer), "{newer} > {CURRENT_VERSION}");
+        assert!(!is_newer(&same), "equal is not newer");
+        assert!(!is_newer("vX.Y.Z"), "unparseable is not newer");
     }
 
     #[test]

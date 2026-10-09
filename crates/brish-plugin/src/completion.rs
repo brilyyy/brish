@@ -310,10 +310,12 @@ impl BrishCompleter {
         let (quote, word) = strip_open_quote(raw_word);
         let after_dollar = word.starts_with('$');
         let w = word.strip_prefix('$').unwrap_or(word);
-        // A word containing `/` is a path, never a command name —
-        // `./t`, `../x`, `/usr/bi` must route to the file provider
-        // even when they sit at the start of the line.
-        let is_command = !after_dollar && !w.contains('/') && command_position(&line[..start]);
+        // A word containing `/` or starting with `.` is a path, never a
+        // command name — `./t`, `../x`, `/usr/bi`, `.foo`, `..` must route
+        // to the file provider even at the start of the line. POSIX command
+        // names cannot begin with `.`.
+        let looks_like_path = w.contains('/') || w.starts_with('.');
+        let is_command = !after_dollar && !looks_like_path && command_position(&line[..start]);
         let ctx = CompletionCtx {
             word: w,
             is_command,
@@ -532,6 +534,29 @@ mod tests {
                 "{line} → {out:?}"
             );
         }
+    }
+
+    #[test]
+    fn dot_word_completes_hidden_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".hidden"), "x").unwrap();
+        std::fs::create_dir(dir.path().join(".hiddendir")).unwrap();
+        std::fs::write(dir.path().join("visible"), "x").unwrap();
+
+        let mut reg = Registry::default();
+        reg.completion_providers.push(Box::new(FilesProvider));
+        let c = BrishCompleter::new(Arc::new(reg), MatchOpts::default());
+
+        // `.` at command position → file completion, not command lookup
+        let out = c.suggestions_in(".", 1, dir.path());
+        let vals: Vec<&str> = out.iter().map(|s| s.value.as_str()).collect();
+        assert!(vals.contains(&".hidden"), "{out:?}");
+        assert!(vals.contains(&".hiddendir/"), "{out:?}");
+        assert!(
+            !vals.contains(&"visible"),
+            "non-hidden entries must not match"
+        );
+        assert!(!out.iter().any(|s| s.value == "echo"));
     }
 
     struct Dup(&'static str);
