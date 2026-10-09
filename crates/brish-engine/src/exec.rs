@@ -866,7 +866,9 @@ impl Engine {
                             self.bg[i].st[k] = Some(c);
                             break;
                         }
-                        Err(PlatformError::Interrupted) => { _ = self.drain_traps()?; }
+                        Err(PlatformError::Interrupted) => {
+                            _ = self.drain_traps()?;
+                        }
                         Err(_) => return Ok(None),
                     }
                 }
@@ -3570,4 +3572,3 @@ mod tests {
         );
     }
 }
-

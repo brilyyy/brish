@@ -308,12 +308,12 @@ impl BrishCompleter {
         // Match without the opening quote; put it back on the way out
         // so the span replacement keeps the line's quoting intact.
         let (quote, word) = strip_open_quote(raw_word);
-    let after_dollar = word.starts_with('$');
-    let w = word.strip_prefix('$').unwrap_or(word);
-    // A word containing `/` is a path, never a command name —
-    // `./t`, `../x`, `/usr/bi` must route to the file provider
-    // even when they sit at the start of the line.
-    let is_command = !after_dollar && !w.contains('/') && command_position(&line[..start]);
+        let after_dollar = word.starts_with('$');
+        let w = word.strip_prefix('$').unwrap_or(word);
+        // A word containing `/` is a path, never a command name —
+        // `./t`, `../x`, `/usr/bi` must route to the file provider
+        // even when they sit at the start of the line.
+        let is_command = !after_dollar && !w.contains('/') && command_position(&line[..start]);
         let ctx = CompletionCtx {
             word: w,
             is_command,
