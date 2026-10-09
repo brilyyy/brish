@@ -2,6 +2,16 @@
 
 ## 0.2.0 — unreleased
 
+### Added
+- **Update check + self-update (oh-my-zsh style)**. On interactive startup,
+  briSH checks GitHub Releases for a newer version (default every 13 days,
+  configurable via `[update] interval_days`). If a newer version exists,
+  prints a notice and prompts `Y/n` to download, verify sha256 (fail-closed),
+  and atomically replace the running binary. `brish --self-update` runs the
+  same flow on demand. Opt out with `[update] enabled = false`.
+
+### Shell gaps closed
+
 Everything shipped so far, folded from the per-batch `## 0.1.0` sections
 this file used to grow one commit at a time (plus a `## 1.0.0 — stable`
 header that never shipped). Batches are in commit order; the entries

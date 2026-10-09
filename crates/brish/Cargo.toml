@@ -26,6 +26,7 @@ toml.workspace = true
 reedline.workspace = true
 nu-ansi-term.workspace = true
 dirs.workspace = true
+tempfile.workspace = true
 # Off by default: a released binary stays small and a build without
 # `wasm` pulls no interpreter at all. `--features wasm` to enable.
 brish-plugin-wasm = { path = "../brish-plugin-wasm", optional = true }
@@ -35,4 +36,4 @@ default = []
 wasm = ["dep:brish-plugin-wasm"]
 
 [dev-dependencies]
-tempfile.workspace = true
+filetime = "0.2"

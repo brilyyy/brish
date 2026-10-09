@@ -15,6 +15,8 @@ use reedline::{
 };
 use std::sync::{Arc, Mutex};
 
+mod update;
+
 /// briSH (brily SHell) — a memory-safe, crash-resistant POSIX shell.
 #[derive(Parser, Debug)]
 #[command(
@@ -52,6 +54,10 @@ struct Cli {
     /// Prompt theme (overrides $BRISH_THEME and config.toml)
     #[arg(long)]
     theme: Option<String>,
+
+    /// Update to the latest version (downloads from GitHub Releases)
+    #[arg(long)]
+    self_update: bool,
 
     /// Script to run, followed by its arguments
     #[arg(trailing_var_arg = true)]
@@ -213,6 +219,28 @@ fn apply_theme(
 fn main() {
     brish_platform::reset_sigpipe();
     let cli = Cli::parse();
+
+    // --self-update: short-circuit, no engine needed
+    if cli.self_update {
+        let tag = match update::latest_tag() {
+            Some(t) => t,
+            None => {
+                eprintln!("brish: failed to fetch latest version");
+                std::process::exit(1);
+            }
+        };
+        if !update::is_newer(&tag) {
+            println!("brish: already at latest version ({})", env!("CARGO_PKG_VERSION"));
+            std::process::exit(0);
+        }
+        if let Err(e) = update::self_update(&tag) {
+            eprintln!("brish: update failed: {e}");
+            std::process::exit(1);
+        }
+        println!("brish: updated to {tag}. Restart shell to take effect.");
+        std::process::exit(0);
+    }
+
     let mut engine = Engine::new();
     // `$-` reports `l` on every path, including `-lc` (profiles are only
     // read on the REPL path — see repl).
@@ -465,6 +493,10 @@ fn repl(
     let interactive = cli.interactive || std::io::stdin().is_terminal();
     if interactive && !engine.env.flags.contains('i') {
         engine.env.flags.push('i');
+    }
+    // Startup update check + prompt (tty REPL only, throttled by stamp file).
+    if interactive && std::io::stdin().is_terminal() {
+        update::maybe_check_and_prompt(cfg.update_enabled, cfg.update_interval_days);
     }
     if !cli.norc {
         // ponytail: rc loads only on the REPL path, so `brish -lc 'cmd'`

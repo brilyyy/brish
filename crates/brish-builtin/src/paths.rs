@@ -38,6 +38,11 @@ pub fn index_cache_dir() -> PathBuf {
     config_dir().join("index")
 }
 
+/// `~/.config/brish/.update_check` — mtime-based stamp for update checks.
+pub fn update_stamp_path() -> PathBuf {
+    config_dir().join(".update_check")
+}
+
 /// Create `~/.config/brish` with mode `0700`. Existing dirs get
 /// tightened when group/world-accessible (history/config live here).
 pub fn ensure_config_dir() -> std::io::Result<PathBuf> {

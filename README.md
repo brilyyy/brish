@@ -117,13 +117,34 @@ No compiler, no crate to publish, no ABI to track. See
 | Document | What's in it |
 |---|---|
 | [`docs/POSIX.md`](docs/POSIX.md) | Conformance corpus, documented deviations, coverage + latency numbers |
-| [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | Every `config.toml` key, env var, and file |
+| [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | Every `config.toml` key, env var, and file (including `[update]`) |
 | [`docs/PLUGINS.md`](docs/PLUGINS.md) | Plugin authoring and the plugin store |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | Trust boundaries and hardening ceilings |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Crate map and the dependency rule |
 | [`docs/PLUGIN-WASM.md`](docs/PLUGIN-WASM.md) | Why WASM plugins are deferred |
 | [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) | Dev gates every change must pass |
 | [`qa/report.md`](qa/report.md) | Differential QA against `dash`/`bash` on real Debian scripts |
+
+### Update check (oh-my-zsh style)
+
+On interactive startup, briSH can check GitHub Releases for a newer
+version (default every 13 days, configurable via `[update]` in
+`config.toml`). If a newer release exists, it prints a notice and
+prompts `Y/n` to download and apply the update atomically:
+
+```console
+briSH 0.3.0 is available (you have 0.2.0).
+Would you like to update now? [Y/n]
+```
+
+Manual update anytime:
+
+```sh
+brish --self-update
+```
+
+See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md#update-check) for
+all options.
 
 <p align="center">
   <img src="assets/mascot-logo.png" alt="briSH mascot" width="160">

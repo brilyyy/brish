@@ -63,6 +63,10 @@ table = "auto"             # aligned plugin/theme/jobs lists
 
 [store]
 index = "https://github.com/brilyyy/brish"   # plugin index repo
+
+[update]
+enabled = true               # check for updates on startup (default true)
+interval_days = 13           # how often to check (default 13, oh-my-zsh default)
 ```
 
 ## Right and transient prompts
@@ -237,3 +241,46 @@ a restart.
 `HISTCONTROL=ignoredups` is always on (consecutive dup suppression);
 `erasedups`/`ignoreboth` remove older copies of a repeated line;
 `ignorespace` keeps lines that start with a space out of history.
+
+## Update check
+
+`[update]` controls the oh-my-zsh-style version check on interactive startup.
+
+| Key | Values | Default |
+|---|---|---|
+| `enabled` | bool — check for newer release on GitHub | `true` |
+| `interval_days` | u64 — days between checks | `13` |
+
+When enabled and the check interval has elapsed (tracked by
+`~/.config/brish/.update_check` mtime), briSH performs a synchronous
+check (max 3 s timeout) against GitHub Releases. If a newer version is
+found, it prints a notice and prompts:
+
+```console
+briSH 0.3.0 is available (you have 0.2.0).
+Would you like to update now? [Y/n]
+```
+
+- **Y / Enter** — downloads the prebuilt binary for your platform,
+  verifies its sha256 (fail-closed), atomically replaces the current
+  executable, and tells you to restart the shell.
+- **n / any other key** — skips the update, reminds you to run
+  `brish --self-update` later.
+
+The stamp file is touched after a successful network check regardless
+of outcome, so the prompt appears at most once per `interval_days`.
+Network failures (offline, timeout, etc.) leave the stamp untouched,
+so the check retries on the next startup.
+
+To disable entirely:
+
+```toml
+[update]
+enabled = false
+```
+
+Manual update anytime:
+
+```sh
+brish --self-update
+```

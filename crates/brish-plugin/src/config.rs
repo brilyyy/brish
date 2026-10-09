@@ -27,6 +27,7 @@ pub struct ConfigFile {
     pub hooks: Option<HooksSection>,
     pub engine: Option<EngineSection>,
     pub completion: Option<CompletionSection>,
+    pub update: Option<UpdateSection>,
 }
 
 /// `[completion]` — how Tab matches candidates.
@@ -39,6 +40,16 @@ pub struct CompletionSection {
     pub sort: Option<bool>,
     /// Also match the typed text against each candidate's description.
     pub match_description: Option<bool>,
+}
+
+/// `[update]` — auto-update check on startup (oh-my-zsh style).
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+pub struct UpdateSection {
+    /// Enable automatic update check (default true).
+    pub enabled: Option<bool>,
+    /// Check interval in days (default 13, oh-my-zsh default).
+    pub interval_days: Option<u64>,
 }
 
 /// `[hooks]` — shell-level hooks the engine runs.
@@ -168,6 +179,10 @@ pub struct Config {
     pub completion_match_description: Option<bool>,
     /// `[engine] cmd_duration_mode`: "wall" (default) or "cpu".
     pub cmd_duration_mode: CmdDurationMode,
+    /// `[update] enabled`: check for updates on startup (default true).
+    pub update_enabled: bool,
+    /// `[update] interval_days`: check interval (default 13).
+    pub update_interval_days: u64,
     enabled: Option<Vec<String>>,
     disabled: Option<Vec<String>>,
 }
@@ -192,6 +207,8 @@ impl Default for Config {
             completion_sort: None,
             completion_match_description: None,
             cmd_duration_mode: CmdDurationMode::default(),
+            update_enabled: true,
+            update_interval_days: 13,
             enabled: None,
             disabled: None,
         }
@@ -343,6 +360,8 @@ pub fn load_from(path: &Path, known: &[&str]) -> Config {
         completion_sort: file.completion.as_ref().and_then(|c| c.sort),
         completion_match_description: file.completion.as_ref().and_then(|c| c.match_description),
         cmd_duration_mode,
+        update_enabled: file.update.as_ref().and_then(|u| u.enabled).unwrap_or(true),
+        update_interval_days: file.update.as_ref().and_then(|u| u.interval_days).unwrap_or(13),
         enabled,
         disabled,
     };
