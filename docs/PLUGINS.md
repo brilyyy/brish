@@ -152,6 +152,13 @@ pub trait Theme: Send + Sync {
     fn name(&self) -> &str;
     /// Full left-prompt text; segments are ordered by registration.
     fn render(&self, status: i32, cwd: &Path, segments: &[&dyn PromptSegment]) -> String;
+    /// Optional right-prompt template. When `Some`, this template is
+    /// expanded with the same tokens as the main prompt.
+    fn right_template(&self) -> Option<&str> { None }
+    /// Optional transient prompt template (shown after a command runs).
+    fn transient_template(&self) -> Option<&str> { None }
+    /// Optional per-segment palette for powerline themes.
+    fn palette(&self) -> Option<&BTreeMap<String, String>> { None }
 }
 ```
 
@@ -190,6 +197,9 @@ needed:
 [theme]
 name = "mytheme"
 prompt = "{fg:bright-magenta}{arrow} {fg:cyan}{cwd}{reset} {segments}"
+prompt_right = "{fg:bright-black}{time} "
+prompt_transient = "{arrow} "
+palette = { git = "11", venv = "5" }
 ```
 
 Template tokens (expanded by `expand_template()` in
@@ -197,16 +207,88 @@ Template tokens (expanded by `expand_template()` in
 
 | Token | Expansion |
 |---|---|
-| `{arrow}` | `➜` — green on status 0, red otherwise (ANSI when colors on) |
+| `{arrow}` | `❯` green on status 0, red otherwise (ANSI when colors on) |
 | `{cwd}` | cwd basename |
-| `{segments}` | space-joined rendered `PromptSegment`s |
-| `{reset}` | `\x1b[0m` when colors on, empty otherwise |
-| `{fg:SPEC}` / `{bg:SPEC}` | ANSI color: `black`/`red`/`green`/`yellow`/`blue`/`magenta`/`cyan`/`white`, optional `bright-` prefix, or `#rrggbb` |
+| `{path}` | full cwd with `~` substitution |
+| `{path:short}` | shortened cwd (last 2 components full, earlier → first char) |
+| `{home}` | `$HOME` |
+| `{user}` | `$USER` or "user" |
+| `{host}` | `$HOSTNAME` or "localhost" |
+| `{context}` | `user@host` when SSH (`$SSH_CONNECTION`/`$SSH_TTY` set), else empty |
+| `{time}` | local time HH:MM:SS (respects `$TZ`) |
+| `{time:short}` | local time HH:MM |
+| `{status}` | exit code if ≠0, else empty |
+| `{status:all}` | exit code always |
+| `{version}` | briSH version |
+| `{segments}` | space-joined colored segment output |
+| `{segments:plain}` | space-joined plain (SGR-stripped) segment output |
+| `{segment:name}` | plain text of segment with `name()` |
+| `{segmentc:name}` | colored text of segment with `name()` |
+| `{cmd_duration}` | formatted command duration (wall/cpu per `[engine] cmd_duration_mode`) |
+| `{reset}` | ANSI reset (empty under `NO_COLOR`); clears separator state |
+| `{fg:SPEC}`/`{bg:SPEC}` | ANSI SGR: `black…white`, `bright-` prefix, a 256-colour index (`11`), or `#rrggbb`; `{bg:}` updates separator state |
+| `{sep}` | powerline separator `` (fg = last background set, bg = default) |
+| `{sep:NEXT}` | separator into an explicit next colour (`{sep:11}`) |
+| `{sepp:NAME}` | separator into a `[theme.palette]` entry (`{sepp:git}`) |
+| `{bgp:NAME}` / `{fgp:NAME}` | background/foreground from the palette; `{bgp:}` also feeds `{sep}` |
+
+Braces do not nest, so a palette key cannot be interpolated into
+`{bg:…}` — `{bgp:NAME}` is the form a palette-driven theme uses.
+
+**Conditionals:**
+```
+{if:TOKEN}BODY{endif}
+{if:TOKEN}BODY{else}ELSE{endif}
+```
+`TOKEN` is true iff its expansion is non-empty. Nesting supported (max depth 8);
+literal text in a skipped branch is dropped, not just tokens.
 
 Unknown tokens and unmatched `{` pass through literally.
 `NO_COLOR` collapses every color token to empty.
 
-### Selecting a theme
+### The `PromptSegment` trait
+
+```rust
+pub trait PromptSegment: Send + Sync {
+    /// Unique segment name for template tokens (`{segment:name}`).
+    /// Defaults to the type name (demangled).
+    fn name(&self) -> &str { ... }
+
+    /// Plain (SGR-stripped) text for powerline-style themes.
+    fn render_plain(&self, status: i32, cwd: &Path) -> Option<String> { ... }
+
+    /// Colored text for traditional themes.
+    fn render_colored(&self, status: i32, cwd: &Path) -> Option<String> { ... }
+
+    /// Default: delegates to `render_colored`.
+    fn render(&self, status: i32, cwd: &Path) -> Option<String> { ... }
+}
+```
+
+Built-in segments: `git`, `venv`, `aws`, `kubectx`, `docker` — all implement
+`name()`, `render_colored()`, and `render_plain()`.
+
+### The `Theme` trait
+
+```rust
+pub trait Theme: Send + Sync {
+    fn name(&self) -> &str;
+    fn render(&self, status: i32, cwd: &Path, segments: &[&dyn PromptSegment]) -> String;
+    fn right_template(&self) -> Option<&str> { None }
+    fn transient_template(&self) -> Option<&str> { None }
+    fn palette(&self) -> Option<&BTreeMap<String, String>> { None }
+}
+```
+
+Register from `Plugin::install`:
+```rust
+impl Plugin for MyPlugin {
+    fn name(&self) -> &str { "my-plugin" }
+    fn install(&self, reg: &mut Registry) {
+        reg.themes.push(Box::new(MyTheme));
+    }
+}
+```
 
 Precedence (highest first): `PS2` env while a continuation is
 pending, `PS1` env (literal string), else the active theme looked

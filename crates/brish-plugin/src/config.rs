@@ -6,6 +6,7 @@
 //! defaults (plan P3).
 
 use crate::builtin;
+use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::path::Path;
 
@@ -24,6 +25,7 @@ pub struct ConfigFile {
     pub errors: Option<ErrorsSection>,
     pub not_found: Option<NotFoundSection>,
     pub hooks: Option<HooksSection>,
+    pub engine: Option<EngineSection>,
     pub completion: Option<CompletionSection>,
 }
 
@@ -48,6 +50,15 @@ pub struct HooksSection {
     /// the answer (nushell's `command_not_found` hook, Arch/NixOS
     /// `command-not-found` style).
     pub command_not_found: Option<String>,
+}
+
+/// `[engine]` — engine behavior knobs.
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+pub struct EngineSection {
+    /// Command duration mode: `wall` (default) or `cpu`.
+    /// Affects the `{cmd_duration}` token.
+    pub cmd_duration_mode: Option<String>,
 }
 
 /// `[errors]` — error report verbosity.
@@ -94,6 +105,10 @@ pub struct ThemeSection {
     /// so a long prompt does not scroll away with the output. Absent
     /// or empty = no transient prompt (behaviour unchanged).
     pub prompt_transient: Option<String>,
+    /// Per-segment palette for powerline themes: segment_name = "bg_color".
+    /// Color is a 256-color index (0-255) or named color.
+    /// Example: { git = "11", venv = "5", aws = "208" }
+    pub palette: Option<BTreeMap<String, String>>,
 }
 
 /// Prompt chrome (indicators + completion description style).
@@ -131,6 +146,8 @@ pub struct Config {
     pub theme_prompt_right: Option<String>,
     /// `[theme] prompt_transient` template, if any.
     pub theme_prompt_transient: Option<String>,
+    /// `[theme] palette` map: segment_name -> bg_color (256-color index or name).
+    pub theme_palette: Option<BTreeMap<String, String>>,
     /// Prompt chrome with defaults applied.
     pub prompt: PromptChrome,
     /// `[highlight] dynamic` (zsh-patina-style): default true.
@@ -149,9 +166,13 @@ pub struct Config {
     pub completion_sort: Option<bool>,
     /// `[completion] match_description`, if any.
     pub completion_match_description: Option<bool>,
+    /// `[engine] cmd_duration_mode`: "wall" (default) or "cpu".
+    pub cmd_duration_mode: CmdDurationMode,
     enabled: Option<Vec<String>>,
     disabled: Option<Vec<String>>,
 }
+
+use brish_plugin_api::CmdDurationMode;
 
 impl Default for Config {
     fn default() -> Self {
@@ -160,6 +181,7 @@ impl Default for Config {
             theme_prompt: None,
             theme_prompt_right: None,
             theme_prompt_transient: None,
+            theme_palette: None,
             prompt: PromptChrome::default(),
             dynamic_highlight: true,
             error_style: None,
@@ -169,6 +191,7 @@ impl Default for Config {
             completion_algorithm: None,
             completion_sort: None,
             completion_match_description: None,
+            cmd_duration_mode: CmdDurationMode::default(),
             enabled: None,
             disabled: None,
         }
@@ -261,9 +284,10 @@ pub fn load_from(path: &Path, known: &[&str]) -> Config {
         }
     };
     let theme = file.theme.as_ref().and_then(|t| t.name.clone());
-    let (theme_prompt, theme_prompt_right, theme_prompt_transient) = match file.theme {
-        Some(t) => (t.prompt, t.prompt_right, t.prompt_transient),
-        None => (None, None, None),
+    let (theme_prompt, theme_prompt_right, theme_prompt_transient, theme_palette) = match file.theme
+    {
+        Some(t) => (t.prompt, t.prompt_right, t.prompt_transient, t.palette),
+        None => (None, None, None, None),
     };
     let mut prompt = PromptChrome::default();
     if let Some(p) = file.prompt {
@@ -294,11 +318,18 @@ pub fn load_from(path: &Path, known: &[&str]) -> Config {
         Some(n) => (n.style, n.suggest.unwrap_or(true)),
         None => (None, true),
     };
+    let cmd_duration_mode = file
+        .engine
+        .as_ref()
+        .and_then(|e| e.cmd_duration_mode.as_deref())
+        .map(CmdDurationMode::from_str)
+        .unwrap_or_default();
     let cfg = Config {
         theme,
         theme_prompt,
         theme_prompt_right,
         theme_prompt_transient,
+        theme_palette,
         prompt,
         dynamic_highlight,
         error_style: file.errors.and_then(|e| e.style),
@@ -311,6 +342,7 @@ pub fn load_from(path: &Path, known: &[&str]) -> Config {
         completion_algorithm: file.completion.as_ref().and_then(|c| c.algorithm.clone()),
         completion_sort: file.completion.as_ref().and_then(|c| c.sort),
         completion_match_description: file.completion.as_ref().and_then(|c| c.match_description),
+        cmd_duration_mode,
         enabled,
         disabled,
     };

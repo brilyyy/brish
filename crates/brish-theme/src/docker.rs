@@ -27,7 +27,11 @@ impl DockerPrompt {
 }
 
 impl PromptSegment for DockerPrompt {
-    fn render(&self, _status: i32, cwd: &Path) -> Option<String> {
+    fn name(&self) -> &str {
+        "docker"
+    }
+
+    fn render_colored(&self, _status: i32, cwd: &Path) -> Option<String> {
         self.ttl.get(cwd, || self.render_now())
     }
 }

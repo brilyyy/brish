@@ -7,6 +7,37 @@ this file used to grow one commit at a time (plus a `## 1.0.0 — stable`
 header that never shipped). Batches are in commit order; the entries
 themselves are unchanged.
 
+### Theme engine: powerline-grade prompts from config
+
+#### Added
+- Powerlevel10k-style prompts with no compiled plugin. The template engine
+  gains `{path}`, `{path:short}`, `{home}`, `{user}`, `{host}`, `{context}`
+  (non-empty only over SSH), `{time}`/`{time:short}`, `{status}`/
+  `{status:all}`, `{version}`, `{cmd_duration}`, `{segments:plain}`,
+  per-segment `{segment:NAME}` / `{segmentc:NAME}`, conditionals
+  `{if:TOKEN}…{else}…{endif}` (depth 8), powerline separators `{sep}` /
+  `{sep:NEXT}` / `{sepp:NAME}`, and palette lookups `{bgp:NAME}` /
+  `{fgp:NAME}`. `{fg:}`/`{bg:}` now take a 256-colour index as well as a
+  name or `#rrggbb`.
+- `[theme] palette` — per-segment background colours keyed by segment
+  name, plus `prompt_right` / `prompt_transient` in a store plugin's
+  `[theme]`, so a whole theme is one `plugin.toml`.
+  `examples/plugins/powerline/` is a complete two-line theme built this
+  way and installable with `plugin add`.
+- `PromptSegment::name()` (used by `{segment:…}`) and
+  `Theme::{right_template, transient_template, palette}`, all with
+  defaults, so existing plugins compile unchanged.
+- `{cmd_duration}` plus `[engine] cmd_duration_mode` (`wall` | `cpu`).
+
+#### Changed
+- `PromptSegment` splits rendering into `render_plain` (SGR-stripped, for
+  powerline blocks) and `render_colored`, with `render` keeping the old
+  behaviour as the default. Built-in segments implement the new pair;
+  third-party segments can stay on `render`.
+- `CmdCtx` carries `duration_ms` and `duration_mode`.
+- `brish-platform` gains `chrono` for local time (`TZ`-aware), which is
+  why `{time}` is local rather than UTC.
+
 ### Hardening close-out, CI, and login shell
 
 #### Added

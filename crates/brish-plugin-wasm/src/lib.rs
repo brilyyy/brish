@@ -180,7 +180,11 @@ fn check_abi(store: &Store<()>, instance: &Instance) -> Result<(Memory, AllocFn,
 }
 
 impl PromptSegment for WasmSegment {
-    fn render(&self, status: i32, cwd: &Path) -> Option<String> {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn render_colored(&self, status: i32, cwd: &Path) -> Option<String> {
         let cwd = cwd.to_string_lossy();
         let mut guard = self.inner.lock().ok()?;
         let Loaded {
@@ -242,6 +246,11 @@ impl PromptSegment for WasmSegment {
         // A segment is prompt text, not a control channel: never let a
         // guest inject escapes or newlines into the prompt line.
         Some(sanitize(&String::from_utf8_lossy(bytes)))
+    }
+
+    fn render_plain(&self, status: i32, cwd: &Path) -> Option<String> {
+        self.render_colored(status, cwd)
+            .map(brish_plugin_api::strip_sgr)
     }
 }
 

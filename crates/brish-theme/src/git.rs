@@ -157,7 +157,11 @@ impl GitPrompt {
 }
 
 impl PromptSegment for GitPrompt {
-    fn render(&self, _status: i32, cwd: &Path) -> Option<String> {
+    fn name(&self) -> &str {
+        "git"
+    }
+
+    fn render_colored(&self, _status: i32, cwd: &Path) -> Option<String> {
         self.summary(cwd)
     }
 }

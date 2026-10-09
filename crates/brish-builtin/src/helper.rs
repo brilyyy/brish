@@ -117,7 +117,11 @@ impl HelperSegment {
 }
 
 impl PromptSegment for HelperSegment {
-    fn render(&self, status: i32, cwd: &Path) -> Option<String> {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn render_colored(&self, status: i32, cwd: &Path) -> Option<String> {
         if self.cache_secs > 0 {
             let guard = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             if let Some((c, s, at, text)) = guard.as_ref()
@@ -172,6 +176,11 @@ impl PromptSegment for HelperSegment {
             *guard = Some((cwd.to_path_buf(), status, Instant::now(), text.clone()));
         }
         Some(text)
+    }
+
+    fn render_plain(&self, status: i32, cwd: &Path) -> Option<String> {
+        self.render_colored(status, cwd)
+            .map(brish_plugin_api::strip_sgr)
     }
 }
 
@@ -390,6 +399,7 @@ pub fn keymap_pairs(cmd: &[String], dir: &Path, timeout_ms: u64) -> Vec<(String,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brish_plugin_api::CmdDurationMode;
 
     fn write_script(dir: &Path, name: &str, body: &str) -> Vec<String> {
         let path = dir.join(name);
@@ -523,6 +533,8 @@ mod tests {
             argv,
             status_before: 0,
             cwd,
+            duration_ms: 0,
+            duration_mode: CmdDurationMode::default(),
         }
     }
 

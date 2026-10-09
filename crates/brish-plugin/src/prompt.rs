@@ -11,7 +11,8 @@
 //! $                       # plain / fallback
 //! ```
 
-use brish_plugin_api::{PromptSegment, Registry, color_enabled};
+use brish_builtin::store::expand_template;
+use brish_plugin_api::{CmdDurationMode, PromptSegment, Registry, color_enabled};
 use reedline::{
     Prompt, PromptEditMode, PromptHelixMode, PromptHistorySearch, PromptHistorySearchStatus,
     PromptViMode,
@@ -24,12 +25,16 @@ use crate::config::PromptChrome;
 /// Render the theme named `theme` with the registry's segments —
 /// or the `[theme] prompt` template when present (NOTES.md 10).
 /// Pure — env reads happen in [`BrishPrompt::new`].
+#[allow(clippy::too_many_arguments)]
 fn theme_text(
     status: i32,
     cwd: &Path,
     registry: &Registry,
     theme: &str,
     template: Option<&str>,
+    palette: Option<&std::collections::BTreeMap<String, String>>,
+    duration_ms: u128,
+    duration_mode: CmdDurationMode,
 ) -> String {
     let segs: Vec<&dyn PromptSegment> = registry
         .prompt_segments
@@ -37,7 +42,16 @@ fn theme_text(
         .map(|s| s.as_ref())
         .collect();
     if let Some(tmpl) = template {
-        return brish_builtin::store::expand_template(tmpl, status, cwd, &segs, color_enabled());
+        return expand_template(
+            tmpl,
+            status,
+            cwd,
+            &segs,
+            color_enabled(),
+            palette,
+            duration_ms,
+            duration_mode,
+        );
     }
     registry
         .themes
@@ -59,6 +73,9 @@ fn left_text(
     theme: &str,
     template: Option<&str>,
     chrome: &PromptChrome,
+    palette: Option<&std::collections::BTreeMap<String, String>>,
+    duration_ms: u128,
+    duration_mode: CmdDurationMode,
 ) -> String {
     if continuation {
         return ps2
@@ -68,7 +85,16 @@ fn left_text(
     if let Some(ps1) = ps1 {
         return ps1.to_string();
     }
-    theme_text(status, cwd, registry, theme, template)
+    theme_text(
+        status,
+        cwd,
+        registry,
+        theme,
+        template,
+        palette,
+        duration_ms,
+        duration_mode,
+    )
 }
 
 /// Active-theme prompt for one `read_line` call.
@@ -82,6 +108,7 @@ impl BrishPrompt {
     /// `continuation` selects PS2 (a multi-line buffer is pending).
     /// `right_template` renders the right-hand prompt (`[theme]
     /// prompt_right`); `None`/empty leaves it blank.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         status: i32,
         continuation: bool,
@@ -90,13 +117,27 @@ impl BrishPrompt {
         chrome: &PromptChrome,
         template: Option<&str>,
         right_template: Option<&str>,
+        palette: Option<&std::collections::BTreeMap<String, String>>,
+        duration_ms: u128,
+        duration_mode: CmdDurationMode,
     ) -> Self {
         let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
         let ps1 = std::env::var("PS1").ok();
         let ps2 = std::env::var("PS2").ok();
         let right = right_template
             .filter(|t| !t.is_empty())
-            .map(|t| theme_text(status, &cwd, registry, theme, Some(t)))
+            .map(|t| {
+                theme_text(
+                    status,
+                    &cwd,
+                    registry,
+                    theme,
+                    Some(t),
+                    palette,
+                    duration_ms,
+                    duration_mode,
+                )
+            })
             .unwrap_or_default();
         Self {
             left: left_text(
@@ -109,6 +150,9 @@ impl BrishPrompt {
                 theme,
                 template,
                 chrome,
+                palette,
+                duration_ms,
+                duration_mode,
             ),
             right,
             chrome: chrome.clone(),
@@ -199,16 +243,61 @@ mod tests {
     fn active_theme_renders_from_registry() {
         let reg = registry_with("t1");
         let cwd = Path::new("/x");
-        assert_eq!(theme_text(0, cwd, &reg, "t1", None), "t1 ");
-        assert_eq!(theme_text(1, cwd, &reg, "t1", None), "t1 ");
+        assert_eq!(
+            theme_text(
+                0,
+                cwd,
+                &reg,
+                "t1",
+                None,
+                None,
+                0,
+                CmdDurationMode::default(),
+            ),
+            "t1 "
+        );
+        assert_eq!(
+            theme_text(
+                1,
+                cwd,
+                &reg,
+                "t1",
+                None,
+                None,
+                0,
+                CmdDurationMode::default(),
+            ),
+            "t1 "
+        );
     }
 
     #[test]
     fn unknown_theme_falls_back_to_core_prompt() {
         let reg = registry_with("t1");
-        assert_eq!(theme_text(0, Path::new("/x"), &reg, "nope", None), "$ ");
         assert_eq!(
-            theme_text(0, Path::new("/x"), &Registry::default(), "t1", None),
+            theme_text(
+                0,
+                Path::new("/x"),
+                &reg,
+                "nope",
+                None,
+                None,
+                0,
+                CmdDurationMode::default(),
+            ),
+            "$ "
+        );
+        assert_eq!(
+            theme_text(
+                0,
+                Path::new("/x"),
+                &Registry::default(),
+                "t1",
+                None,
+                None,
+                0,
+                CmdDurationMode::default(),
+            ),
             "$ "
         );
     }
@@ -218,11 +307,44 @@ mod tests {
         let reg = registry_with("t1");
         let chrome = PromptChrome::default();
         let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
-        let none = BrishPrompt::new(0, false, &reg, "t1", &chrome, None, None);
+        let none = BrishPrompt::new(
+            0,
+            false,
+            &reg,
+            "t1",
+            &chrome,
+            None,
+            None,
+            None,
+            0,
+            CmdDurationMode::default(),
+        );
         assert_eq!(none.render_prompt_right(), "");
-        let empty = BrishPrompt::new(0, false, &reg, "t1", &chrome, None, Some(""));
+        let empty = BrishPrompt::new(
+            0,
+            false,
+            &reg,
+            "t1",
+            &chrome,
+            None,
+            Some(""),
+            None,
+            0,
+            CmdDurationMode::default(),
+        );
         assert_eq!(empty.render_prompt_right(), "");
-        let some = BrishPrompt::new(0, false, &reg, "t1", &chrome, None, Some("[{cwd}]"));
+        let some = BrishPrompt::new(
+            0,
+            false,
+            &reg,
+            "t1",
+            &chrome,
+            None,
+            Some("[{cwd}]"),
+            None,
+            0,
+            CmdDurationMode::default(),
+        );
         let right = some.render_prompt_right().to_string();
         assert!(right.starts_with('[') && right.ends_with(']'), "{right}");
         assert_eq!(
@@ -238,17 +360,56 @@ mod tests {
         let chrome = PromptChrome::default();
         // theme when nothing overrides
         assert_eq!(
-            left_text(0, cwd, None, None, false, &reg, "t1", None, &chrome),
+            left_text(
+                0,
+                cwd,
+                None,
+                None,
+                false,
+                &reg,
+                "t1",
+                None,
+                &chrome,
+                None,
+                0,
+                CmdDurationMode::default(),
+            ),
             "t1 "
         );
         // PS1 literal wins
         assert_eq!(
-            left_text(0, cwd, Some("$ "), None, false, &reg, "t1", None, &chrome),
+            left_text(
+                0,
+                cwd,
+                Some("$ "),
+                None,
+                false,
+                &reg,
+                "t1",
+                None,
+                &chrome,
+                None,
+                0,
+                CmdDurationMode::default(),
+            ),
             "$ "
         );
         // continuation: PS2 or chrome.multiline, theme/PS1 irrelevant
         assert_eq!(
-            left_text(0, cwd, Some("$ "), None, true, &reg, "t1", None, &chrome),
+            left_text(
+                0,
+                cwd,
+                Some("$ "),
+                None,
+                true,
+                &reg,
+                "t1",
+                None,
+                &chrome,
+                None,
+                0,
+                CmdDurationMode::default(),
+            ),
             "::: "
         );
         assert_eq!(
@@ -261,7 +422,10 @@ mod tests {
                 &reg,
                 "t1",
                 None,
-                &chrome
+                &chrome,
+                None,
+                0,
+                CmdDurationMode::default(),
             ),
             ".. "
         );
@@ -271,7 +435,20 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            left_text(0, cwd, None, None, true, &reg, "t1", None, &c),
+            left_text(
+                0,
+                cwd,
+                None,
+                None,
+                true,
+                &reg,
+                "t1",
+                None,
+                &c,
+                None,
+                0,
+                CmdDurationMode::default(),
+            ),
             ".. "
         );
     }
@@ -292,7 +469,10 @@ mod tests {
                 &reg,
                 "t1",
                 Some("{cwd}\n> "),
-                &chrome
+                &chrome,
+                None,
+                0,
+                CmdDurationMode::default(),
             ),
             "x\n> "
         );
@@ -307,7 +487,10 @@ mod tests {
                 &reg,
                 "t1",
                 Some("{cwd}"),
-                &chrome
+                &chrome,
+                None,
+                0,
+                CmdDurationMode::default(),
             ),
             "$ "
         );
