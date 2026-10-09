@@ -1,4 +1,4 @@
-<img alt="briSH — a memory-safe POSIX shell" src="assets/banner.png" width="100%">
+<img alt="briSH — a memory-safe POSIX shell" src="assets/banner.webp" width="100%">
 
 ![license](https://img.shields.io/badge/license-MIT-1e66f5?style=flat-square)
 ![rust](https://img.shields.io/badge/rust-2024%20edition-179299?style=flat-square)
@@ -147,7 +147,7 @@ See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md#update-check) for
 all options.
 
 <p align="center">
-  <img src="assets/logo.png" alt="briSH mascot" width="160">
+  <img src="assets/logo.webp" alt="briSH mascot" width="160">
 </p>
 
 ## Build from source
