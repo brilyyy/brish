@@ -93,7 +93,7 @@ dependencies = [
 
 [[package]]
 name = "brish"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brish-builtin",
  "brish-core",
@@ -115,7 +115,7 @@ dependencies = [
 
 [[package]]
 name = "brish-builtin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brish-core",
  "brish-platform",
@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "brish-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brish-platform",
  "brish-words",
@@ -142,7 +142,7 @@ dependencies = [
 
 [[package]]
 name = "brish-engine"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brish-builtin",
  "brish-core",
@@ -155,7 +155,7 @@ dependencies = [
 
 [[package]]
 name = "brish-platform"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "nix",
@@ -165,7 +165,7 @@ dependencies = [
 
 [[package]]
 name = "brish-plugin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brish-builtin",
  "brish-core",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "brish-plugin-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "reedline",
  "tempfile",
@@ -190,7 +190,7 @@ dependencies = [
 
 [[package]]
 name = "brish-plugin-wasm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brish-builtin",
  "brish-plugin-api",
@@ -201,7 +201,7 @@ dependencies = [
 
 [[package]]
 name = "brish-theme"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brish-plugin-api",
  "tempfile",
@@ -209,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "brish-words"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brish-platform",
 ]

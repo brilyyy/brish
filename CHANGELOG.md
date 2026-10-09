@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 — unreleased
+## 0.3.0 — unreleased
 
 ### Added
 - **Update check + self-update (oh-my-zsh style)**. On interactive startup,
