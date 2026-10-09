@@ -166,6 +166,10 @@ pub struct Engine {
     hooks: Arc<Registry>,
     /// True inside forked children: plugin hooks run in the parent only.
     in_child: bool,
+    /// ERR trap just fired for a function body; suppress the caller's
+    /// check_errexit to avoid double-fire (bash semantics: ERR fires
+    /// for the failing simple command, not for the function call wrapper).
+    suppress_err: bool,
     /// Active theme name (`theme` builtin switches it at runtime).
     pub theme: String,
     /// `[hooks] command_not_found` command line (binary passes it from
@@ -382,6 +386,7 @@ fn run_subst(src: &str, env: &Env, funcs: &HashMap<String, Cmd>) -> Result<(Stri
             cs_seen: false,
             hooks: Arc::new(Registry::default()),
             in_child: true,
+            suppress_err: false,
             theme: DEFAULT_THEME.to_string(),
             not_found_hook: None,
             not_found_style: NotFoundStyle::default(),
@@ -496,6 +501,7 @@ impl Engine {
             cs_seen: false,
             hooks: Arc::new(Registry::default()),
             in_child: false,
+            suppress_err: false,
             theme: DEFAULT_THEME.to_string(),
             not_found_hook: None,
             not_found_style: NotFoundStyle::default(),
@@ -595,7 +601,7 @@ impl Engine {
     /// asynchronous notification). Interactive only. Drains pending
     /// signal traps first so an idle shell still runs `trap ... TERM`.
     pub fn job_notifications(&mut self) -> R<Vec<String>> {
-        self.drain_traps()?;
+        _ = self.drain_traps()?;
         self.reap_bg();
         let mut out = Vec::new();
         for (n, j) in self.bg.iter_mut().enumerate() {
@@ -619,16 +625,19 @@ impl Engine {
     /// and run their commands. Flags swap first so a trap that raises
     /// the same signal cannot self-requeue. Parent only.
     ///
+    /// Returns the mask of signals whose traps were run (for mid-wait
+    /// delivery to the child).
+    ///
     /// ponytail: signal traps fire at command/prompt boundaries — a
     /// foreground `sleep 100` is not interrupted mid-wait. Ceiling:
     /// self-pipe + EINTR-aware wait for mid-command delivery.
-    pub fn drain_traps(&mut self) -> R<()> {
+    pub fn drain_traps(&mut self) -> R<u32> {
         if self.in_child {
-            return Ok(());
+            return Ok(0);
         }
         let pending = brish_platform::peek_pending_traps();
         if pending == 0 {
-            return Ok(());
+            return Ok(0);
         }
         // Clear + run only the bits this shell has a trap for — a flag
         // set by our self-signal must not be swallowed by a parallel
@@ -650,13 +659,13 @@ impl Engine {
             }
         }
         if run_mask == 0 {
-            return Ok(());
+            return Ok(0);
         }
         brish_platform::clear_pending_traps(run_mask);
         for cmd in cmds {
             self.run_trap_body(&cmd)?;
         }
-        Ok(())
+        Ok(run_mask)
     }
 
     /// Run one trap/`EXIT` action body. Parse errors warn and are
@@ -700,6 +709,34 @@ impl Engine {
         }
     }
 
+    /// Run the `ERR` trap after a failed pipeline. Synthetic: no
+    /// signal, the engine fires it. Mirrors bash: fires wherever
+    /// `errexit` *would* exit (errexit context, not negated), but
+    /// regardless of whether `errexit` is set. `$?` is preserved
+    /// across the body unless the body itself fails — a trap that
+    /// runs `true` must not launder the failing status.
+    ///
+    /// Subshells/functions/command substitution inherit the ERR
+    /// trap only when `errtrace` is set. `in_child` covers subshells,
+    /// pipeline stages, command substitution and background jobs;
+    /// `depth > 0` covers functions (same process, no fork).
+    fn run_err_trap(&mut self) -> R<()> {
+        if (self.in_child || self.depth > 0) && !self.env.opts.errtrace {
+            return Ok(());
+        }
+        let Some(cmd) = self.env.traps.get("ERR").cloned() else {
+            return Ok(());
+        };
+        let saved = self.env.status;
+        let res = self.run_trap_body(&cmd);
+        // A body that neither exits nor fails keeps the original
+        // `$?`; one that fails reports its own status (bash).
+        if self.env.status == 0 && matches!(res, Ok(())) {
+            self.env.status = saved;
+        }
+        res
+    }
+
     /// Blocking wait that honors pending signal traps *mid-wait*:
     /// EINTR + flags → drain (run trap bodies) → retry. `Exit` from a
     /// trap propagates. This closes the "traps only fire at command
@@ -709,7 +746,20 @@ impl Engine {
         loop {
             match brish_platform::wait_pid(pid) {
                 Ok(c) => return Ok(c),
-                Err(PlatformError::Interrupted) => self.drain_traps()?,
+                Err(PlatformError::Interrupted) => {
+                    let mask = self.drain_traps()?;
+                    // Forward trapped signals to the child so it actually
+                    // dies (bash semantics: trap runs, then child gets signal).
+                    if mask != 0 {
+                        let mut m = mask;
+                        while m != 0 {
+                            if let Some(sig) = brish_platform::signal_from_trap_bit(m & (!m + 1)) {
+                                let _ = brish_platform::send_signal(pid, sig);
+                            }
+                            m &= m - 1; // clear lowest set bit
+                        }
+                    }
+                }
                 Err(e) => return Err(platform_err(e)),
             }
         }
@@ -721,7 +771,18 @@ impl Engine {
         loop {
             match brish_platform::wait_untraced(pid) {
                 Ok(s) => return Ok(s),
-                Err(PlatformError::Interrupted) => self.drain_traps()?,
+                Err(PlatformError::Interrupted) => {
+                    let mask = self.drain_traps()?;
+                    if mask != 0 {
+                        let mut m = mask;
+                        while m != 0 {
+                            if let Some(sig) = brish_platform::signal_from_trap_bit(m & (!m + 1)) {
+                                let _ = brish_platform::send_signal(pid, sig);
+                            }
+                            m &= m - 1;
+                        }
+                    }
+                }
                 Err(e) => return Err(platform_err(e)),
             }
         }
@@ -748,7 +809,7 @@ impl Engine {
             eprintln!("brish[exec]: {}", ao_text(&item.andor));
         }
         self.reap_bg();
-        self.drain_traps()?;
+        _ = self.drain_traps()?;
         self.and_or(&item.andor, errexit_ctx)
     }
 
@@ -805,7 +866,7 @@ impl Engine {
                             self.bg[i].st[k] = Some(c);
                             break;
                         }
-                        Err(PlatformError::Interrupted) => self.drain_traps()?,
+                        Err(PlatformError::Interrupted) => { _ = self.drain_traps()?; }
                         Err(_) => return Ok(None),
                     }
                 }
@@ -1116,8 +1177,18 @@ impl Engine {
     /// errexit: a failing pipeline that is not a `&&`/`||` condition
     /// (and not negated) terminates the shell.
     fn check_errexit(&mut self, ctx: bool, negated: bool) -> R<()> {
-        if ctx && self.env.opts.errexit && self.env.status != 0 && !negated {
-            return Err(Stop::Exit(self.env.status));
+        if ctx && self.env.status != 0 && !negated {
+            // If ERR just fired for a function body, suppress this
+            // check to avoid double-fire (bash: ERR fires for the
+            // failing simple command, not for the function call).
+            if self.suppress_err {
+                self.suppress_err = false;
+            } else {
+                self.run_err_trap()?;
+            }
+            if self.env.opts.errexit {
+                return Err(Stop::Exit(self.env.status));
+            }
         }
         Ok(())
     }
@@ -1605,6 +1676,20 @@ impl Engine {
     /// at all and fell through to the PATH search, so `exec 3>&1` died
     /// with "command not found".
     fn exec_cmd(&mut self, argv: &[String], plan: Plan) -> R<()> {
+        if self.env.opts.restricted {
+            // Bare exec with redirections is not allowed
+            if argv.len() == 1 && !plan.is_empty() {
+                eprintln!("exec: restricted");
+                self.env.status = 1;
+                return Ok(());
+            }
+            // exec cmd replacement is not allowed
+            if argv.len() > 1 {
+                eprintln!("exec: restricted");
+                self.env.status = 1;
+                return Ok(());
+            }
+        }
         if argv.len() == 1 {
             // Redirections only: make them permanent for this shell.
             // `apply_bare` dup2s without the save/restore that
@@ -1778,9 +1863,17 @@ impl Engine {
         match res? {
             Err(Stop::Return(s)) => {
                 self.env.status = s;
+                if s != 0 {
+                    self.suppress_err = true;
+                }
                 Ok(())
             }
-            r => r,
+            r => {
+                if matches!(r, Ok(())) && self.env.status != 0 {
+                    self.suppress_err = true;
+                }
+                r
+            }
         }
     }
 
@@ -1803,6 +1896,11 @@ impl Engine {
             self.env.status = 2;
             return Ok(());
         };
+        if self.env.opts.restricted && path.contains('/') {
+            eprintln!("source: restricted");
+            self.env.status = 1;
+            return Ok(());
+        }
         let src = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {
@@ -1969,6 +2067,11 @@ impl Engine {
 
     fn spawn_external(&mut self, argv: &[String], plan: Plan) -> R<()> {
         let name = &argv[0];
+        if self.env.opts.restricted && name.contains('/') {
+            eprintln!("brish: {name}: restricted");
+            self.env.status = 126;
+            return Ok(());
+        }
         let path: PathBuf = if name.contains('/') {
             PathBuf::from(name)
         } else {
@@ -2124,6 +2227,9 @@ impl Engine {
                 })
             }
             Redir::Output { fd, target } => {
+                if self.env.opts.restricted {
+                    return Ok(Err("restricted: output redirection".to_string()));
+                }
                 let t = self.xvalue(target)?;
                 Ok(match open_out(&t, false, false, self.env.opts.noclobber) {
                     Ok(f) => Ok((*fd, Src::File(f))),
@@ -2131,6 +2237,9 @@ impl Engine {
                 })
             }
             Redir::Append { fd, target } => {
+                if self.env.opts.restricted {
+                    return Ok(Err("restricted: output redirection".to_string()));
+                }
                 let t = self.xvalue(target)?;
                 Ok(match open_out(&t, true, false, self.env.opts.noclobber) {
                     Ok(f) => Ok((*fd, Src::File(f))),
@@ -2138,6 +2247,9 @@ impl Engine {
                 })
             }
             Redir::Clobber { fd, target } => {
+                if self.env.opts.restricted {
+                    return Ok(Err("restricted: output redirection".to_string()));
+                }
                 let t = self.xvalue(target)?;
                 Ok(match open_out(&t, false, true, self.env.opts.noclobber) {
                     Ok(f) => Ok((*fd, Src::File(f))),
@@ -2218,7 +2330,7 @@ impl Engine {
         // Traps signaled while expansion waits (cmd-subst) run now
         // that the Engine borrow is free — then expansion status wins.
         if brish_platform::peek_pending_traps() != 0 {
-            self.drain_traps()?;
+            _ = self.drain_traps()?;
         }
         if let Some(c) = st {
             self.env.status = c;
@@ -3437,4 +3549,25 @@ mod tests {
         assert_eq!(run_src(&mut e, "true"), 0);
         assert!(marker.exists(), "no trap entry → no body");
     }
+
+    #[test]
+    fn err_trap_fires_on_failure_and_respects_context() {
+        let mut e = Engine::new();
+        // set -e
+        let prog = brish_core::parser::parse("set -e").unwrap();
+        let result = e.run(&prog);
+        assert!(
+            matches!(result, Ok(Outcome::Status(0))),
+            "set -e failed: {result:?}"
+        );
+        assert!(e.env.opts.errexit, "errexit not set after set -e");
+        // false terminates the shell under errexit
+        let prog = brish_core::parser::parse("false").unwrap();
+        let result = e.run(&prog);
+        assert!(
+            matches!(result, Ok(Outcome::Exit(1))),
+            "false should exit with 1, got {result:?}"
+        );
+    }
 }
+

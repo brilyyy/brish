@@ -27,8 +27,8 @@ pub use proc::{
     claim_terminal, clear_pending_traps, fork_run, fork_spawn, ignore_jobctl_signals,
     inject_pending_trap, isatty_fd, kill_group, open_tty, peek_pending_traps, poll_pid,
     preexec_fd_ops, reset_sigpipe, send_signal, set_group_leader, shell_pgrp, signal_by_name,
-    suspend_self, take_pending_traps, tcsetpgrp_fd, times_secs, trap_off, trap_on, try_wait, umask,
-    wait_pid, wait_untraced, with_fds, write_stdout,
+    signal_from_trap_bit, suspend_self, take_pending_traps, tcsetpgrp_fd, times_secs, trap_off,
+    trap_on, try_wait, umask, wait_pid, wait_untraced, with_fds, write_stdout,
 };
 pub use traits::{
     ChildHandle, CommandSpec, EnvApi, Filesystem, JobControl, Pgid, Pid, Platform, Process, RawFd,

@@ -46,6 +46,13 @@ pub struct Opts {
     pub ignore_eof: bool,
     pub globstar: bool,
     pub pipefail: bool,
+    /// `errtrace`: if set, `ERR` trap fires in subshells/functions/
+    /// command substitution too (bash's `set -o errtrace`).
+    pub errtrace: bool,
+    /// `restricted`: POSIX restricted shell mode (`sh -r`). Once set,
+    /// cannot be unset. Disables `cd`, absolute-path commands, output
+    /// redirections, `exec` replacement, and setting `SHELL`/`PATH`/`ENV`/`BASH_ENV`.
+    pub restricted: bool,
 }
 
 impl Opts {
@@ -64,6 +71,8 @@ impl Opts {
             "ignoreeof" => &mut self.ignore_eof,
             "globstar" => &mut self.globstar,
             "pipefail" => &mut self.pipefail,
+            "errtrace" => &mut self.errtrace,
+            "restricted" => &mut self.restricted,
             _ => return false,
         };
         *slot = on;
@@ -82,6 +91,7 @@ impl Opts {
             'u' => "nounset",
             'v' => "verbose",
             'x' => "xtrace",
+            'E' => "errtrace",
             _ => return false,
         };
         self.set_opt(name, on)
@@ -99,6 +109,7 @@ impl Opts {
             ('u', self.nounset),
             ('v', self.verbose),
             ('x', self.xtrace),
+            ('E', self.errtrace),
         ];
         pairs
             .iter()
@@ -213,6 +224,9 @@ impl Env {
         if !is_name(name) {
             return Err(Error::expand(format!("bad variable name: {name}")));
         }
+        if self.opts.restricted && matches!(name, "SHELL" | "PATH" | "ENV" | "BASH_ENV") {
+            return Err(Error::expand(format!("{name}: restricted")));
+        }
         match self.vars.get_mut(name) {
             Some(v) if v.readonly => Err(Error::expand(format!("{name}: readonly variable"))),
             Some(v) => {
@@ -273,6 +287,9 @@ impl Env {
 
     /// Remove a variable; errors on readonly.
     pub fn unset(&mut self, name: &str) -> Result<(), Error> {
+        if self.opts.restricted && matches!(name, "SHELL" | "PATH" | "ENV" | "BASH_ENV") {
+            return Err(Error::expand(format!("{name}: restricted")));
+        }
         match self.vars.get(name) {
             Some(v) if v.readonly => Err(Error::expand(format!("{name}: readonly variable"))),
             _ => {

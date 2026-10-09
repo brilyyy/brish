@@ -171,6 +171,23 @@ pub const TRAP_BIT_TERM: u32 = 1 << 1;
 pub const TRAP_BIT_HUP: u32 = 1 << 2;
 pub const TRAP_BIT_QUIT: u32 = 1 << 3;
 
+/// POSIX signal numbers for the trappable signals.
+pub const SIG_INT: i32 = nix::sys::signal::Signal::SIGINT as i32;
+pub const SIG_TERM: i32 = nix::sys::signal::Signal::SIGTERM as i32;
+pub const SIG_HUP: i32 = nix::sys::signal::Signal::SIGHUP as i32;
+pub const SIG_QUIT: i32 = nix::sys::signal::Signal::SIGQUIT as i32;
+
+/// Map a trap bit to its POSIX signal number.
+pub fn signal_from_trap_bit(bit: u32) -> Option<i32> {
+    match bit {
+        TRAP_BIT_INT => Some(SIG_INT),
+        TRAP_BIT_TERM => Some(SIG_TERM),
+        TRAP_BIT_HUP => Some(SIG_HUP),
+        TRAP_BIT_QUIT => Some(SIG_QUIT),
+        _ => None,
+    }
+}
+
 static PENDING_TRAPS: AtomicU32 = AtomicU32::new(0);
 
 /// Swap out pending signal-trap flags (engine drains at command
