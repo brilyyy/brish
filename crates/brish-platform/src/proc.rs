@@ -348,6 +348,24 @@ pub fn dup_fd(fd: RawFd) -> std::io::Result<std::fs::File> {
     }
 }
 
+/// Clear `FD_CLOEXEC` on `fd` so it survives `exec` and keeps naming the
+/// same object in the child. Process substitution hands children a
+/// `/dev/fd/N` path, which only resolves while `N` is open in the child.
+pub fn clear_cloexec(fd: RawFd) -> std::io::Result<()> {
+    // SAFETY: `fd` is validated by fcntl; flags is read-modify-written.
+    let flags = unsafe { nix::libc::fcntl(fd, nix::libc::F_GETFD) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: as above; only FD_CLOEXEC is cleared.
+    let rc = unsafe { nix::libc::fcntl(fd, nix::libc::F_SETFD, flags & !nix::libc::FD_CLOEXEC) };
+    if rc < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 /// RAII fd redirection: originals saved on apply, restored on drop
 /// (including during unwind — a panicking builtin still gets its shell
 /// stdio back).

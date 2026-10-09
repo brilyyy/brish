@@ -92,8 +92,7 @@ fn builtin_output_reaches_redirected_file() {
     let f = d.path().join("out.txt");
     let o = run(&["-c", &format!("echo to-file > {}", f.display())]);
     assert_eq!(code(&o), 0);
-    assert_eq!(std::fs::read_to_string(&f).unwrap(), "to-file\n");
-    // append
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "to-file\n"); // append
     let o = run(&["-c", &format!("echo more >> {}", f.display())]);
     assert_eq!(code(&o), 0);
     assert_eq!(std::fs::read_to_string(&f).unwrap(), "to-file\nmore\n");
@@ -557,4 +556,68 @@ fn relconf_e_runs_the_editor_then_reloads() {
         .output()
         .expect("spawn brish");
     assert!(String::from_utf8_lossy(&o.stderr).contains("$VISUAL or $EDITOR"));
+}
+
+/// Process substitution `<(…)` / `>(…)` (bash extension, not POSIX).
+#[test]
+fn proc_subst_read_side_feeds_a_command() {
+    // The inner command's stdout arrives as a readable fd.
+    let o = run(&["-c", "cat <(echo hi)"]);
+    assert_eq!(out(&o), "hi\n", "stderr: {}", err(&o));
+    assert_eq!(code(&o), 0);
+
+    // Two substitutions, both live in one command (`paste` needs two).
+    let o = run(&["-c", r#"paste <(printf '1\n2\n') <(printf 'a\nb\n')"#]);
+    assert_eq!(out(&o), "1\ta\n2\tb\n", "stderr: {}", err(&o));
+
+    // A failing inner command still yields the path; only its output is absent.
+    assert_eq!(code(&run(&["-c", "cat <(exit 3)"])), 0);
+}
+
+#[test]
+fn proc_subst_body_is_a_full_command() {
+    // Pipelines, redirections and nesting inside the body.
+    assert_eq!(out(&run(&["-c", "cat <(echo x | tr x y)"])), "y\n");
+    assert_eq!(out(&run(&["-c", "cat <(cat <(echo deep))"])), "deep\n");
+    // Quoted parens inside the body are literal, not the terminator.
+    assert_eq!(out(&run(&["-c", "cat <(echo ')')"])), ")\n");
+    assert_eq!(out(&run(&["-c", "cat <(echo '(')"])), "(\n");
+    // `$(…)` inside the body expands in the child.
+    assert_eq!(out(&run(&["-c", "cat <(echo $(echo sub))"])), "sub\n");
+}
+
+#[test]
+fn proc_subst_write_side_redirects_output() {
+    let d = tempfile::tempdir().unwrap();
+    let f = d.path().join("ps.txt");
+    // `>(cat > f)` consumes the shell's stdout; the shell must not leave
+    // its own copy of the write end open or `cat` never sees EOF.
+    let o = run(&["-c", &format!("echo hi > >(cat > {})", f.display())]);
+    assert_eq!(code(&o), 0, "stderr: {}", err(&o));
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "hi\n");
+}
+
+#[test]
+fn proc_subst_does_not_hang_on_large_output() {
+    // The reader must drain the pipe while the writer is still running,
+    // and both sides must be reaped at the command boundary.
+    let o = run(&["-c", "wc -c <(yes abcdefgh | head -c 200000)"]);
+    assert_eq!(code(&o), 0, "stderr: {}", err(&o));
+    // `wc -c` also prints the filename it read, which is the fd path.
+    assert_eq!(
+        out(&o).split_whitespace().next(),
+        Some("200000"),
+        "stderr: {}",
+        err(&o)
+    );
+}
+
+#[test]
+fn proc_subst_path_is_not_split_or_globbed() {
+    // The expansion is a literal `/dev/fd/N`: no IFS split, no globbing
+    // against the cwd.
+    let d = tempfile::tempdir().unwrap();
+    let o = run(&["-c", "echo <(echo x) | wc -w"]);
+    assert_eq!(out(&o).trim(), "1", "stderr: {}", err(&o));
+    assert!(d.path().exists());
 }

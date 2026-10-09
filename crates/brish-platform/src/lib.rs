@@ -24,11 +24,12 @@ pub use mock::{MockEvent, MockPlatform, MockState};
 pub use proc::{
     ACCESS_F, ACCESS_R, ACCESS_W, ACCESS_X, ChildState, FdOp, FdScope, FdSetup, SIGCONT, SIGSTOP,
     SIGTSTP, TRAP_BIT_HUP, TRAP_BIT_INT, TRAP_BIT_QUIT, TRAP_BIT_TERM, access, apply_bare,
-    claim_terminal, clear_pending_traps, fork_run, fork_spawn, ignore_jobctl_signals,
-    inject_pending_trap, isatty_fd, kill_group, open_tty, peek_pending_traps, poll_pid,
-    preexec_fd_ops, reset_sigpipe, send_signal, set_group_leader, shell_pgrp, signal_by_name,
-    signal_from_trap_bit, suspend_self, take_pending_traps, tcsetpgrp_fd, times_secs, trap_off,
-    trap_on, try_wait, umask, wait_pid, wait_untraced, with_fds, write_stdout,
+    claim_terminal, clear_cloexec, clear_pending_traps, fork_run, fork_spawn,
+    ignore_jobctl_signals, inject_pending_trap, isatty_fd, kill_group, open_tty,
+    peek_pending_traps, poll_pid, preexec_fd_ops, reset_sigpipe, send_signal, set_group_leader,
+    shell_pgrp, signal_by_name, signal_from_trap_bit, suspend_self, take_pending_traps,
+    tcsetpgrp_fd, times_secs, trap_off, trap_on, try_wait, umask, wait_pid, wait_untraced,
+    with_fds, write_stdout,
 };
 pub use traits::{
     ChildHandle, CommandSpec, EnvApi, Filesystem, JobControl, Pgid, Pid, Platform, Process, RawFd,
