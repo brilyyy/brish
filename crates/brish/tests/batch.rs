@@ -729,7 +729,11 @@ fn array_read_into_and_local() {
 
 #[test]
 fn array_is_not_exported_to_children() {
-    // bash never exports arrays; a child sees no `a` at all.
-    let o = run(&["-c", "a=(x y); sh -c 'echo \"[${a[@]}]\"'"]);
+    // bash never exports arrays; a child sees no `a` at all. Uses a
+    // plain `$a` rather than `${a[@]}` on purpose: `/bin/sh` is dash on
+    // Linux, which rejects the array form outright with "Bad
+    // substitution" — the test must not depend on the system shell
+    // supporting arrays.
+    let o = run(&["-c", "a=(x y); sh -c 'echo \"[$a]\"'"]);
     assert_eq!(out(&o), "[]\n", "stderr: {}", err(&o));
 }
