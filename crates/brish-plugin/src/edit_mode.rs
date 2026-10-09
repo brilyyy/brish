@@ -57,14 +57,25 @@ impl brish_plugin_api::Plugin for DefaultMenusPlugin {
         struct F;
         impl brish_plugin_api::MenuFactory for F {
             fn create(&self) -> Box<dyn reedline::Menu> {
-                // Muted descriptions by default (NOTES.md 8); config
-                // `[prompt] completion_description` overrides (off = plain).
-                let style = crate::config::completion_desc_style()
+                let cfg = crate::config::load_with_known(&[]);
+                let desc_style = crate::config::completion_desc_style()
                     .unwrap_or_else(|| nu_ansi_term::Color::DarkGray.normal());
+                let text_style = crate::config::parse_menu_style(
+                    cfg.prompt.completion_text_style.as_deref(),
+                    nu_ansi_term::Style::default(),
+                );
+                let match_style = crate::config::parse_menu_style(
+                    cfg.prompt.completion_match_style.as_deref(),
+                    nu_ansi_term::Style::default().underline(),
+                );
+                let columns = cfg.completion_columns.unwrap_or(4);
                 Box::new(
                     ColumnarMenu::default()
                         .with_name(crate::keymap::MENU_NAME)
-                        .with_description_text_style(style),
+                        .with_columns(columns)
+                        .with_description_text_style(desc_style)
+                        .with_text_style(text_style)
+                        .with_match_text_style(match_style),
                 )
             }
         }
