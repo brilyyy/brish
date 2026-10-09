@@ -13,6 +13,7 @@ pub mod error;
 pub mod guard;
 pub mod mock;
 pub mod proc;
+pub mod time;
 pub mod traits;
 pub mod unix;
 pub mod user;

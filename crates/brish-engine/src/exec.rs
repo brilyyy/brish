@@ -22,7 +22,7 @@ use brish_core::expand::{self, CmdSubst};
 use brish_core::lexer::{self, Word};
 use brish_core::path::find_in_path;
 
-use brish_plugin_api::{CmdCtx, DEFAULT_THEME, HookAction, Registry};
+use brish_plugin_api::{CmdCtx, CmdDurationMode, DEFAULT_THEME, HookAction, Registry};
 
 use brish_builtin::{BuiltIn, Flow, run as run_builtin};
 use brish_platform::proc::{
@@ -1512,6 +1512,8 @@ impl Engine {
             argv: &argv,
             status_before: self.env.status,
             cwd: &cwd,
+            duration_ms: 0,
+            duration_mode: CmdDurationMode::default(),
         };
         if let HookAction::Abort(s) = self.hooks.run_pre(&ctx) {
             self.env.status = s;

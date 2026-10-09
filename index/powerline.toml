@@ -1,0 +1,5 @@
+name = "powerline"
+description = "Powerlevel10k-style two-line powerline prompt (Nerd Font required)"
+source = "https://github.com/brilyyy/brish"
+path = "examples/plugins/powerline"
+tags = ["theme", "example", "powerline"]

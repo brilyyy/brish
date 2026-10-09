@@ -31,7 +31,11 @@ impl VenvPrompt {
 }
 
 impl PromptSegment for VenvPrompt {
-    fn render(&self, _status: i32, cwd: &Path) -> Option<String> {
+    fn name(&self) -> &str {
+        "venv"
+    }
+
+    fn render_colored(&self, _status: i32, cwd: &Path) -> Option<String> {
         self.ttl.get(cwd, || self.render_now())
     }
 }

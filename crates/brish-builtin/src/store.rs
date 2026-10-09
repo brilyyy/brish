@@ -74,6 +74,15 @@ fn default_wasm_max_output() -> usize {
 pub struct ThemeDecl {
     pub name: String,
     pub prompt: String,
+    /// Right-hand prompt template (same tokens as `prompt`).
+    #[serde(default)]
+    pub prompt_right: Option<String>,
+    /// Transient prompt template (same tokens as `prompt`).
+    #[serde(default)]
+    pub prompt_transient: Option<String>,
+    /// Per-segment palette for powerline themes: segment_name = "bg_color".
+    #[serde(default)]
+    pub palette: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -256,6 +265,9 @@ impl Plugin for StorePlugin {
             reg.themes.push(Box::new(TemplateTheme {
                 name: t.name.clone(),
                 prompt: t.prompt.clone(),
+                prompt_right: t.prompt_right.clone(),
+                prompt_transient: t.prompt_transient.clone(),
+                palette: t.palette.clone(),
             }));
         }
         if !self.manifest.keymap.is_empty() {
@@ -330,6 +342,9 @@ impl Plugin for StorePlugin {
 pub struct TemplateTheme {
     pub name: String,
     pub prompt: String,
+    pub prompt_right: Option<String>,
+    pub prompt_transient: Option<String>,
+    pub palette: Option<BTreeMap<String, String>>,
 }
 
 impl Theme for TemplateTheme {
@@ -344,66 +359,26 @@ impl Theme for TemplateTheme {
             cwd,
             segments,
             brish_plugin_api::color_enabled(),
+            self.palette.as_ref(),
+            0, // duration not available at theme render time
+            brish_plugin_api::CmdDurationMode::default(),
         )
+    }
+
+    fn right_template(&self) -> Option<&str> {
+        self.prompt_right.as_deref()
+    }
+
+    fn transient_template(&self) -> Option<&str> {
+        self.prompt_transient.as_deref()
+    }
+
+    fn palette(&self) -> Option<&BTreeMap<String, String>> {
+        self.palette.as_ref()
     }
 }
 
-/// Tokens: `{arrow}` `{cwd}` `{segments}` `{reset}` `{fg:…}` `{bg:…}`
-/// (named 8+bright or `#rrggbb`). Unknown tokens and unmatched braces
-/// pass through literally.
-pub fn expand_template(
-    tmpl: &str,
-    status: i32,
-    cwd: &Path,
-    segments: &[&dyn PromptSegment],
-    color: bool,
-) -> String {
-    let mut out = String::new();
-    let mut rest = tmpl;
-    while let Some(open) = rest.find('{') {
-        out.push_str(&rest[..open]);
-        let after = &rest[open + 1..];
-        let Some(close) = after.find('}') else {
-            out.push_str(&rest[open..]);
-            return out;
-        };
-        let token = &after[..close];
-        let replacement = match token {
-            "arrow" => Some(arrow(status, color)),
-            "cwd" => Some(cwd_base(cwd)),
-            "segments" => Some(
-                segments
-                    .iter()
-                    .filter_map(|s| s.render(status, cwd))
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            ),
-            "reset" => Some(if color {
-                "\x1b[0m".to_string()
-            } else {
-                String::new()
-            }),
-            t => t
-                .strip_prefix("fg:")
-                .and_then(|spec| styled(spec, true, color))
-                .or_else(|| {
-                    t.strip_prefix("bg:")
-                        .and_then(|spec| styled(spec, false, color))
-                }),
-        };
-        match replacement {
-            Some(r) => out.push_str(&r),
-            None => {
-                out.push('{');
-                out.push_str(token);
-                out.push('}');
-            }
-        }
-        rest = &after[close + 1..];
-    }
-    out.push_str(rest);
-    out
-}
+// --- Helper functions for expand_template (must be defined before the closure) ---
 
 fn arrow(status: i32, color: bool) -> String {
     if !color {
@@ -419,8 +394,89 @@ fn cwd_base(cwd: &Path) -> String {
         .unwrap_or_else(|| cwd.display().to_string())
 }
 
+/// Full cwd with ~ substitution.
+fn cwd_full(cwd: &Path) -> String {
+    let home = std::env::var("HOME").ok();
+    let cwd_str = cwd.to_string_lossy();
+    if let Some(h) = home
+        && let Some(stripped) = cwd_str.strip_prefix(&h)
+    {
+        format!("~{stripped}")
+    } else {
+        cwd_str.to_string()
+    }
+}
+
+/// Shortened cwd: last 2 components full, earlier → first char.
+/// e.g. ~/a/b/c/d → ~/a/b/c/d (≤3 deep), ~/a/b/c/d/e → ~/a/b/c.../e
+fn cwd_short(cwd: &Path) -> String {
+    let full = cwd_full(cwd);
+    let parts: Vec<&str> = full.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.len() <= 3 {
+        return full;
+    }
+    // First (len - 2) components collapse to their first character; the
+    // last two stay whole — enough to place the directory, short enough
+    // to leave room for the segments.
+    let lead = if full.starts_with('~') { "~" } else { "/" };
+    let keep_full = parts.len() - 2;
+    let mut out = String::from(lead);
+    for (i, part) in parts.iter().enumerate() {
+        if i > 0 {
+            out.push('/');
+        }
+        if i < keep_full {
+            out.push(part.chars().next().unwrap_or('?'));
+        } else {
+            out.push_str(part);
+        }
+    }
+    out
+}
+
+/// Local time HH:MM:SS via chrono (brish-platform).
+fn localtime_hms() -> Option<String> {
+    brish_platform::time::localtime_hms().map(|(h, m, s)| format!("{h:02}:{m:02}:{s:02}"))
+}
+
+/// Local time HH:MM via chrono (brish-platform).
+fn localtime_hm() -> Option<String> {
+    brish_platform::time::localtime_hm().map(|(h, m)| format!("{h:02}:{m:02}"))
+}
+
+/// Format duration: wall="2.3s", cpu="1.8s cpu".
+fn format_duration(ms: u128, _mode: brish_plugin_api::CmdDurationMode) -> String {
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else if ms < 60_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        let mins = ms / 60_000;
+        let secs = (ms % 60_000) / 1000;
+        format!("{mins}m{secs}s")
+    }
+}
+
+/// Powerline separator: U+E0B0 with fg=last_bg, bg=next_bg (or default).
+fn separator(color: bool, last_bg: Option<String>, next_bg: Option<&str>) -> String {
+    if !color {
+        return String::new();
+    }
+    let sep = "\u{e0b0}"; // 
+    let fg = last_bg.unwrap_or_else(|| "0".to_string()); // default fg = black
+    let bg = next_bg.unwrap_or("0"); // default bg = black
+    format!("\x1b[38;5;{fg}m\x1b[48;5;{bg}m{sep}\x1b[0m")
+}
+
 /// ANSI code for `red`/`bright-blue`/`#rrggbb`; `None` = unknown name.
 fn color_code(spec: &str, fg: bool) -> Option<String> {
+    // 256-color index: `{bg:11}` / `{fg:208}`. Needed for powerline
+    // palettes, where a segment's exact background is the design.
+    if let Ok(n) = spec.parse::<u16>()
+        && (0..=255).contains(&n)
+    {
+        return Some(format!("\x1b[{};5;{n}m", if fg { 38 } else { 48 }));
+    }
     let (bright, name) = match spec.strip_prefix("bright-") {
         Some(n) => (true, n),
         None => (false, spec),
@@ -455,6 +511,269 @@ fn hex_code(spec: &str, fg: bool) -> Option<String> {
 fn styled(spec: &str, fg: bool, color: bool) -> Option<String> {
     // Validate the name first so unknown colors fall back to literal.
     color_code(spec, fg).map(|code| if color { code } else { String::new() })
+}
+
+/// Tokens: `{arrow}` `{cwd}` `{path}` `{path:short}` `{home}` `{user}` `{host}`
+/// `{context}` `{time}` `{time:short}` `{status}` `{status:all}` `{version}`
+/// `{segments}` `{segments:plain}` `{segment:name}` `{segmentc:name}`
+/// `{cmd_duration}` `{reset}` `{fg:…}` `{bg:…}` `{sep}` `{sep:NEXT}`
+/// Conditionals: `{if:TOKEN}...{endif}` `{if:TOKEN}...{else}...{endif}`
+/// (named 8+bright or `#rrggbb`). Unknown tokens and unmatched braces
+/// pass through literally.
+#[allow(clippy::too_many_arguments)]
+pub fn expand_template(
+    tmpl: &str,
+    status: i32,
+    cwd: &Path,
+    segments: &[&dyn PromptSegment],
+    color: bool,
+    palette: Option<&BTreeMap<String, String>>,
+    duration_ms: u128,
+    duration_mode: brish_plugin_api::CmdDurationMode,
+) -> String {
+    let mut out = String::new();
+    let mut rest = tmpl;
+
+    // Separator state: tracks the last {bg:SPEC} for {sep} rendering.
+    let mut last_bg: Option<String> = None;
+    // Conditional stack: one frame per open `{if:}`.
+    struct IfFrame {
+        condition_met: bool,
+        in_else: bool,
+    }
+    let mut if_stack: Vec<IfFrame> = Vec::new();
+    const MAX_IF_DEPTH: usize = 8;
+
+    // Pre-compute segment outputs for {segment:name} and {segmentc:name}
+    let segment_plain: Vec<(&str, String)> = segments
+        .iter()
+        .filter_map(|s| s.render_plain(status, cwd).map(|v| (s.name(), v)))
+        .collect();
+    let segment_colored: Vec<(&str, String)> = segments
+        .iter()
+        .filter_map(|s| s.render_colored(status, cwd).map(|v| (s.name(), v)))
+        .collect();
+
+    // Helper to check if a token would produce non-empty output (for conditionals)
+    let token_truthy = |token: &str| -> bool {
+        match token {
+            "context" => {
+                std::env::var_os("SSH_CONNECTION").is_some()
+                    || std::env::var_os("SSH_TTY").is_some()
+            }
+            "status" => status != 0,
+            "status:all" => true,
+            "time" | "time:short" => true,
+            "user" => std::env::var_os("USER").is_some(),
+            "host" => std::env::var_os("HOSTNAME").is_some(),
+            "path" | "path:short" | "home" | "cwd" => true,
+            "arrow" => true,
+            "version" => true,
+            "cmd_duration" => true,
+            "segments" | "segments:plain" => {
+                !segment_plain.is_empty() || !segment_colored.is_empty()
+            }
+            t if t.starts_with("segment:") => {
+                let name = &t["segment:".len()..];
+                segment_plain
+                    .iter()
+                    .any(|(n, v)| *n == name && !v.is_empty())
+            }
+            t if t.starts_with("segmentc:") => {
+                let name = &t["segmentc:".len()..];
+                segment_colored
+                    .iter()
+                    .any(|(n, v)| *n == name && !v.is_empty())
+            }
+            _ => false,
+        }
+    };
+
+    // Helper to expand a single token to its string value
+    let expand_token = |token: &str, color: bool, last_bg: &mut Option<String>| -> String {
+        // Check for palette lookup first: {palette:name}
+        if let Some(palette) = palette
+            && let Some(name) = token.strip_prefix("palette:")
+        {
+            return palette.get(name).cloned().unwrap_or_default();
+        }
+        match token {
+            "arrow" => arrow(status, color),
+            "cwd" => cwd_base(cwd),
+            "path" => cwd_full(cwd),
+            "path:short" => cwd_short(cwd),
+            "home" => std::env::var("HOME").unwrap_or_default(),
+            "user" => std::env::var("USER").unwrap_or_else(|_| "user".into()),
+            "host" => std::env::var("HOSTNAME").unwrap_or_else(|_| "localhost".into()),
+            "context" => {
+                if std::env::var_os("SSH_CONNECTION").is_some()
+                    || std::env::var_os("SSH_TTY").is_some()
+                {
+                    let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
+                    let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "localhost".into());
+                    format!("{user}@{host}")
+                } else {
+                    String::new()
+                }
+            }
+            "time" => localtime_hms().unwrap_or_else(|| "??:??:??".into()),
+            "time:short" => localtime_hm().unwrap_or_else(|| "??:??".into()),
+            "status" => {
+                if status != 0 {
+                    status.to_string()
+                } else {
+                    String::new()
+                }
+            }
+            "status:all" => status.to_string(),
+            "version" => env!("CARGO_PKG_VERSION").to_string(),
+            "segments" => segment_colored
+                .iter()
+                .map(|(_, v)| v.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+            "segments:plain" => segment_plain
+                .iter()
+                .map(|(_, v)| v.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+            "cmd_duration" => format_duration(duration_ms, duration_mode),
+            "reset" => {
+                *last_bg = None;
+                if color {
+                    "\x1b[0m".to_string()
+                } else {
+                    String::new()
+                }
+            }
+            "sep" => separator(color, last_bg.clone(), None),
+            t if t.starts_with("sepp:") => {
+                // `{sepp:NAME}` — separator into a palette entry. `{sep:…}`
+                // takes a colour spec, which a palette name is not.
+                let key = &t["sepp:".len()..];
+                let next = palette.and_then(|p| p.get(key)).map(String::as_str);
+                separator(color, last_bg.clone(), next)
+            }
+            t if t.starts_with("sep:") => {
+                let next_bg = &t["sep:".len()..];
+                separator(color, last_bg.clone(), Some(next_bg))
+            }
+            t if t.starts_with("segment:") => {
+                let name = &t["segment:".len()..];
+                segment_plain
+                    .iter()
+                    .find(|(n, _)| *n == name)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default()
+            }
+            t if t.starts_with("segmentc:") => {
+                let name = &t["segmentc:".len()..];
+                segment_colored
+                    .iter()
+                    .find(|(n, _)| *n == name)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default()
+            }
+            // `{bgp:NAME}` / `{fgp:NAME}` — palette lookup. Braces do not
+            // nest, so a colour cannot be interpolated into `{bg:…}`; these
+            // are the form a palette-driven theme actually needs.
+            t if t.starts_with("bgp:") => {
+                let key = &t["bgp:".len()..];
+                match palette.and_then(|p| p.get(key)) {
+                    Some(spec) => {
+                        // Track it like `{bg:}` so a trailing `{sep}` chains.
+                        *last_bg = Some(spec.clone());
+                        styled(spec, false, color).unwrap_or_default()
+                    }
+                    None => format!("{{{t}}}"),
+                }
+            }
+            t if t.starts_with("fgp:") => palette
+                .and_then(|p| p.get(&t["fgp:".len()..]))
+                .and_then(|spec| styled(spec, true, color))
+                .unwrap_or_else(|| format!("{{{t}}}")),
+            t => t
+                .strip_prefix("fg:")
+                .and_then(|spec| styled(spec, true, color))
+                .or_else(|| {
+                    t.strip_prefix("bg:").and_then(|spec| {
+                        let code = styled(spec, false, color);
+                        if code.is_some() {
+                            // Track background for separator state
+                            *last_bg = Some(spec.to_string());
+                        }
+                        code
+                    })
+                })
+                .unwrap_or_else(|| {
+                    // Unknown token: pass through literally
+                    format!("{{{token}}}")
+                }),
+        }
+    };
+
+    // Is every enclosing `{if:}` branch currently active? Literal text is
+    // gated too, not just tokens — otherwise a skipped branch still leaks
+    // its static characters.
+    let rendering = |stack: &[IfFrame]| {
+        stack.iter().all(|f| {
+            if f.in_else {
+                !f.condition_met
+            } else {
+                f.condition_met
+            }
+        })
+    };
+
+    while let Some(open) = rest.find('{') {
+        if rendering(&if_stack) {
+            out.push_str(&rest[..open]);
+        }
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            if rendering(&if_stack) {
+                out.push_str(&rest[open..]);
+            }
+            return out;
+        };
+        let token = &after[..close];
+
+        // Handle conditionals
+        if let Some(cond) = token.strip_prefix("if:") {
+            if if_stack.len() >= MAX_IF_DEPTH {
+                // Depth exceeded: treat as literal
+                out.push('{');
+                out.push_str(token);
+                out.push('}');
+            } else {
+                let met = token_truthy(cond);
+                if_stack.push(IfFrame {
+                    condition_met: met,
+                    in_else: false,
+                });
+            }
+        } else if token == "else" {
+            match if_stack.last_mut() {
+                Some(frame) => frame.in_else = true,
+                None => {
+                    // Unmatched else: literal
+                    out.push('{');
+                    out.push_str(token);
+                    out.push('}');
+                }
+            }
+        } else if token == "endif" {
+            if_stack.pop();
+        } else if rendering(&if_stack) {
+            out.push_str(&expand_token(token, color, &mut last_bg));
+        }
+
+        rest = &after[close + 1..];
+    }
+    if rendering(&if_stack) {
+        out.push_str(rest);
+    }
+    out
 }
 
 /// `[keymap]` table → keymap provider (parsed by the binary's `keymap`
@@ -683,7 +1002,16 @@ timeout_ms = 400
 
     fn tmpl(s: &str, status: i32, color: bool) -> String {
         let cwd = Path::new("/home/u/proj");
-        expand_template(s, status, cwd, &[&Dash], color)
+        expand_template(
+            s,
+            status,
+            cwd,
+            &[&Dash],
+            color,
+            None,
+            0,
+            brish_plugin_api::CmdDurationMode::default(),
+        )
     }
 
     #[test]
@@ -714,6 +1042,169 @@ timeout_ms = 400
         assert_eq!(tmpl("{nope} {cwd", 0, false), "{nope} {cwd");
         assert_eq!(tmpl("{fg:chartreuse}", 0, true), "{fg:chartreuse}");
         assert_eq!(tmpl("plain", 0, true), "plain");
+    }
+
+    #[test]
+    fn path_and_status_tokens() {
+        let cwd = Path::new("/home/u/deep/nest/proj");
+        let out = expand_template(
+            "{path}|{path:short}",
+            0,
+            cwd,
+            &[],
+            false,
+            None,
+            0,
+            brish_plugin_api::CmdDurationMode::default(),
+        );
+        assert_eq!(out, "/home/u/deep/nest/proj|/h/u/d/nest/proj", "{out:?}");
+        // shallow paths stay whole
+        let shallow = Path::new("/home/u/proj");
+        assert_eq!(
+            expand_template(
+                "{path:short}",
+                0,
+                shallow,
+                &[],
+                false,
+                None,
+                0,
+                brish_plugin_api::CmdDurationMode::default(),
+            ),
+            "/home/u/proj"
+        );
+        // status: empty on success, code on failure
+        assert_eq!(tmpl("[{status}]", 0, false), "[]");
+        assert_eq!(tmpl("[{status}]", 7, false), "[7]");
+        assert_eq!(tmpl("[{status:all}]", 0, false), "[0]");
+    }
+
+    #[test]
+    fn conditionals_select_and_skip() {
+        // {if:status} is false on success, true on failure.
+        assert_eq!(tmpl("{if:status}FAIL{endif}OK", 0, false), "OK");
+        assert_eq!(tmpl("{if:status}FAIL{endif}OK", 1, false), "FAILOK");
+        // else branch
+        assert_eq!(tmpl("{if:status}F{else}OK{endif}", 0, false), "OK");
+        assert_eq!(tmpl("{if:status}F{else}OK{endif}", 1, false), "F");
+        // unknown condition is false, not a crash
+        assert_eq!(tmpl("{if:bogus}x{endif}y", 0, false), "y");
+        // unmatched else stays literal
+        assert_eq!(tmpl("a{else}", 0, false), "a{else}");
+        // a stray {endif} opens nothing and renders nothing
+        assert_eq!(tmpl("a{endif}", 0, false), "a");
+    }
+
+    #[test]
+    fn conditional_depth_is_capped() {
+        // 9 nested ifs exceeds MAX_IF_DEPTH (8): the 9th stays literal.
+        let deep = format!("{}{}{}", "{if:status}".repeat(9), "x", "{endif}".repeat(9));
+        let out = tmpl(&deep, 1, false);
+        assert!(out.ends_with("x"), "{out:?}");
+        assert!(out.contains("{if:status}"), "ninth if is literal: {out:?}");
+    }
+
+    #[test]
+    fn separator_tracks_the_last_bg() {
+        // {sep} after {bg:11}: fg=11, bg=default(0).
+        let out = tmpl("{bg:11}x{sep}", 0, true);
+        assert_eq!(
+            out, "\x1b[48;5;11mx\x1b[38;5;11m\x1b[48;5;0m\u{e0b0}\x1b[0m",
+            "{out:?}"
+        );
+        // {sep:NEXT} sets the next background too.
+        let out = tmpl("{bg:11}x{sep:5}", 0, true);
+        assert_eq!(
+            out, "\x1b[48;5;11mx\x1b[38;5;11m\x1b[48;5;5m\u{e0b0}\x1b[0m",
+            "{out:?}"
+        );
+        // {reset} clears the state, so {sep} falls back to fg=0.
+        let out = tmpl("{bg:11}x{reset}{sep}", 0, true);
+        assert!(
+            out.ends_with("\x1b[38;5;0m\x1b[48;5;0m\u{e0b0}\x1b[0m"),
+            "{out:?}"
+        );
+        // NO_COLOR collapses separators to nothing.
+        assert_eq!(tmpl("{bg:11}x{sep}", 0, false), "x");
+    }
+
+    #[test]
+    fn named_segments_and_palette_lookup() {
+        struct Named(&'static str);
+        impl PromptSegment for Named {
+            fn name(&self) -> &str {
+                self.0
+            }
+            fn render_colored(&self, _s: i32, _c: &Path) -> Option<String> {
+                Some("\x1b[33mgit:(main)\x1b[0m".into())
+            }
+        }
+        let seg = Named("git");
+        let mut palette = BTreeMap::new();
+        palette.insert("git".to_string(), "11".to_string());
+        let cwd = Path::new("/x");
+        let expand = |t: &str, color: bool| {
+            expand_template(
+                t,
+                0,
+                cwd,
+                &[&seg],
+                color,
+                Some(&palette),
+                0,
+                brish_plugin_api::CmdDurationMode::default(),
+            )
+        };
+        let named = expand("{segment:git}|{segmentc:git}|{segment:missing}", false);
+        assert_eq!(named, "git:(main)|\x1b[33mgit:(main)\x1b[0m|", "{named:?}");
+        // `{bgp:}` resolves the palette and feeds the separator state, so a
+        // trailing `{sep}` chains off it.
+        let out = expand("{bgp:git}x{sep}", true);
+        assert_eq!(
+            out, "\x1b[48;5;11mx\x1b[38;5;11m\x1b[48;5;0m\u{e0b0}\x1b[0m",
+            "{out:?}"
+        );
+        // `{sepp:}` names the next block by palette key.
+        let out = expand("{bgp:git}x{sepp:missing}", true);
+        assert!(
+            out.contains("\x1b[38;5;11m\x1b[48;5;0m"),
+            "unknown key degrades to default bg: {out:?}"
+        );
+        // NO_COLOR: palette colours collapse like every other colour token.
+        assert_eq!(expand("{bgp:git}x", false), "x");
+        // Unknown palette keys stay literal, never silently blank.
+        assert_eq!(expand("{bgp:nope}", false), "{bgp:nope}");
+    }
+
+    #[test]
+    fn duration_formatting() {
+        let f = |ms| {
+            expand_template(
+                "{cmd_duration}",
+                0,
+                Path::new("/x"),
+                &[],
+                false,
+                None,
+                ms,
+                brish_plugin_api::CmdDurationMode::default(),
+            )
+        };
+        assert_eq!(f(0), "0ms");
+        assert_eq!(f(999), "999ms");
+        assert_eq!(f(1_500), "1.5s");
+        assert_eq!(f(90_000), "1m30s");
+    }
+
+    #[test]
+    fn time_tokens_have_hh_mm_shape() {
+        for (t, want_len) in [("{time}", 8), ("{time:short}", 5)] {
+            let body = tmpl(t, 0, false);
+            assert_eq!(body.len(), want_len, "{t}: {body:?}");
+            let digits: Vec<char> = body.chars().filter(|c| *c != ':').collect();
+            assert!(digits.iter().all(|c| c.is_ascii_digit()), "{t}: {body:?}");
+            assert!(body.contains(':'), "{t}: {body:?}");
+        }
     }
 
     #[test]
@@ -883,5 +1374,80 @@ commands = ["fancy"]
             seen += 1;
         }
         assert!(seen >= 2, "starter + sentinel examples expected");
+    }
+
+    #[test]
+    fn powerline_example_expands_to_a_two_line_prompt() {
+        // The p10k-style example is the only shipped theme that leans on
+        // conditionals, separators and per-segment blocks at once, so a
+        // silent regression in any of the three shows up here.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins/powerline");
+        let m = load_manifest(&dir).expect("powerline example manifest");
+        let t = m.theme.expect("powerline declares a theme");
+        assert_eq!(t.name, "powerline");
+        assert_eq!(t.prompt_right.as_deref(), Some("{fg:bright-black}{time} "));
+        assert_eq!(t.prompt_transient.as_deref(), Some("{arrow} "));
+        let pal = t.palette.as_ref().expect("powerline declares a palette");
+        for seg in ["git", "venv", "aws", "kubectx", "docker"] {
+            assert!(pal.contains_key(seg), "palette missing {seg}");
+        }
+
+        struct Git;
+        impl PromptSegment for Git {
+            fn name(&self) -> &str {
+                "git"
+            }
+            fn render_colored(&self, _s: i32, _c: &Path) -> Option<String> {
+                Some("\x1b[33mgit:(main)\x1b[0m".into())
+            }
+        }
+        let cwd = Path::new("/home/u/deep/nest/proj");
+        let plain = expand_template(
+            &t.prompt,
+            0,
+            cwd,
+            &[&Git],
+            false,
+            t.palette.as_ref(),
+            0,
+            brish_plugin_api::CmdDurationMode::default(),
+        );
+        let lines: Vec<&str> = plain.lines().collect();
+        assert_eq!(lines.len(), 2, "two-line prompt: {plain:?}");
+        // cwd shortened, git block present, arrow on the second line
+        assert!(lines[0].contains("/h/u/d/nest/proj"), "{plain:?}");
+        assert!(lines[0].contains("git:(main)"), "{plain:?}");
+        assert!(
+            !lines[0].contains('\u{1b}'),
+            "plain text under NO_COLOR: {plain:?}"
+        );
+        assert_eq!(lines[1], "\u{279c} ");
+
+        // Colors on: blocks and separators are real SGR sequences.
+        let colored = expand_template(
+            &t.prompt,
+            0,
+            cwd,
+            &[&Git],
+            true,
+            t.palette.as_ref(),
+            0,
+            brish_plugin_api::CmdDurationMode::default(),
+        );
+        // Colours come from the palette, not hardcoded in the template.
+        let p = t.palette.as_ref().unwrap();
+        assert!(
+            colored.contains(&format!("\x1b[48;5;{}m", p["cwd"])),
+            "cwd block: {colored:?}"
+        );
+        assert!(
+            colored.contains(&format!("\x1b[48;5;{}m", p["git"])),
+            "git block: {colored:?}"
+        );
+        assert!(colored.contains('\u{e0b0}'), "separators: {colored:?}");
+
+        // Transient prompt collapses to the arrow alone.
+        let transient = t.prompt_transient.unwrap_or_default();
+        assert_eq!(tmpl(&transient, 0, false), "\u{279c} ");
     }
 }

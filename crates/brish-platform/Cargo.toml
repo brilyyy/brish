@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 thiserror.workspace = true
+chrono.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nix.workspace = true

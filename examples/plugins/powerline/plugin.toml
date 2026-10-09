@@ -1,0 +1,20 @@
+name = "powerline"
+version = "0.1.0"
+description = "Powerlevel10k-style two-line powerline prompt (Nerd Font required)"
+
+[theme]
+name = "powerline"
+prompt = """
+{if:context}{bgp:context}{fg:15} {context} {sepp:cwd}{endif}{bgp:cwd}{fg:15} {path:short} {if:segment:git}{sepp:git}{fg:0} {segment:git} {endif}{if:segment:venv}{sepp:venv}{fg:15} {segment:venv} {endif}{if:segment:aws}{sepp:aws}{fg:0} {segment:aws} {endif}{if:segment:kubectx}{sepp:kubectx}{fg:15} {segment:kubectx} {endif}{if:segment:docker}{sepp:docker}{fg:0} {segment:docker} {endif}{sep}{reset}
+{arrow} """
+prompt_right = "{fg:bright-black}{time} "
+prompt_transient = "{arrow} "
+
+[theme.palette]
+git = "11"
+venv = "5"
+aws = "208"
+kubectx = "105"
+docker = "121"
+context = "160"
+cwd = "24"

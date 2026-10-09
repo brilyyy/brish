@@ -123,6 +123,8 @@ pub struct Env {
     pub name: String,
     /// `$?` — last exit status.
     pub status: i32,
+    /// Wall-clock duration of last command in milliseconds.
+    pub status_duration_ms: u128,
     /// `$!` — last background pid.
     pub last_bg: Option<u32>,
     /// `$$` — shell pid.
@@ -158,6 +160,7 @@ impl Env {
             positional: Vec::new(),
             name: "brish".to_string(),
             status: 0,
+            status_duration_ms: 0,
             last_bg: None,
             pid: std::process::id(),
             flags: "h".to_string(),

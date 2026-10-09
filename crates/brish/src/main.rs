@@ -60,6 +60,8 @@ struct Run {
     code: i32,
     /// `exit` was called — terminate the REPL, not just this unit.
     exited: bool,
+    /// Wall-clock duration in milliseconds.
+    duration_ms: u128,
 }
 
 /// Build the plugin registry from config + store + engine plugins.
@@ -299,12 +301,12 @@ fn main() {
         let mut rest = cli.script_args.iter().cloned();
         engine.env.name = rest.next().unwrap_or_else(|| "brish".to_string());
         engine.env.set_positional(rest.collect());
-        run_src(&mut engine, cmd, err_style).code
+        run_src(&mut engine, cmd, err_style, config.cmd_duration_mode).code
     } else if let Some(script) = cli.script_args.first().cloned() {
         engine.env.name = script.clone();
         engine.env.set_positional(cli.script_args[1..].to_vec());
         match std::fs::read_to_string(&script) {
-            Ok(src) => run_src(&mut engine, &src, err_style).code,
+            Ok(src) => run_src(&mut engine, &src, err_style, config.cmd_duration_mode).code,
             Err(e) => {
                 eprintln!("brish: {script}: {e}");
                 1
@@ -323,7 +325,7 @@ fn main() {
     } else {
         let mut src = String::new();
         match std::io::stdin().read_to_string(&mut src) {
-            Ok(_) => run_src(&mut engine, &src, err_style).code,
+            Ok(_) => run_src(&mut engine, &src, err_style, config.cmd_duration_mode).code,
             Err(e) => {
                 eprintln!("brish: {e}");
                 1
@@ -335,27 +337,50 @@ fn main() {
 }
 
 /// Parse + run one unit of source.
-fn run_src(engine: &mut Engine, src: &str, style: Style) -> Run {
+fn run_src(
+    engine: &mut Engine,
+    src: &str,
+    style: Style,
+    mode: brish_plugin_api::CmdDurationMode,
+) -> Run {
+    let start = match mode {
+        brish_plugin_api::CmdDurationMode::Wall => std::time::Instant::now(),
+        brish_plugin_api::CmdDurationMode::Cpu => {
+            // For CPU time, we'd need getrusage; fall back to wall for now
+            // TODO: implement CPU time via nix::sys::resource::getrusage
+            std::time::Instant::now()
+        }
+    };
     let prog = match brish_core::parser::parse(src) {
         Ok(p) => p,
-        Err(e) => return fatal(engine, e, src, style),
+        Err(e) => return fatal(engine, e, src, style, start.elapsed().as_millis()),
     };
-    match engine.run(&prog) {
+    let outcome = engine.run(&prog);
+    let duration = start.elapsed().as_millis();
+    match outcome {
         Ok(Outcome::Exit(c)) => Run {
             code: c,
             exited: true,
+            duration_ms: duration,
         },
         Ok(Outcome::Status(s)) => Run {
             code: s,
             exited: false,
+            duration_ms: duration,
         },
-        Err(e) => fatal(engine, e, src, style),
+        Err(e) => fatal(engine, e, src, style, duration),
     }
 }
 
 /// Report a fatal error and map it to an exit status (2 for syntax,
 /// 1 otherwise — bash convention).
-fn fatal(engine: &mut Engine, e: brish_core::error::Error, src: &str, style: Style) -> Run {
+fn fatal(
+    engine: &mut Engine,
+    e: brish_core::error::Error,
+    src: &str,
+    style: Style,
+    duration_ms: u128,
+) -> Run {
     use brish_core::error::Error;
     let code = match e {
         Error::Parse { .. } | Error::Incomplete => 2,
@@ -366,6 +391,7 @@ fn fatal(engine: &mut Engine, e: brish_core::error::Error, src: &str, style: Sty
     Run {
         code,
         exited: false,
+        duration_ms,
     }
 }
 
@@ -445,7 +471,7 @@ fn repl(
         for rc in rcs {
             match std::fs::read_to_string(&rc) {
                 Ok(src) => {
-                    let run = run_src(engine, &src, err_style);
+                    let run = run_src(engine, &src, err_style, cfg.cmd_duration_mode);
                     if run.exited {
                         return run.code;
                     }
@@ -462,7 +488,7 @@ fn repl(
     if interactive && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
         return edit_repl(engine, var_names, aliases, hist_ctl, cfg, err_style);
     }
-    plain_repl(engine, interactive, err_style)
+    plain_repl(engine, interactive, err_style, cfg.cmd_duration_mode)
 }
 
 /// Interactive reedline REPL (plan phase 5): line editing, history,
@@ -479,6 +505,8 @@ fn edit_repl(
     let template = cfg.theme_prompt.as_deref();
     let right = cfg.theme_prompt_right.as_deref();
     let transient = cfg.theme_prompt_transient.as_deref();
+    let palette = cfg.theme_palette.as_ref();
+    let duration_mode = cfg.cmd_duration_mode;
     let _ = brish_builtin::paths::ensure_config_dir();
     // reedline creates the history file with the process umask; tighten
     // it so commands (which may contain secrets) stay 0600.
@@ -597,6 +625,9 @@ fn edit_repl(
             chrome,
             Some(tmpl),
             right,
+            palette,
+            0, // transient prompt doesn't show duration
+            duration_mode,
         );
         rl = rl.with_transient_prompt(Box::new(transient_prompt));
     }
@@ -637,6 +668,9 @@ fn edit_repl(
             chrome,
             template,
             right,
+            palette,
+            engine.env.status_duration_ms, // Will be set after run_src
+            duration_mode,
         );
         match rl.read_line(&prompt) {
             Ok(Signal::Success(line)) => {
@@ -647,7 +681,8 @@ fn edit_repl(
                 }
                 let src = std::mem::take(&mut buf);
                 if !src.trim().is_empty() {
-                    let run = run_src(engine, &src, err_style);
+                    let run = run_src(engine, &src, err_style, duration_mode);
+                    engine.env.status_duration_ms = run.duration_ms;
                     if run.exited {
                         return run.code;
                     }
@@ -669,7 +704,12 @@ fn edit_repl(
 }
 
 /// Non-tty REPL: plain line reads (pipes, `brish -i < script`).
-fn plain_repl(engine: &mut Engine, interactive: bool, err_style: Style) -> i32 {
+fn plain_repl(
+    engine: &mut Engine,
+    interactive: bool,
+    err_style: Style,
+    duration_mode: brish_plugin_api::CmdDurationMode,
+) -> i32 {
     let ps1 = std::env::var("PS1").unwrap_or_else(|_| brish_core::reader::default_ps1());
     let ps2 = std::env::var("PS2").unwrap_or_else(|_| brish_core::reader::default_ps2());
     let stdin = std::io::stdin();
@@ -699,7 +739,7 @@ fn plain_repl(engine: &mut Engine, interactive: bool, err_style: Style) -> i32 {
             continue;
         }
         if !buf.trim().is_empty() {
-            let run = run_src(engine, &buf, err_style);
+            let run = run_src(engine, &buf, err_style, duration_mode);
             if run.exited {
                 return run.code;
             }

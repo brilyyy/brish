@@ -12,6 +12,11 @@ name = "briiish-minimal"   # theme selector
 # Optional custom prompt template (overrides the named theme render;
 # PS1 env still wins). \n makes a multiline prompt:
 # prompt = "{arrow} {cwd} {segments}\n{fg:blue}❯{reset} "
+# Per-segment palette for powerline themes: segment_name = "bg_color" (256-color index)
+# palette = { git = "11", venv = "5", aws = "208" }
+
+[engine]
+cmd_duration_mode = "wall"   # "wall" (default) or "cpu" — affects {cmd_duration} token
 
 [prompt]
 indicator = "> "            # emacs prompt indicator ("" = no indicator)
@@ -110,9 +115,53 @@ tokens.
 |---|---|
 | `{arrow}` | `❯` green/red by last status |
 | `{cwd}` | current directory basename |
-| `{segments}` | registered prompt segments (git, venv, …) |
-| `{reset}` | ANSI reset (empty under `NO_COLOR`) |
-| `{fg:SPEC}`/`{bg:SPEC}` | `black…white`, `bright-` prefix, or `#rrggbb` |
+| `{path}` | full cwd with `~` substitution |
+| `{path:short}` | shortened cwd (last 2 components full, earlier → first char) |
+| `{home}` | `$HOME` |
+| `{user}` | `$USER` or "user" |
+| `{host}` | `$HOSTNAME` or "localhost" |
+| `{context}` | `user@host` when SSH (`$SSH_CONNECTION`/`$SSH_TTY` set), else empty |
+| `{time}` | local time HH:MM:SS (respects `$TZ`) |
+| `{time:short}` | local time HH:MM |
+| `{status}` | exit code if ≠0, else empty |
+| `{status:all}` | exit code always |
+| `{version}` | briSH version |
+| `{segments}` | space-joined colored segment output |
+| `{segments:plain}` | space-joined plain (SGR-stripped) segment output |
+| `{segment:name}` | plain text of segment with `name()` |
+| `{segmentc:name}` | colored text of segment with `name()` |
+| `{cmd_duration}` | formatted command duration (wall/cpu per `[engine] cmd_duration_mode`) |
+| `{reset}` | ANSI reset (empty under `NO_COLOR`); clears separator state |
+| `{fg:SPEC}`/`{bg:SPEC}` | ANSI SGR: `black…white`, `bright-` prefix, a 256-color index (`11`), or `#rrggbb`; `{bg:}` updates separator state |
+| `{sep}` | powerline separator `` (fg = last background set, bg = default) |
+| `{sep:NEXT}` | separator into an explicit next color (`{sep:11}`) |
+| `{sepp:NAME}` | separator into a `[theme] palette` entry (`{sepp:git}`) |
+| `{bgp:NAME}` / `{fgp:NAME}` | background/foreground from the palette; `{bgp:}` also feeds `{sep}` |
+
+Braces do not nest, so a palette key cannot be interpolated into `{bg:…}` —
+`{bgp:NAME}` is the form a palette-driven theme uses.
+
+**Conditionals:**
+```
+{if:TOKEN}BODY{endif}
+{if:TOKEN}BODY{else}ELSE{endif}
+```
+`TOKEN` is true iff its expansion is non-empty. Nesting supported (max depth 8);
+literal text in a skipped branch is dropped, not just tokens.
+
+## Per-segment palette (powerline themes)
+
+`[theme] palette` maps segment names to 256-color background indices, and the
+template references them by key:
+```toml
+[theme]
+name = "powerline"
+palette = { git = "11", venv = "5", aws = "208" }
+```
+```
+{bgp:git} {segment:git} {sepp:venv} …
+```
+See `examples/plugins/powerline/` for a complete theme built this way.
 
 ## Plugin names (builtin, `brish-` prefix)
 

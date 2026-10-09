@@ -6,6 +6,7 @@
 //! against this crate alone. Registration lives in the binary; the
 //! engine walks the resulting registry read-only (no locks after
 //! startup — dispatch is a slice walk over borrowed contexts).
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Fallback theme name when nothing else resolves.
@@ -30,6 +31,28 @@ pub struct CmdCtx<'a> {
     pub argv: &'a [String],
     pub status_before: i32,
     pub cwd: &'a Path,
+    /// Wall-clock duration of the last command in milliseconds.
+    pub duration_ms: u128,
+    /// How `duration_ms` was measured.
+    pub duration_mode: CmdDurationMode,
+}
+
+/// Command duration mode for `{cmd_duration}` token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CmdDurationMode {
+    #[default]
+    Wall,
+    Cpu,
+}
+
+impl CmdDurationMode {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "cpu" => CmdDurationMode::Cpu,
+            _ => CmdDurationMode::Wall,
+        }
+    }
 }
 
 pub trait PreExecHook: Send + Sync {
@@ -45,14 +68,75 @@ pub trait ChdirHook: Send + Sync {
 }
 
 pub trait PromptSegment: Send + Sync {
+    /// Unique segment name for template tokens (`{segment:name}`).
+    /// Defaults to the type name (demangled).
+    fn name(&self) -> &str {
+        std::any::type_name::<Self>()
+            .rsplit_once("::")
+            .map(|(_, n)| n)
+            .unwrap_or("segment")
+    }
+
+    /// Plain (SGR-stripped) text for powerline-style themes.
+    /// Default: strips SGR from `render_colored`.
+    fn render_plain(&self, status: i32, cwd: &Path) -> Option<String> {
+        self.render_colored(status, cwd).map(strip_sgr)
+    }
+
+    /// Colored text for traditional themes.
+    /// Default: delegates to `render` for backward compatibility.
+    fn render_colored(&self, status: i32, cwd: &Path) -> Option<String> {
+        self.render(status, cwd)
+    }
+
     /// Text appended after the base prompt, `None` to skip this render.
-    fn render(&self, status: i32, cwd: &Path) -> Option<String>;
+    /// Default: delegates to `render_colored`.
+    fn render(&self, status: i32, cwd: &Path) -> Option<String> {
+        self.render_colored(status, cwd)
+    }
+}
+
+/// Strips ANSI SGR escape sequences from a string.
+pub fn strip_sgr(s: String) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.peek() == Some(&'[') {
+            // Skip ESC [ ... m
+            chars.next(); // consume '['
+            for c2 in chars.by_ref() {
+                if c2.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 pub trait Theme: Send + Sync {
     fn name(&self) -> &str;
     /// Full left-prompt text; segments are ordered by registration.
     fn render(&self, status: i32, cwd: &Path, segments: &[&dyn PromptSegment]) -> String;
+    /// Optional right-prompt template. When `Some`, this template is
+    /// expanded with the same tokens as the main prompt. When `None`,
+    /// falls back to config `[theme] prompt_right`.
+    fn right_template(&self) -> Option<&str> {
+        None
+    }
+    /// Optional transient prompt template. When `Some`, this template is
+    /// expanded after a command runs. When `None`, falls back to config
+    /// `[theme] prompt_transient`.
+    fn transient_template(&self) -> Option<&str> {
+        None
+    }
+    /// Optional per-segment palette for powerline themes.
+    /// Map of segment name -> background color (256-color index or name).
+    fn palette(&self) -> Option<&BTreeMap<String, String>> {
+        None
+    }
 }
 
 /// One completion candidate. `keep_typing` suppresses the trailing space
@@ -287,6 +371,30 @@ impl Registry {
         self.history_factories.first().map(|b| b.as_ref())
     }
 
+    /// Right-prompt template for `theme`, if the theme provides one.
+    pub fn theme_right(&self, theme: &str) -> Option<&str> {
+        self.themes
+            .iter()
+            .find(|t| t.name() == theme)
+            .and_then(|t| t.right_template())
+    }
+
+    /// Transient prompt template for `theme`, if the theme provides one.
+    pub fn theme_transient(&self, theme: &str) -> Option<&str> {
+        self.themes
+            .iter()
+            .find(|t| t.name() == theme)
+            .and_then(|t| t.transient_template())
+    }
+
+    /// Per-segment palette for `theme`, if the theme provides one.
+    pub fn theme_palette(&self, theme: &str) -> Option<&BTreeMap<String, String>> {
+        self.themes
+            .iter()
+            .find(|t| t.name() == theme)
+            .and_then(|t| t.palette())
+    }
+
     pub fn menu_factories_len(&self) -> usize {
         self.menu_factories.len()
     }
@@ -349,6 +457,8 @@ mod tests {
             argv: &["ls".to_string()],
             status_before: 0,
             cwd,
+            duration_ms: 0,
+            duration_mode: CmdDurationMode::default(),
         };
         assert!(matches!(reg.run_pre(&ctx), HookAction::Continue));
         reg.run_post(&ctx, 3);
@@ -385,6 +495,8 @@ mod tests {
             argv: &["touch".to_string()],
             status_before: 0,
             cwd,
+            duration_ms: 0,
+            duration_mode: CmdDurationMode::default(),
         };
         assert!(matches!(reg.run_pre(&ctx), HookAction::Abort(7)));
     }
