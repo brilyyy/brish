@@ -15,8 +15,9 @@
 //! (Plan deviation: lives here, not in `brish-core` — `brish-core` cannot
 //! depend on this crate without a dependency cycle.)
 
-use brish_core::ast::{self, CaseArm, Cmd, Program, Redir, Simple};
+use brish_core::ast::{self, Assign, CaseArm, Cmd, Program, Redir, Simple};
 use brish_core::env::Env;
+use brish_core::env::Var;
 use brish_core::error::Error;
 use brish_core::expand::{self, CmdSubst, ProcSubst};
 use brish_core::lexer::{self, Word};
@@ -1574,12 +1575,6 @@ impl Engine {
 
     fn simple(&mut self, s: &Simple, extra: &[Redir]) -> R<()> {
         self.cs_seen = false;
-        // Parser already split leading assignments into s.assigns.
-        let assign_words: Vec<(String, Word)> = s
-            .assigns
-            .iter()
-            .map(|a| (a.name.clone(), a.value.clone()))
-            .collect();
         let cmd_words = &s.words;
 
         // Command words expand first, then redirections (bash order).
@@ -1599,15 +1594,39 @@ impl Engine {
             return Ok(());
         };
 
-        let mut assigns: Vec<(String, String)> = Vec::with_capacity(assign_words.len());
-        for (n, w) in &assign_words {
-            let v = self.xvalue_assign(w)?;
-            assigns.push((n.clone(), v));
+        // Every leading assignment — scalar, array literal or indexed —
+        // is temporary when a command follows it, and permanent when the
+        // command is assignment-only. bash-verified: `a=(x y) true` leaves
+        // `a` empty, while `a=(x y)` alone keeps both elements.
+        let permanent = argv.is_empty();
+        let mut scalar_assigns: Vec<(String, String)> = Vec::with_capacity(s.assigns.len());
+        let mut array_assigns: Vec<&Assign> = Vec::new();
+        for a in &s.assigns {
+            if a.array.is_some() || a.index.is_some() {
+                array_assigns.push(a);
+            } else {
+                let v = self.xvalue_assign(&a.value)?;
+                scalar_assigns.push((a.name.clone(), v));
+            }
+        }
+        // Snapshot the arrays *before* binding, so the rollback below
+        // restores what was there rather than the temporary value.
+        let array_saved: Vec<(String, Option<Var>)> = if permanent {
+            Vec::new()
+        } else {
+            array_assigns
+                .iter()
+                .map(|a| (a.name.clone(), self.env.get_var(&a.name).cloned()))
+                .collect()
+        };
+        if !self.bind_array_assigns(&array_assigns)? {
+            return Ok(()); // status already set
         }
 
         if argv.is_empty() {
-            // Assignment-only command: persists, status 0.
-            for (n, v) in assigns {
+            // Assignment-only command: persists, status 0. The array
+            // literals are already bound above; only scalars remain.
+            for (n, v) in scalar_assigns {
                 if let Err(e) = self.env.set(&n, v) {
                     eprintln!("brish: {e}");
                     self.env.status = 1;
@@ -1626,13 +1645,59 @@ impl Engine {
         }
 
         // Temp assignments live only for the command (bash-verified).
-        let saved = match self.push_temp(&assigns) {
+        let saved = match self.push_temp(&scalar_assigns) {
             Ok(s) => s,
-            Err(()) => return Ok(()), // status already set
+            Err(()) => {
+                for (n, prev) in array_saved.into_iter().rev() {
+                    self.env.restore_var(&n, prev);
+                }
+                return Ok(()); // status already set
+            }
         };
         let out = self.exec_words(argv, plan, false);
         self.pop_temp(saved);
+        for (n, prev) in array_saved.into_iter().rev() {
+            self.env.restore_var(&n, prev);
+        }
         out
+    }
+
+    /// Bind `a=(…)` literals and `a[i]=v` assignments. Applied before the
+    /// command runs; the caller rolls them back when they are temporary.
+    ///
+    /// Each element is expanded as a full word (splitting + globbing),
+    /// matching bash: `a=(x y)` is two elements, `a=(*)` globs.
+    /// Returns `false` if a bind failed (status already set).
+    fn bind_array_assigns(&mut self, assigns: &[&Assign]) -> R<bool> {
+        for a in assigns {
+            if let Some(elements) = &a.array {
+                let mut items = Vec::with_capacity(elements.len());
+                for e in elements {
+                    let v = self.xwords(std::slice::from_ref(e))?;
+                    items.extend(v);
+                }
+                if let Err(err) = self.env.set_array(&a.name, items) {
+                    eprintln!("brish: {err}");
+                    self.env.status = 1;
+                    return Ok(false);
+                }
+            } else if let Some(index) = &a.index {
+                let idx = self.array_subscript(index)?;
+                let v = self.xvalue_assign(&a.value)?;
+                if let Err(err) = self.env.set_index(&a.name, idx, v) {
+                    eprintln!("brish: {err}");
+                    self.env.status = 1;
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// Array subscript arithmetic, shared with the expander.
+    fn array_subscript(&mut self, w: &Word) -> R<usize> {
+        let src = brish_core::lexer::plain_text(w).map_err(Stop::Fail)?;
+        brish_core::expand::eval_subscript(&src, &mut self.env).map_err(Stop::Fail)
     }
 
     fn push_temp(&mut self, assigns: &[(String, String)]) -> Result<TempSaved, ()> {

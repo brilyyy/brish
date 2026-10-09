@@ -93,8 +93,14 @@ pub struct Simple {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Assign {
     pub name: String,
+    /// Scalar value (`a=v`), or the value in `a[i]=v`.
     pub value: Word,
     pub span: Span,
+    /// Array literal elements for `a=(x y)`; `None` for scalar
+    /// assignments. Elements are still unexpanded words.
+    pub array: Option<Vec<Word>>,
+    /// Subscript for `a[i]=v`; `None` otherwise.
+    pub index: Option<Word>,
 }
 
 /// Redirection; `fd` is the explicit IO number or the kind's default.

@@ -48,11 +48,31 @@ redaction filter — the file is yours, mode `0600`.
 at command/prompt boundaries in the main shell, never inside the
 signal handler. `KILL`/`STOP` cannot be trapped.
 
+## Restricted mode
+
+`brish -r` (or `set -o restricted`) is for unprivileged accounts that
+need a shell but must not be able to pivot. It blocks:
+
+- `cd` and `z` — no directory changes
+- command names containing `/`, and `source` paths containing `/`
+- output redirection (`>`, `>>`, `>|`) and `exec`, in both its
+  bare-redirection and command-replacing forms
+- writes to `SHELL`, `PATH`, `ENV` and `BASH_ENV`
+
+Input redirection (`<`), here-docs and fd duplication (`>&`) stay
+available. Once on it cannot be turned off: `set` rejects any `+o` or
+`+letter` while restricted.
+
+**Not a security boundary on its own.** It is a speed bump against
+casual or accidental escape, not a jail — it constrains the shell's own
+syntax, not the programs you can run. Run it with an unprivileged uid,
+and remember a restricted shell can still read any file that uid can
+read, and still run anything on its `PATH`.
+
 ## Known ceilings (deferred)
 
 | Ceiling | Upgrade path |
 |---|---|
-| No restricted mode (`bsh -r`) | Wire `ModePolicy::strict_posix` into exec |
 | No secret redaction in history/debug traces | Opt-in filter over history writes + `BRISH_DEBUG` |
 | TOCTOU on path checks (`stat` vs `open`) | `openat`/`execveat` where available |
 | Plugin helpers unsandboxed | WASM or OS sandbox — see [`PLUGIN-WASM.md`](PLUGIN-WASM.md) |

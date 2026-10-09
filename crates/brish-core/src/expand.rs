@@ -23,6 +23,19 @@ pub type ProcSubst<'a> = &'a mut dyn FnMut(&str, bool) -> Result<String, Error>;
 /// Recursion cap for nested substitutions / default words.
 const MAX_DEPTH: usize = 64;
 
+/// Evaluate an array subscript expression as arithmetic. Exposed so the
+/// engine can resolve `a[i]=v` targets with the same rules the expander
+/// uses for `${a[i]}` (including `$var` splicing).
+pub fn eval_subscript(src: &str, env: &mut Env) -> Result<usize, Error> {
+    let mut ex = Ex {
+        env,
+        cs: &mut |_s: &str| -> Result<String, Error> { Ok(String::new()) },
+        ps: &mut |s: &str, _out: bool| Ok(format!("/dev/fd/{s}")),
+        depth: 0,
+    };
+    ex.array_index(src)
+}
+
 /// Expand one word into fields (splitting, globbing, quote removal).
 pub fn expand_word(
     env: &mut Env,
@@ -686,7 +699,94 @@ impl<'a> Ex<'a> {
                     quoted,
                 }])
             }
+            Form::Index { name, sub, op } => self.expand_index(name, sub, op, quoted),
+            Form::LenIndex { name, sub } => {
+                let text = match parse_subscript(sub)? {
+                    // `${#a[@]}` / `${#a[*]}`: element count.
+                    Sub::All => self.env.array(name).map_or(0, <[String]>::len).to_string(),
+                    Sub::Index(i) => {
+                        let idx = self.array_index(i)?;
+                        match self.env.array(name).and_then(|a| a.get(idx)) {
+                            Some(v) => v.chars().count().to_string(),
+                            None => "0".to_string(),
+                        }
+                    }
+                };
+                Ok(vec![Seg::T {
+                    text,
+                    quoted,
+                    glob: false,
+                }])
+            }
         }
+    }
+
+    /// `${a[i]}` and `${a[@]}`. `@`/`*` behave exactly like `$@`: quoted
+    /// they stay one field per element, unquoted they word-split.
+    ///
+    /// A non-array `name` falls back to its scalar value, so `${x[0]}` on
+    /// a plain variable is `${x}` rather than an error (bash warns; an
+    /// empty result is closer to the POSIX "unset is empty" rule).
+    fn expand_index(
+        &mut self,
+        name: &str,
+        sub: &str,
+        op: Option<(&str, &str)>,
+        quoted: bool,
+    ) -> Result<Vec<Seg>, Error> {
+        // Cloned because `array_index` may need `&mut env` below.
+        let items = self.env.array(name).map(<[String]>::to_vec);
+        let Some(items) = items else {
+            let v = match self.param_value(name) {
+                Some(v) => v,
+                None if self.env.opts.nounset && !nounset_exempt(name) => {
+                    return Err(Error::expand(format!("{name}: unbound variable")));
+                }
+                None => String::new(),
+            };
+            // `${x[0]:-d}` still applies the operator to the scalar.
+            let v = match op {
+                Some((o, w)) => self.op_on(name, Some(v), o, w)?,
+                None => v,
+            };
+            return Ok(vec![Seg::T {
+                glob: !quoted && has_meta(&v),
+                text: v,
+                quoted,
+            }]);
+        };
+        match parse_subscript(sub)? {
+            Sub::All => {
+                if items.is_empty() {
+                    return Ok(Vec::new());
+                }
+                Ok(vec![Seg::F { items, quoted }])
+            }
+            Sub::Index(i) => {
+                let idx = self.array_index(i)?;
+                // An out-of-range element is empty, and `${a[9]:-d}` must
+                // therefore take the default.
+                let current = items.get(idx).cloned();
+                let v = match op {
+                    Some((o, w)) => self.op_on(name, current, o, w)?,
+                    None => current.unwrap_or_default(),
+                };
+                Ok(vec![Seg::T {
+                    glob: !quoted && has_meta(&v),
+                    text: v,
+                    quoted,
+                }])
+            }
+        }
+    }
+
+    /// Array subscript arithmetic. An unset/non-numeric subscript is 0,
+    /// which makes `${a[x]}` degrade to element 0 instead of failing.
+    fn array_index(&mut self, sub: &str) -> Result<usize, Error> {
+        let expanded = self.expand_arith_params(sub);
+        let v = eval_arith(&expanded, &mut *self.env)
+            .map_err(|e| Error::expand(format!("bad array subscript: {e}")))?;
+        Ok(v.max(0) as usize)
     }
 
     fn positional_items(&mut self, quoted: bool) -> Result<Vec<String>, Error> {
@@ -727,6 +827,18 @@ impl<'a> Ex<'a> {
 
     fn op_value(&mut self, name: &str, op: &str, word: &str) -> Result<String, Error> {
         let current = self.param_value(name);
+        self.op_on(name, current, op, word)
+    }
+
+    /// The `:-`/`:=`/`##`/… machinery, over an already-resolved value.
+    /// `${a[i]:-x}` passes the element rather than re-reading the variable.
+    fn op_on(
+        &mut self,
+        name: &str,
+        current: Option<String>,
+        op: &str,
+        word: &str,
+    ) -> Result<String, Error> {
         let colon = op.starts_with(':');
         let kind = op.trim_start_matches(':');
         let unset = current.is_none();
@@ -1086,6 +1198,41 @@ enum Form<'a> {
         op: &'a str,
         word: &'a str,
     },
+    /// `${a[i]}` — one element, optionally followed by an operator
+    /// (`${a[i]:-default}`).
+    Index {
+        name: &'a str,
+        sub: &'a str,
+        op: Option<(&'a str, &'a str)>,
+    },
+    /// `${#a[i]}` — length of the array, or of one element.
+    LenIndex {
+        name: &'a str,
+        sub: &'a str,
+    },
+}
+
+/// Split a `[…]` subscript off the front of `rest`. Returns the inside,
+/// the text that followed the closing `]`, and whether a complete `[…]`
+/// was present. `after` is `None` when there is no `[` at all; it is
+/// `Some("")` for a subscript with nothing trailing.
+fn split_subscript(rest: &str) -> Option<(&str, Option<&str>)> {
+    let inner = rest.strip_prefix('[')?;
+    let close = inner.find(']')?;
+    Some((&inner[..close], Some(&inner[close + 1..])))
+}
+
+/// Subscript `@`/`*` = all elements; anything else is an arithmetic index.
+enum Sub<'a> {
+    All,
+    Index(&'a str),
+}
+
+fn parse_subscript(sub: &str) -> Result<Sub<'_>, Error> {
+    match sub {
+        "@" | "*" => Ok(Sub::All),
+        other => Ok(Sub::Index(other)),
+    }
 }
 
 fn parse_form(expr: &str) -> Result<Form<'_>, Error> {
@@ -1095,6 +1242,20 @@ fn parse_form(expr: &str) -> Result<Form<'_>, Error> {
     if let Some(rest) = expr.strip_prefix('#') {
         if rest.is_empty() {
             return Ok(Form::Plain("#"));
+        }
+        // `${#a[@]}` / `${#a[2]}` — array length, not a `#` operator.
+        // `rest` is the whole `a[@]`; split it into name and subscript.
+        if let Some(bracket) = rest.find('[')
+            && rest.ends_with(']')
+            && crate::env::is_name(&rest[..bracket])
+        {
+            let sub = &rest[bracket + 1..rest.len() - 1];
+            if !sub.is_empty() {
+                return Ok(Form::LenIndex {
+                    name: &rest[..bracket],
+                    sub,
+                });
+            }
         }
         if is_param_name(rest) {
             return Ok(Form::Len(rest));
@@ -1118,6 +1279,26 @@ fn parse_form(expr: &str) -> Result<Form<'_>, Error> {
     if rest.is_empty() {
         return Ok(Form::Plain(name));
     }
+    // `${a[0]}` / `${a[@]}` — a subscript is not an operator, so it is
+    // peeled off before the `:-`/`##` scan below. Anything after the
+    // closing `]` is the operator.
+    if let Some((sub, Some(after))) = split_subscript(rest) {
+        let op = parse_trailing_op(after)?;
+        if after.is_empty() {
+            return Ok(Form::Index {
+                name,
+                sub,
+                op: None,
+            });
+        }
+        if let Some((o, w)) = op {
+            return Ok(Form::Index {
+                name,
+                sub,
+                op: Some((o, w)),
+            });
+        }
+    }
     for op in [":-", ":=", ":?", ":+", "##", "%%"] {
         if let Some(word) = rest.strip_prefix(op) {
             return Ok(Form::Op { name, op, word });
@@ -1129,6 +1310,23 @@ fn parse_form(expr: &str) -> Result<Form<'_>, Error> {
         }
     }
     Err(Error::expand(format!("bad substitution: ${{{expr}}}")))
+}
+
+/// Recognize a trailing `:-`-style operator after a subscript. `None` for
+/// empty or unrecognized text; the caller falls through to the normal
+/// bad-substitution error.
+fn parse_trailing_op(after: &str) -> Result<Option<(&str, &str)>, Error> {
+    if after.is_empty() {
+        return Ok(None);
+    }
+    for op in [
+        ":-", ":=", ":?", ":+", "##", "%%", "-", "=", "?", "+", "#", "%",
+    ] {
+        if let Some(word) = after.strip_prefix(op) {
+            return Ok(Some((op, word)));
+        }
+    }
+    Ok(None)
 }
 
 fn is_param_name(s: &str) -> bool {

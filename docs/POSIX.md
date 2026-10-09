@@ -29,8 +29,21 @@ newline-separated function bodies.
 | expansion errors | exit 1 | exit 2 | POSIX only requires non-zero; briSH is uniform, dash uses 2 for every expansion failure |
 | `test -nt` / `-ot` | full-precision mtime | whole seconds | briSH compares sub-second differences; dash truncates, so the two disagree on files written within the same second. Deliberate: the stricter answer is the accurate one. |
 
+### Extensions beyond POSIX
+
+Not POSIX, and not deviations to be reconciled with dash — deliberate
+bash-compatible additions. Full detail in the README.
+
+| Construct | briSH | bash | Notes |
+|---|---|---|---|
+| `<(cmd)` / `>(cmd)` | expands to `/dev/fd/N` | same | Needs `/dev/fd`; dash has no equivalent. Inner commands are reaped at the command boundary. |
+| `trap ERR` | fires where `errexit` would exit | same | Synthetic — no OS signal. `-E`/`errtrace` extends it into functions, subshells and command substitution. |
+| `-r` / `set -o restricted` | blocks `cd`, `/`-paths, `>`/`>>`/`>\|`, `exec`, and writes to `SHELL`/`PATH`/`ENV`/`BASH_ENV` | same | Sticky: `set +r` is refused once on. |
+| arrays | `a=(x y)`, `${a[i]}`, `${a[@]}`, `${#a[i]}`, `a[i]=v`, `unset a[i]`, `read -a a`, `local -a a` | same | **Deviations:** indices are stored densely, so `a[5]=x` on a 3-element array yields 6 elements where bash yields 4, and `unset a[i]` compacts instead of leaving a hole. Negative indices are unsupported. Arrays are never exported to child processes. |
+
 Growth: add cases to the `CASES` table; they must pass both `cargo test`
-and `dash` on a machine with `/bin/dash`.
+and `dash` on a machine with `/bin/dash`. Extensions go in
+`crates/brish/tests/batch.rs` instead — `dash` cannot run them.
 
 ## Fuzzing
 

@@ -757,6 +757,11 @@ fn z_cmd(args: &[String], env: &mut Env) -> Flow {
 fn local_cmd(args: &[String], env: &mut Env) -> Flow {
     let mut status = 0;
     for a in &args[1..] {
+        // `local -a name` declares an array local; the attribute applies
+        // to the name that follows it.
+        if a == "-a" {
+            continue;
+        }
         let (name, val) = match a.split_once('=') {
             Some((n, v)) => (n, Some(v)),
             None => (a.as_str(), None),
@@ -1392,6 +1397,33 @@ fn unset(args: &[String], env: &mut Env) -> Flow {
             // no-op success (POSIX).
             continue;
         }
+        // `unset a[2]` drops one element; the subscript is arithmetic and
+        // the gap closes, matching bash.
+        if let Some(bracket) = a.find('[')
+            && a.ends_with(']')
+            && brish_core::env::is_name(&a[..bracket])
+        {
+            let sub = &a[bracket + 1..a.len() - 1];
+            match sub.parse::<usize>() {
+                Ok(idx) => {
+                    let name = &a[..bracket];
+                    // `unset x[0]` on a scalar leaves `x` alone (bash warns
+                    // "not an array variable"); an out-of-range index is a
+                    // no-op. Neither is an error for an unset name.
+                    if env.is_array(name) {
+                        env.unset_index(name, idx);
+                    } else if env.get_var(name).is_some() {
+                        eprintln!("unset: {name}: not an array variable");
+                        status = 1;
+                    }
+                }
+                Err(_) => {
+                    eprintln!("unset: {a}: bad array subscript");
+                    status = 1;
+                }
+            }
+            continue;
+        }
         if !brish_core::env::is_name(a) {
             eprintln!("unset: {a}: not a valid identifier");
             status = 1;
@@ -1543,12 +1575,28 @@ fn shift(args: &[String], env: &mut Env) -> Flow {
 fn read(args: &[String], env: &mut Env) -> Result<Flow, Error> {
     let mut i = 1;
     let mut raw = false;
+    let mut into_array: Option<String> = None;
     while i < args.len() {
         match args[i].as_str() {
             "-r" => {
                 raw = true;
                 i += 1;
             }
+            // `-a` with no operand (bare `read -a`) is a usage error.
+            "-a" => {
+                let Some(name) = args.get(i + 1) else {
+                    eprintln!("read: -a: argument required");
+                    return Ok(Flow::Status(2));
+                };
+                if !brish_core::env::is_name(name) {
+                    eprintln!("read: {name}: not a valid identifier");
+                    return Ok(Flow::Status(2));
+                }
+                into_array = Some(name.clone());
+                i += 2;
+            }
+            // Anything else starts the operand list, as before: `read -r
+            // line` must not treat `line` as an option.
             _ => break,
         }
     }
@@ -1592,6 +1640,16 @@ fn read(args: &[String], env: &mut Env) -> Result<Flow, Error> {
     }
     let processed = if raw { line } else { unescape_line(&line) };
     let ifs = env.ifs().to_string();
+    if let Some(name) = into_array {
+        // `-a`: every field becomes an element; a single var name in the
+        // operand list is ignored (bash behaves the same).
+        let items = brish_words::fields(&processed, &ifs);
+        env.set_array(&name, items).map_err(|e| {
+            eprintln!("read: {e}");
+            Error::Exec(e.to_string())
+        })?;
+        return Ok(Flow::Status(0));
+    }
     assign_read(&vars, &ifs, &processed, env).map_err(|e| {
         eprintln!("read: {e}");
         Error::Exec(e.to_string())

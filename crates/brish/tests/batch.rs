@@ -621,3 +621,115 @@ fn proc_subst_path_is_not_split_or_globbed() {
     assert_eq!(out(&o).trim(), "1", "stderr: {}", err(&o));
     assert!(d.path().exists());
 }
+
+/// Arrays (bash extension; dense storage — see docs/POSIX.md).
+#[test]
+fn array_literal_and_indexing() {
+    assert_eq!(out(&run(&["-c", "a=(x y z); echo ${a[1]}"])), "y\n");
+    assert_eq!(
+        out(&run(&["-c", "a=(x y z); echo $a"])),
+        "x\n",
+        "$a is a[0]"
+    );
+    assert_eq!(out(&run(&["-c", "a=(x y z); echo ${#a[@]}"])), "3\n");
+    assert_eq!(out(&run(&["-c", "a=(x y z); echo ${#a[1]}"])), "1\n");
+    // Out of range is empty, and takes a default.
+    assert_eq!(out(&run(&["-c", "a=(x); echo \"[${a[7]}]\""])), "[]\n");
+    assert_eq!(out(&run(&["-c", "a=(x); echo ${a[7]:-none}"])), "none\n");
+    // Empty array.
+    assert_eq!(out(&run(&["-c", "a=(); echo ${#a[@]}"])), "0\n");
+    assert_eq!(out(&run(&["-c", "a=(); echo \"[${a[@]}]\""])), "[]\n");
+}
+
+#[test]
+fn array_elements_keep_their_own_quoting() {
+    // A quoted element is one element even with a space in it.
+    assert_eq!(out(&run(&["-c", "a=(\"p q\" r); echo ${#a[@]}"])), "2\n");
+    assert_eq!(
+        out(&run(&["-c", "a=(\"p q\" r); echo \"[${a[0]}]\""])),
+        "[p q]\n"
+    );
+    // Unquoted expansion splits on IFS like `$@`.
+    assert_eq!(out(&run(&["-c", "a=(one two); echo ${a[@]}"])), "one two\n");
+    assert_eq!(out(&run(&["-c", "a=(one two); echo ${#a[@]}"])), "2\n");
+    // Quoted `"${a[@]}"` keeps one field per element.
+    let o = run(&[
+        "-c",
+        "a=('x y' z); for e in \"${a[@]}\"; do echo \"<$e>\"; done",
+    ]);
+    assert_eq!(out(&o), "<x y>\n<z>\n");
+}
+
+#[test]
+fn array_index_assignment() {
+    assert_eq!(
+        out(&run(&["-c", "a=(x y); a[0]=NEW; echo ${a[0]}"])),
+        "NEW\n"
+    );
+    // The subscript is arithmetic.
+    assert_eq!(
+        out(&run(&["-c", "a=(x y); i=1; a[i+1]=third; echo ${#a[@]}"])),
+        "3\n"
+    );
+    assert_eq!(out(&run(&["-c", "a=(x y); a[1]=B; echo ${a[1]}"])), "B\n");
+}
+
+#[test]
+fn array_assignment_is_temporary_with_a_command_prefix() {
+    // bash: `a=(x y) true` leaves `a` empty.
+    assert_eq!(out(&run(&["-c", "a=(x y) true; echo ${#a[@]}"])), "0\n");
+    assert_eq!(
+        out(&run(&["-c", "a=(1 2 3); a[9]=N true; echo ${#a[@]}"])),
+        "3\n"
+    );
+    // ... but persists without one.
+    assert_eq!(out(&run(&["-c", "a=(x y); echo ${#a[@]}"])), "2\n");
+}
+
+#[test]
+fn array_unset_element_and_whole() {
+    assert_eq!(
+        out(&run(&["-c", "a=(x y z); unset \"a[1]\"; echo ${#a[@]}"])),
+        "2\n"
+    );
+    assert_eq!(
+        out(&run(&["-c", "a=(x y); unset a; echo \"[${a[@]}]\""])),
+        "[]\n"
+    );
+    // A scalar is unaffected by the indexed form.
+    assert_eq!(
+        out(&run(&["-c", "x=hello; unset \"x[0]\"; echo $x"])),
+        "hello\n"
+    );
+}
+
+#[test]
+fn array_read_into_and_local() {
+    assert_eq!(
+        out(&run(&["-c", "read -a a <<< '1 2 3'; echo ${#a[@]}"])),
+        "3\n"
+    );
+    assert_eq!(
+        out(&run(&["-c", "read -a a <<< '1 2 3'; echo ${a[2]}"])),
+        "3\n"
+    );
+    // `read -r` still works alongside.
+    let o = run(&[
+        "-c",
+        "while read -r line; do echo \"[$line]\"; done <<< 'x y'",
+    ]);
+    assert_eq!(out(&o), "[x y]\n");
+    // `local -a` inside a function, isolated from the global.
+    let o = run(&[
+        "-c",
+        "g=1; f() { local -a a; a=(in); echo ${#a[@]}; }; f; echo ${#a[@]}",
+    ]);
+    assert_eq!(out(&o), "1\n0\n");
+}
+
+#[test]
+fn array_is_not_exported_to_children() {
+    // bash never exports arrays; a child sees no `a` at all.
+    let o = run(&["-c", "a=(x y); sh -c 'echo \"[${a[@]}]\"'"]);
+    assert_eq!(out(&o), "[]\n", "stderr: {}", err(&o));
+}
