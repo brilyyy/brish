@@ -552,7 +552,10 @@ mod tests {
         let vals: Vec<&str> = out.iter().map(|s| s.value.as_str()).collect();
         assert!(vals.contains(&".hidden"), "{out:?}");
         assert!(vals.contains(&".hiddendir/"), "{out:?}");
-        assert!(!vals.contains(&"visible"), "non-hidden entries must not match");
+        assert!(
+            !vals.contains(&"visible"),
+            "non-hidden entries must not match"
+        );
         assert!(!out.iter().any(|s| s.value == "echo"));
     }
 
